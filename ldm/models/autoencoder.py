@@ -1,0 +1,286 @@
+import sys
+sys.path.append('.')
+sys.path.append('..')
+sys.path.append('...')
+import torch
+import torch.nn as nn
+import pytorch_lightning as pl
+import torch.nn.functional as F
+from contextlib import contextmanager
+
+# from taming.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
+
+from ldm.modules.diffusionmodules.model import Encoder,Decoder
+from ldm.modules.distributions.distributions import DiagonalGuassianDistribution
+
+from ldm.util import instantiate_from_config
+import math
+import clip
+from einops import repeat,rearrange
+
+torch.set_default_dtype(torch.float32)
+
+class AutoencoderKL(pl.LightningModule):
+    def __init__(self,
+                 ddconfig,
+                 lossconfig,
+                 embed_dim,
+                 ckpt_path=None,
+                 ignore_keys=[],
+                 image_key="image",
+                 colorize_nlabels=None,
+                 monitor=None,):
+        super().__init__()
+        self.image_key = image_key
+        self.encoder = Encoder(**ddconfig)
+        self.decoder = Decoder(**ddconfig)
+        self.loss = instantiate_from_config(lossconfig)
+        assert ddconfig['double_z']
+        self.quant_conv = torch.nn.Conv2d(2*ddconfig["z_channels"], 2*embed_dim, 1)
+        self.post_quant_conv = torch.nn.Conv2d(embed_dim, ddconfig["z_channels"], 1)
+        self.embed_dim = embed_dim
+        if colorize_nlabels is not None:
+            assert type(colorize_nlabels)==int
+            self.register_buffer("colorize", torch.randn(3, colorize_nlabels, 1, 1))
+        if monitor is not None:
+            self.monitor = monitor
+        if ckpt_path is not None:
+            self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+
+    def init_from_ckpt(self,path,ignore_keys=list()):
+        sd = torch.load(path, map_location="cpu")["state_dict"]
+        keys = list(sd.keys())
+        for k in keys:
+            for ik in ignore_keys:
+                if k.startswith(ik):
+                    print("Deleting key {} from state_dict.".format(k))
+                    del sd[k]
+        self.load_state_dict(sd, strict=False)
+        print(f"Restored from {path}")
+    
+    def encode(self,x):
+        h = self.encoder(x)
+        moments = self.quant_conv(h)
+        posterior = DiagonalGuassianDistribution(moments)
+        return posterior
+    
+    def decode(self,z):
+        z = self.post_quant_conv(z)
+        dec = self.decode(z)
+        return dec
+    
+    def forward(self,input,sample_posterior=True):
+        posterior = self.encode(input)
+        if sample_posterior:
+            z = posterior.sample()
+        else:
+            z = posterior.mode()
+        dec = self.decode(z)
+        return dec,posterior
+
+    #TODO:conver b h w c -> b c h w
+    def get_input(self,batch,k):
+        x = batch[k]
+        if len(x.shape) == 3:
+            x = x[...,None]
+        x = x.permute(0,3,1,2).to(memory_format=torch.contiguous_format).float()
+        return x
+    
+    def training_step(self,batch,batch_idx,optimizer_idx):
+        inputs = self.get_input(batch,self.image_key)
+        reconstructions,posterior = self(inputs)
+
+        if optimizer_idx == 0:
+            #train encoder + decoder + logvar
+            aeloss,log_dict_ae = self.loss(inputs,reconstructions,posterior,optimizer_idx, self.global_step,
+                                           last_layer=self.get_last_layer(), split="train")
+            self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+            self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+            return aeloss
+        if optimizer_idx == 1:
+            # train the discriminator
+            discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, optimizer_idx, self.global_step,
+                                                last_layer=self.get_last_layer(), split="train")
+
+            self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+            self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+            return discloss
+    def validation_step(self,batch,batch_idx):
+        inputs = self.get_input(batch,self.image_key)
+        reconstructions,posterior = self(inputs)
+        aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
+                                        last_layer=self.get_last_layer(), split="val")
+        discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
+                                            last_layer=self.get_last_layer(), split="val")
+        self.log("val/rec_loss", log_dict_ae["val/rec_loss"])
+        self.log_dict(log_dict_ae)
+        self.log_dict(log_dict_disc)
+        return self.log_dict
+    
+    def configure_optimizers(self):
+        lr = self.learning_rate
+        opt_ae = torch.optim.Adam(list(self.encode.parameters())+
+                                  list(self.decoder.parameters())+
+                                  list(self.quant_conv.parameters())+
+                                  list(self.post_quant_conv.parameters()),
+                                  lr=lr,betas=(0.5,0.9))
+        opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
+                                    lr=lr,betas=(0.5,0.9))
+        return [opt_ae,opt_disc],[]
+    
+    def get_last_layer(self):
+        return self.decoder.conv_out.weight
+    
+    @torch.no_grad()
+    def log_images(self,batch,only_inputs=False,**kwargs):
+        log = dict()
+        x = self.get_input(batch,self.image_key)
+        x = x.to(self.device)
+        if not only_inputs:
+            xrec,posterior = self(x)
+            if x.shape[1] > 3:
+                #colorize with random projection
+                assert xrec.shape[1]>3
+                x = self.to_rgb(x)
+                xrec = self.to_rgb(xrec)
+            log["samples"] = self.decode(torch.randn_like(posterior.sample()))
+            log["reconstructions"] = xrec
+        log["inputs"] = x
+        return log
+    def to_rgb(self,x):
+        assert self.image_key == "segmentation"
+        if not hasattr(self, "colorize"):
+            self.register_buffer("colorize", torch.randn(3, x.shape[1], 1, 1).to(x))
+        x = F.conv2d(x, weight=self.colorize)
+        x = 2.*(x-x.min())/(x.max()-x.min()) - 1.
+        return x
+
+def Normalize(in_channels,num_groups=32):
+    return torch.nn.GroupNorm(num_groups=num_groups,num_channels=in_channels,eps=1e-6,affine=True)
+
+def nonlinearity(x):
+    #swish 
+    return x * torch.sigmoid(x)
+
+class Fourier_Embedding(nn.Module):
+    def __init__(self,in_channels,ch,context_dims,sigma: float = 1,trainable: bool = False,device=None,dtype=torch.float32):
+        """
+        For input feature vector `x`, apply linear transformation
+        followed by concatenated sine and cosine: `[sin(Ax), cos(Ax)]`.
+
+        - Input: `(*, in_features)`, where the last dimension is the feature dimension
+        - Output: `(*, out_features)`, where all but the last dimension are the same shape as the input
+
+        Unlike element-wise sinusoidal encoding,
+        Fourier features capture the interaction of high-dimensional input features.
+
+        Note that a bias term is not necessary in the linear transformation,
+        because `sin(wx+b)` and `cos(wx+b)` can both be represented by
+        linear combinations of `sin(wx)` and `cos(wx)`, which can be learned in the
+        subsequent linear layer.
+        (https://kazemnejad.com/blog/transformer_architecture_positional_encoding/)
+
+        In learnable Fourier features (https://arxiv.org/abs/2106.02795),
+        the linear transformation is trainable after random normal initialization.
+        They also use an MLP (linear, GELU, linear) following this Fourier feature layer,
+        because the goal is to produce a positional encoding added to word embedding.
+        We do not implement the MLP here, since a user should be free to decide
+        which layers to follow; this keeps the modularity of FourierFeatures.
+
+        Also note that in learnable Fourier features, the final output
+        after sine/cosine is divided by sqrt(H_out). We do not implement that yet.
+
+        Parameters
+        ----------
+        in_features: int
+            Size of each input sample
+
+        out_features: int
+            Size of each output sample
+
+        sigma: float
+            Standard deviation of 0-centered normal distribution,
+            which is used to initialize linear transformation parameters.
+
+        trainable: bool, default: False
+            If True, the linear transformation is trainable by gradient descent.
+        """
+        super().__init__()
+        assert ch[0] % 2 == 0,"number of out_features must be even"
+        self.in_channels = in_channels
+        self.ch = ch
+        self.sigma = sigma
+        self.trainable = bool(trainable)
+
+        #define linear layer
+        self.linear = nn.Linear(
+            in_features=in_channels,out_features=ch[0] // 2,
+            bias=False,device=device,dtype=dtype
+        )
+
+        nn.init.normal_(self.linear.weight.data,mean=0.0,std=self.sigma)
+
+        self.linear2 = nn.Linear(in_features=ch[0]+context_dims,out_features=ch[1],bias=True,device=device,dtype=dtype)
+        self.linear3 = nn.Linear(in_features=ch[1]+context_dims,out_features=ch[2],bias=True,device=device,dtype=dtype)
+
+        self.norm1 = torch.nn.BatchNorm1d(ch[0])
+        self.norm2 = torch.nn.BatchNorm1d(ch[1])
+
+        models = [self.linear,self.linear2,self.linear3]        
+        #freeze layer if not trainable
+        for model in models:
+            for param in model.parameters():
+                param.requires_grad_(self.trainable)
+        
+    def encode(self,x,category):
+        return self(x,category)
+
+    def forward(self,x:torch.Tensor,category:torch.Tensor) -> torch.Tensor:
+        x = self.linear(x)
+        x = math.tau * x
+        x = torch.cat((x.sin(),x.cos()),dim=-1)
+        x = rearrange(x,'b n c -> b c n')
+        x = self.norm1(x)
+        x = nonlinearity(x)
+        x = rearrange(x,'b c n -> b n c')
+        x = torch.cat((x,category),dim=-1)
+        x = self.linear2(x)
+        x = rearrange(x,'b n c -> b c n')
+        x = self.norm2(x)
+        x = nonlinearity(x)
+        x = rearrange(x,'b c n -> b n c')
+        x = torch.cat((x,category),dim=-1)
+        x = self.linear3(x)
+        return x
+
+        
+class FrozenCLIPTextEmbedder(nn.Module):
+    """
+    Uses the CLIP transformer encoder for text.
+    """
+    def __init__(self,version='ViT-L/14',device='cuda',max_length=77,n_repeat=1,normalize=True):
+        super().__init__()
+        self.model,_ = clip.load(version,jit=False,device='cpu')
+        self.device = device
+        self.max_length = max_length
+        self.n_repeat = n_repeat
+        self.normalize = normalize
+
+    def freeze(self):
+        self.model = self.model.eval()
+        for param in self.parameters():
+            param.requires_grad = False
+
+    def forward(self,text):
+        tokens = clip.tokenize(text).to(self.device)
+        z = self.model.encode_text(tokens)
+        if self.normalize:
+            z = z / torch.linalg.norm(z,dim=1,keepdim=True)
+        return z
+    
+    def encode(self,text):
+        z = self(text)
+        if z.ndim == 2:
+            z = z[:,None,:]
+        z = repeat(z,'b 1 d -> b k d',k = self.n_repeat)
+        return z

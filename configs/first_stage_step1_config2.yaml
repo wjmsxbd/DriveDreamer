@@ -115,7 +115,7 @@ data:
     train: True
 
   train:
-    target: ldm.data.lsun.LSUNChurchesTrain
+    target: data.data_loader_online.dataloader
     params:
       size: 256
       num_boxes: 50

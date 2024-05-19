@@ -234,7 +234,7 @@ def convert_fig_to_numpy(fig,imsize):
     img = np.frombuffer(buf, np.uint8).reshape(imsize[1],imsize[0],4)
     return img
 
-def get_this_scene_info(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str):
+def get_this_scene_info(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448)):
     sample_record = nusc.get('sample',sample_token)
     cam_front_token = sample_record['data']['CAM_FRONT']
     cam_front_path = nusc.get('sample_data',cam_front_token)['filename']
@@ -242,9 +242,15 @@ def get_this_scene_info(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_to
     cam_front_img = mpimg.imread(cam_front_path)
     #mpimg.imsave(f'./temp/camera_front/{count:02d}.jpg',cam_front_img)
     imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
+    cam_front_img = Image.fromarray(cam_front_img)
+    cam_front_img = np.array(cam_front_img.resize(img_size))
+
     box_list,box_category = get_3dbox(cam_front_token,nusc,imsize)#out_path=f'./temp/3dbox/{count:02d}.jpg'
     hdmap_fig,hdmap_ax,yaw,translation = get_hdmap(cam_front_token,nusc,nusc_map)#,outpath=f'./temp/hdmap/{count:02d}.jpg'
     now_hdmap = convert_fig_to_numpy(hdmap_fig,imsize)
+    now_hdmap = Image.fromarray(now_hdmap)
+    now_hdmap = np.array(now_hdmap.resize(img_size))
+
     box_list = np.array(box_list)
     plt.close(hdmap_fig)
     return cam_front_img,box_list,now_hdmap,box_category,yaw,translation

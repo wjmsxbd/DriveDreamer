@@ -100,18 +100,20 @@ class Trainer(nn.Module):
         use_cuda = torch.cuda.is_available()
         if use_cuda:
             torch.cuda.empty_cache()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.epochs_completed = 0
         self.load_data(cfg)
         #self.loss_setup()
-        self.network = instantiate_from_config(cfg['model']).to(self.device)
+        self.network = instantiate_from_config(cfg['model'])
         self.configure_optimizers()
         self.best_loss = np.inf
 
         if cfg['num_gpus'] > 1:
             os.environ['CUDA_DEVICE_ORDER'] = "PCI_BUS_ID"
-            os.environ['CUDA_VISIBLE_DEVICE'] = ','.join(cfg['device_ids'])
-            self.network = nn.DataParallel(self.network,device_ids=cfg['device_ids'])
+            os.environ['CUDA_VISIBLE_DEVICE'] = ','.join(['2','5'])
+            device_ids = [_ for _ in range(cfg['num_gpus'])]
+            self.network = nn.DataParallel(self.network,device_ids=device_ids)
+            #self.opt = nn.DataParallel(self.opt,device_ids=device_ids)
+            
 
         self.restarted_from_ckpt = False
 
@@ -149,20 +151,21 @@ class Trainer(nn.Module):
 
     @staticmethod
     def create_loss_message(loss_dict, expr_ID='XX', epoch_num=0,model_name='mlp', it=0, try_num=0, mode='evald'):
-        ext_msg = ' | '.join(['%s = %.2e' % (k, v) for k, v in loss_dict.items() if k != 'loss_total'])
+        ext_msg = ' | '.join(['%s = %.2e' % (k, v) for k, v in loss_dict.items() if k != mode+'/loss'])
         return '[%s]_TR%02d_E%03d - It %05d - %s - %s: [T:%.2e] - [%s]' % (
-            expr_ID, try_num, epoch_num, it,model_name, mode, loss_dict['loss_total'], ext_msg)
+            expr_ID, try_num, epoch_num, it,model_name, mode, loss_dict[mode+'/loss'], ext_msg)
 
     def train(self):
         self.network.train()
         save_every_it = len(self.ds_train) / self.cfg['summary_steps']
         train_loss_dict = {}
         for it,batch in enumerate(self.ds_train):
-            self.network.on_train_batch_start(batch,it,self.epochs_completed)
+            batch = {k:batch[k].cuda() for k in batch.keys()}
+            self.network.module.on_train_batch_start(batch,it,self.epochs_completed)
             self.opt.zero_grad()
-            loss,loss_dict = self.network.shared_step(batch)
-            
+            loss,loss_dict = self.network.module.shared_step(batch)
             loss.backward()
+            #self.opt.module.step()
             self.opt.step()
             train_loss_dict = {k: train_loss_dict.get(k, 0.0) + v.item() for k, v in loss_dict.items()}
             if it % (save_every_it+1) == 0:
@@ -170,7 +173,7 @@ class Trainer(nn.Module):
                 train_msg = self.create_loss_message(cur_train_loss_dict,
                                                     expr_ID=self.cfg.expr_ID,
                                                     epoch_num=self.epochs_completed,
-                                                    model_name='MNet',
+                                                    model_name='AutoDM',
                                                     it=it,
                                                     try_num=0,
                                                     mode='train')
@@ -181,14 +184,14 @@ class Trainer(nn.Module):
         return train_loss_dict
 
     def evaluate(self):
-        self.network.eval()
+        self.network.module.eval()
         eval_loss_dict = {}
         data = self.ds_val
 
         with torch.no_grad():
             for it,batch in enumerate(self.ds_val):
                 self.opt.zero_grad()
-                loss,loss_dict = self.network.share_step(batch)
+                loss,loss_dict = self.network.module.share_step(batch)
                 eval_loss_dict = {k: eval_loss_dict.get(k, 0.0) + v.item() for k, v in loss_dict.items()}
 
             eval_loss_dict = {k: v / len(data) for k, v in eval_loss_dict.items()}
@@ -221,22 +224,26 @@ class Trainer(nn.Module):
                 eval_msg = Trainer.create_loss_message(eval_loss_dict, expr_ID=self.cfg.expr_ID,
                                                         epoch_num=self.epochs_completed, it=len(self.ds_val),
                                                         model_name='AutoDM',
-                                                        try_num=0, mode='evald')
-                if eval_loss_dict[''] < self.best_loss:
+                                                        try_num=0, mode='val')
+                if eval_loss_dict['val/loss'] < self.best_loss:
                     self.cfg.best_model = makepath(os.path.join(self.cfg.work_dir, 'snapshots', 'E%03d_model.pt' % (self.epochs_completed)), isfile=True)
                     self.save_network()
                     self.logger(eval_msg + ' ** ')
-                    self.best_loss = eval_loss_dict['']
+                    self.best_loss = eval_loss_dict['val/loss']
                 else:
                     self.logger(eval_msg)
                 
                 #TODO:write loss
-                # self.swriter.add_scalars('total_loss/scalars',
-                #                          {'train_loss_total': train_loss_dict['loss_total'],
-                #                          'evald_loss_total': eval_loss_dict['loss_total'], },
-                #                          self.epochs_completed)
+                self.swriter.add_scalars('total_loss/scalars',
+                                         {'train_loss_simple': train_loss_dict['train/loss_simple'],
+                                         'train_loss_vlb': train_loss_dict['train/loss_vlb'],
+                                          'train_loss': train_loss_dict['train/loss'],
+                                          'eval_loss_simple':eval_loss_dict['eval/loss_simple'],
+                                            'eval_loss_vlb': eval_loss_dict['eval/loss_vlb'],
+                                             'eval_loss': eval_loss_dict['eval/loss'], },
+                                         self.epochs_completed)
             
-            if self.early_stopping(eval_loss_dict['']):
+            if self.early_stopping(eval_loss_dict['eval/loss']):
                 self.logger('Early stopping the training!')
                 break
             
@@ -254,7 +261,7 @@ def train():
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/first_stage_step1_config2.yaml',
+                        default='configs/first_stage_step1_config_online.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()

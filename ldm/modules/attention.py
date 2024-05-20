@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn,einsum
 from einops import rearrange,repeat
-
+from ldm.models.attention import PositionalEncoder
 from ldm.modules.diffusionmodules.util import checkpoint
 
 def exists(val):
@@ -84,6 +84,29 @@ class LinearAttention(nn.Module):
         out = rearrange(out,'b heads c (h w) -> b (heads c) h w',heads=self.heads,h=h,w=w)
         return self.to_out(out)
     
+class TemporalAttention(nn.Module):
+    def __init__(self,
+                channels,
+                num_heads=1,
+                num_head_channels=-1,
+                use_checkpoint=False,
+                use_new_attention_order=False,
+                batch_size=None,
+                movie_len=None):
+        super().__init__()
+        # self.attention_block = AttentionBlock(channels,num_heads,num_head_channels,use_checkpoint,use_new_attention_order)
+        self.temporal_block = CrossAttention(channels,heads=num_heads,dim_head=num_head_channels)
+        self.batch_size = batch_size
+        self.movie_len = movie_len
+        self.positional_encoder = PositionalEncoder(channels,movie_len)
+        self.norm = nn.LayerNorm(channels)
+    
+    def forward(self,x):
+        x = rearrange(x,'(b n) c h w -> (b h w) n c',b=self.batch_size,n=self.movie_len)
+        x = x + self.positional_encoder(x)
+        out = self.temporal_block(self.norm(x)) + x
+        return out
+
 class SpatialSelfAttention(nn.Module):
     def __init__(self,in_channels):
         super().__init__()
@@ -142,7 +165,7 @@ class CrossAttention(nn.Module):
 
         self.scale = dim_head ** -0.5
         self.heads = heads
-
+        self.dim_head = dim_head
         self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
         self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
         self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
@@ -154,13 +177,13 @@ class CrossAttention(nn.Module):
 
     def forward(self, x, context=None, mask=None):
         h = self.heads
-
+        b = x.shape[0]
         q = self.to_q(x)
         context = default(context, x)
         k = self.to_k(context)
         v = self.to_v(context)
 
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', b=b,h=h,d=self.dim_head,n=t.shape[1]), (q, k, v))
 
         sim = einsum('b i d, b j d -> b i j', q, k) * self.scale
 
@@ -177,10 +200,43 @@ class CrossAttention(nn.Module):
         out = rearrange(out, '(b h) n d -> b n (h d)', h=h)
         return self.to_out(out)
     
-class BasicTransformerBlock(nn.Module):
-    def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, gated_ff=True, checkpoint=True):
+class GatedSelfAttention(nn.Module):
+    def __init__(self, query_dim, context_dim,  n_heads, d_head):
         super().__init__()
-        self.attn1 = CrossAttention(query_dim=dim, heads=n_heads, dim_head=d_head, dropout=dropout)  # is a self-attention
+        # we need a linear projection since we need cat visual feature and obj feature
+        self.linear = nn.Linear(context_dim, query_dim)
+        self.gated_attention_block = CrossAttention(query_dim,heads=n_heads,dim_head=d_head)
+        
+        self.ff = FeedForward(query_dim, glu=True)
+
+        self.norm1 = nn.LayerNorm(query_dim)
+        self.norm2 = nn.LayerNorm(query_dim)
+
+        self.register_parameter('alpha_attn', nn.Parameter(torch.tensor(0.)) )
+        self.register_parameter('alpha_dense', nn.Parameter(torch.tensor(0.)) )
+
+        # this can be useful: we can externally change magnitude of tanh(alpha)
+        # for example, when it is set to 0, then the entire model is same as original one 
+        self.scale = 1  
+
+
+    def forward(self, x, objs):
+
+        N_visual = x.shape[1]
+        objs = self.linear(objs)
+        h = self.norm1(torch.cat([x,objs],dim=1))
+        # h = rearrange(h,'b n c -> b c n')
+        h = self.scale * torch.tanh(self.alpha_attn) * self.gated_attention_block(h)
+        # h = rearrange(h,'b n c -> b c n')
+        x = x + h[:,0:N_visual,:]
+        x = x + self.scale*torch.tanh(self.alpha_dense) * self.ff( self.norm2(x) )  
+        
+        return x 
+
+class BasicTransformerBlock(nn.Module):
+    def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, gated_ff=True, checkpoint=True,batch_size=None,movie_len=None,height=None,width=None,obj_dims=None):
+        super().__init__()
+        self.attn1 = GatedSelfAttention(query_dim=dim,context_dim=obj_dims, n_heads=n_heads, d_head=d_head)  # is a self-attention
         self.ff = FeedForward(dim, dropout=dropout, glu=gated_ff)
         self.attn2 = CrossAttention(query_dim=dim, context_dim=context_dim,
                                     heads=n_heads, dim_head=d_head, dropout=dropout)  # is self-attn if context is none
@@ -188,12 +244,17 @@ class BasicTransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(dim)
         self.norm3 = nn.LayerNorm(dim)
         self.checkpoint = checkpoint
+        self.batch_size=batch_size
+        self.movie_len = movie_len
+        self.height = height
+        self.width = width
 
-    def forward(self, x, context=None):
-        return checkpoint(self._forward, (x, context), self.parameters(), self.checkpoint)
+    def forward(self, x, objs=None,context=None):
+        return checkpoint(self._forward, (x, objs,context), self.parameters(), self.checkpoint)
 
-    def _forward(self, x, context=None):
-        x = self.attn1(self.norm1(x)) + x
+    def _forward(self, x, objs=None,context=None):
+        x = rearrange(x,'(b h w) n c -> (b n) (h w) c',b=self.batch_size,h=self.height,w=self.width,n=self.movie_len)
+        x = self.attn1(self.norm1(x),objs) + x
         x = self.attn2(self.norm2(x), context=context) + x
         x = self.ff(self.norm3(x)) + x
         return x
@@ -207,21 +268,36 @@ class SpatialTransformer(nn.Module):
     Finally, reshape to image
     """
     def __init__(self,in_channels,n_heads,d_head,
-                 depth=1,dropout=0.,context_dim=None):
+                 depth=1,dropout=0.,context_dim=None,batch_size=None,movie_len=None,height=None,width=None,obj_dims=None):
         super().__init__()
         self.in_channels = in_channels
         inner_dim = n_heads * d_head
+        self.batch_size = batch_size
+        self.movie_len = movie_len
+        self.height = height
+        self.width = width
         self.norm = Normalize(in_channels)
         self.proj_in = nn.Conv2d(in_channels,
                                  inner_dim,
                                  kernel_size=1,
                                  stride=1,
                                  padding=0)
-        
+        # self.transformer_blocks = []
+        # self.temporal_blocks = []
+        # for d in range(depth):
+        #     self.temporal_blocks.append(TemporalAttention(inner_dim,n_heads,d_head,movie_len=movie_len))
+        #     self.transformer_blocks.append(BasicTransformerBlock(inner_dim,n_heads,d_head,dropout=dropout,context_dim=context_dim,obj_dims=obj_dims,batch_size=batch_size,movie_len=movie_len,height=height,width=width))    
         self.transformer_blocks = nn.ModuleList(
-            [BasicTransformerBlock(inner_dim,n_heads,d_head,dropout=dropout,context_dim=context_dim)
-             for d in range(depth)]
+            BasicTransformerBlock(inner_dim,n_heads,d_head,dropout=dropout,context_dim=context_dim,obj_dims=obj_dims,batch_size=batch_size,movie_len=movie_len,height=height,width=width) for d in range(depth)
         )
+        self.temporal_blocks = nn.ModuleList(
+            TemporalAttention(inner_dim,n_heads,d_head,batch_size=batch_size,movie_len=movie_len) for d in range(depth)
+        )
+        # self.transformer_blocks = nn.ModuleList(
+        #     [item
+        #      for d in range(depth) for item in [TemporalAttention(inner_dim,n_heads,d_head,movie_len=movie_len),
+        #      BasicTransformerBlock(inner_dim,n_heads,d_head,dropout=dropout,context_dim=context_dim,obj_dims=obj_dims,batch_size=batch_size,movie_len=movie_len,height=height,width=width)]]
+        # )
 
         self.proj_out = zero_module(nn.Conv2d(inner_dim,
                                               in_channels,
@@ -229,15 +305,19 @@ class SpatialTransformer(nn.Module):
                                               stride=1,
                                               padding=0))
         
-    def forward(self,x,context=None):
-        b,c,h,w = x.shape
+    def forward(self,x,boxes_emb,text_emb):
+        # b,c,h,w = x.shape
         x_in = x
         x = self.norm(x)
         x = self.proj_in(x)
-        x = rearrange(x,'b c h w -> b (h w) c')
-        for block in self.transformer_blocks:
-            x = block(x,context=context)
-        x = rearrange(x,'b (h w) c -> b c h w',h=h,w=w)
+        # x = rearrange(x,'b c h w -> b (h w) c')
+        for d in range(len(self.transformer_blocks)):
+            x = self.temporal_blocks[d](x)
+            x = self.transformer_blocks[d](x,boxes_emb,text_emb)
+        # for block in self.transformer_blocks:
+        #     x = block(x,boxes_emb,text_emb)
+        # x = rearrange(x,'b (h w) c -> b c h w',h=h,w=w)
+        x = rearrange(x,'bn (h w) c -> bn c h w',h=self.height,w=self.width)
         x = self.proj_out(x)
         return x + x_in
 

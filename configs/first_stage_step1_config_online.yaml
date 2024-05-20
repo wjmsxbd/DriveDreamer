@@ -6,8 +6,9 @@ early_stopping:
 seed: 23
 expr_ID: 0
 logger_level: 'info'
-num_gpus: 1
+num_gpus: 2
 best_model: 
+device: [2,5]
 
 model:
   base_learning_rate: 5e-5
@@ -27,6 +28,7 @@ model:
     scale_by_std: True
     monitor: 'val/loss_simple_ema'
     unet_trainable: True
+    learn_logvar: True
     cond_stage_config: 
         target: __is_unconditional__
 
@@ -41,7 +43,7 @@ model:
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UnetModel
       params:
-        image_size: (1600,900)
+        image_size: (768,448)
         in_channels: 16
         out_channels: 8
         model_channels: 192
@@ -65,7 +67,7 @@ model:
           z_channels: 8
           resolution: 256
           in_channels: 3
-          out_ch: 4
+          out_ch: 3
           ch: 4
           ch_mult: [1,1,2,2] #num_down=len(ch_mult)-1
           num_res_blocks: 2
@@ -117,14 +119,20 @@ data:
   train:
     target: data.data_loader_online.dataloader
     params:
-      size: 256
+      cfg:
+        version: advanced_12Hz_trainval
+        dataroot: ../../../share/nuScenes
+        device: 6
       num_boxes: 50
       cond_stage_config: 
         target: ldm.models.autoencoder.FrozenCLIPTextEmbedder
   val:
-    target: ldm.data.lsun.LSUNChurchesValidation
+    target: data.data_loader_online.dataloader
     params:
-      size: 256
+      cfg:
+          version: advanced_12Hz_trainval
+          dataroot: ../../../share/nuScenes
+          device: 6
       num_boxes: 50
       cond_stage_config: 
         target: ldm.models.autoencoder.FrozenCLIPTextEmbedder

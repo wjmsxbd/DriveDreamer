@@ -57,9 +57,10 @@ class Upsample(nn.Module):
         return x
     
 class Downsample(nn.Module):
-    def __init__(self,in_channels,with_conv):
+    def __init__(self,in_channels,with_conv,out_channels=None):
         super().__init__()
         self.in_channels = in_channels
+        # self.out_channels = out_channels or in_channels
         self.with_conv = with_conv
         if self.with_conv:
             self.conv = torch.nn.Conv2d(in_channels,

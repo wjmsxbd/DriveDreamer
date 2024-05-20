@@ -753,6 +753,9 @@ class AutoDM(DDPM):
         boxes = batch['3Dbox']
         boxes_category = batch['category']
         text = batch['text']
+        boxes = rearrange(boxes,'b n x c -> (b n) x c')
+        boxes_category = rearrange(boxes_category,'b n x c -> (b n) x c')
+        text = rearrange(text,'b n c -> (b n) c').unsqueeze(1)
         x = ref_img
         z = self.ref_img_encoder.encode(x)
         z = self.get_first_stage_encoding(z)
@@ -1350,17 +1353,18 @@ if __name__ == '__main__':
                         help="config path")
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
-    network = instantiate_from_config(cfg['model'])
-    x = torch.randn((2,2,448,768,3))
-    hdmap = torch.randn((2,2,448,768,4))
-    text = torch.randn((2,2,768))
-    boxes = torch.randn((2,2,50,16))
-    box_category = torch.randn(2,2,50,768)
+    network = instantiate_from_config(cfg['model'])#.to('cuda:7')
+    x = torch.randn((2,2,448,768,3))#.to('cuda:7')
+    hdmap = torch.randn((2,2,448,768,4))#.to('cuda:7')
+    text = torch.randn((2,2,768))#.to('cuda:7')
+    boxes = torch.randn((2,2,50,16))#.to('cuda:7')
+    box_category = torch.randn(2,2,50,768)#.to('cuda:7')
     out = {'text':text,
            '3Dbox':boxes,
            'category':box_category,
            'reference_image':x,
            'HDmap':hdmap}
-    network.log_images(out)
+    # network.log_images(out)
+    network.shared_step(out)
 
 

@@ -11,7 +11,7 @@ model:
     loss_type: l1
     cond_stage_key: "image"
     image_size: [7,12]
-    channels: 3
+    channels: 8
     cond_stage_trainable: True
     scale_by_std: True
     monitor: 'val/loss_simple_ema'
@@ -31,7 +31,7 @@ model:
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
-        image_size: (768,448)
+        image_size: [7,12]
         in_channels: 16
         out_channels: 8
         model_channels: 320
@@ -65,12 +65,13 @@ model:
           resolution: 256
           in_channels: 3
           out_ch: 3
-          ch: 4
+          ch: 128
           ch_mult: [1,1,2,2] #num_down=len(ch_mult)-1
           num_res_blocks: 2
           attn_resolutions: []
           dropout: 0.0
-          num_groups: 4
+          num_groups: 32
+          ckpt_path: 'logs/2024-05-14T13-26-34_autoencoder/checkpoints/epoch=000036.ckpt'
         lossconfig:
           target: torch.nn.Identity
     
@@ -86,12 +87,12 @@ model:
           resolution: 256
           in_channels: 4
           out_ch: 4
-          ch: 4
+          ch: 128
           ch_mult: [1,1,2,2]
           num_res_blocks: 2
           attn_resolutions: []
           dropout: 0.0
-          num_groups: 4
+          num_groups: 32
         lossconfig:
           target: torch.nn.Identity
     box_config:
@@ -106,7 +107,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 16
+    batch_size: 2
     num_workers: 0
     wrap: False
     train:

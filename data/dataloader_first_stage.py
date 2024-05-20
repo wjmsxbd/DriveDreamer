@@ -70,7 +70,7 @@ class dataloader(data.Dataset):
         scene_token = self.nusc.get('sample',sample_token)['scene_token']
         scene = self.nusc.get('scene',scene_token)
         text = scene['description']
-        print(f'get:text shape:{text.shape}')
+        print(f'get:text {text}')
         log_token = scene['log_token']
         log = self.nusc.get('log',log_token)
         nusc_map = self.nusc_maps[log['location']]
@@ -92,14 +92,14 @@ class dataloader(data.Dataset):
         out['reference_image'] = ref_img.unsqueeze(0)
         out['HDmap'] = hdmap.unsqueeze(0)
         out['text'] = self.clip(text).cpu()
-        out['text'] = repeat(out['text'].unsqueeze(0),'b n c -> b (repeat n) c',repeat=ref_img.shape[0])
+        out['text'] = repeat(out['text'],'n c -> (repeat n) c',repeat=out['reference_image'].shape[0])
         if boxes.shape[0] == 0:
             boxes = torch.from_numpy(np.zeros((self.num_boxes,16)))
             category = torch.from_numpy(np.zeros((self.num_boxes,out['text'].shape[1])))
         else:
             boxes_zero = np.zeros((self.num_boxes - boxes.shape[0],16))
             boxes = torch.from_numpy(np.concatenate((boxes,boxes_zero),axis=0))
-            category_embed = self.clip(out['category']).cpu()
+            category_embed = self.clip(category).cpu()
             category_zero = torch.zeros([self.num_boxes-category_embed.shape[0],category_embed.shape[1]])
             category = torch.cat([category_embed,category_zero],dim=0)
         out['3Dbox'] = boxes.unsqueeze(0).to(torch.float32)

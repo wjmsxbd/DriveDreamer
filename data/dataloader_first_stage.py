@@ -31,11 +31,12 @@ def disabled_train(self,mode=True):
     return self
 
 class dataloader(data.Dataset):
-    def __init__(self,cfg,num_boxes,cond_stage_config,split_name='train'):
+    def __init__(self,cfg,num_boxes,cond_stage_config,split_name='train',device=None):
         self.split_name = split_name
         self.cfg = cfg
         self.nusc = NuScenes(version=cfg['version'],dataroot=cfg['dataroot'],verbose=True)
-        self.device = cfg['device']
+        if device is not None:
+            self.device = f'cuda:{device}'
         self.num_boxes = num_boxes
         #torch.cuda.set_device(cfg['device'])
         self.instantiate_cond_stage(cond_stage_config)
@@ -46,6 +47,7 @@ class dataloader(data.Dataset):
             'singapore-queenstown': NuScenesMap(dataroot='.', map_name='singapore-queenstown'),
         }
         #$self.instantiate_cond_stage(cond_stage_config)
+        self.clip = self.clip.to(self.device)
         self.load_data_infos()
 
     def load_data_infos(self):
@@ -59,8 +61,7 @@ class dataloader(data.Dataset):
     
     def instantiate_cond_stage(self,config):
         model = instantiate_from_config(config)
-        self.clip = model.eval().cuda()
-        self.clip.train = disabled_train
+        self.clip = model.eval()
         for param in self.clip.parameters():
             param.requires_grad = False
 
@@ -91,7 +92,7 @@ class dataloader(data.Dataset):
 
         out['reference_image'] = ref_img.unsqueeze(0)
         out['HDmap'] = hdmap.unsqueeze(0)
-        out['text'] = self.clip(text).cpu()
+        out['text'] = self.clip(text).cpu().to(torch.float32)
         out['text'] = repeat(out['text'],'n c -> (repeat n) c',repeat=out['reference_image'].shape[0])
         if boxes.shape[0] == 0:
             boxes = torch.from_numpy(np.zeros((self.num_boxes,16)))
@@ -103,7 +104,7 @@ class dataloader(data.Dataset):
             category_zero = torch.zeros([self.num_boxes-category_embed.shape[0],category_embed.shape[1]])
             category = torch.cat([category_embed,category_zero],dim=0)
         out['3Dbox'] = boxes.unsqueeze(0).to(torch.float32)
-        out['category'] = category.unsqueeze(0)
+        out['category'] = category.unsqueeze(0).to(torch.float32)
         return out
 
     def __getitem__(self,idx):

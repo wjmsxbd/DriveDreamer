@@ -642,12 +642,12 @@ class AutoDM(DDPM):
         return loss
     
     @torch.no_grad()
-    def validation_step(self,batch,batch_idx):
-        _,loss_dict_no_ema = self.shared_step(batch)
+    def validation_step(self, batch, batch_idx):
+        _, loss_dict_no_ema = self.shared_step(batch)
         with self.ema_scope():
-            _,loss_dict_ema = self.shared_step(batch)
-            loss_dict_ema = {key+'_ema':loss_dict_ema[key] for key in loss_dict_ema}
-            self.log_dict(loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
+            _, loss_dict_ema = self.shared_step(batch)
+            loss_dict_ema = {key + '_ema': loss_dict_ema[key] for key in loss_dict_ema}
+        self.log_dict(loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
         self.log_dict(loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
 
     def get_fold_unfold(self,x,kernel_size,stride,uf=1,df=1):# todo load once not every time, shorten code
@@ -761,10 +761,10 @@ class AutoDM(DDPM):
         z = self.get_first_stage_encoding(z)
         out = [z]
         c = {}
-        c['hdmap'] = hdmap
-        c['boxes'] = boxes
-        c['category'] = boxes_category
-        c['text'] = text
+        c['hdmap'] = hdmap.to(torch.float32)
+        c['boxes'] = boxes.to(torch.float32)
+        c['category'] = boxes_category.to(torch.float32)
+        c['text'] = text.to(torch.float32)
         if return_first_stage_outputs:
             x_rec = self.decode_first_stage(z)
             out.extend([x,x_rec])
@@ -804,20 +804,20 @@ class AutoDM(DDPM):
     def shared_step(self,batch,**kwargs):
         ref_img = super().get_input(batch,'reference_image') # (b n c h w)
         hdmap = super().get_input(batch,'HDmap') # (b n c h w)
-        x = ref_img
+        x = ref_img.to(torch.float32)
         x = self.get_first_stage_encoding(self.ref_img_encoder.encode(x))
         c = {}
-        c['hdmap'] = hdmap
+        c['hdmap'] = hdmap.to(torch.float32)
         boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d')
         boxes_category = rearrange(batch['category'],'b n c d -> (b n) c d')
-        c['boxes'] = boxes
-        c['category'] = boxes_category
-        c['text'] = rearrange(batch['text'],'b n d -> (b n) d').unsqueeze(1)
+        c['boxes'] = boxes.to(torch.float32)
+        c['category'] = boxes_category.to(torch.float32)
+        c['text'] = rearrange(batch['text'],'b n d -> (b n) d').unsqueeze(1).to(torch.float32)
         loss,loss_dict = self(x,c)
         return loss,loss_dict
 
     def forward(self,x,c,*args,**kwargs):
-        t = torch.randint(0,self.num_timesteps,(x.shape[0],)).long()#device=self.device
+        t = torch.randint(0,self.num_timesteps,(x.shape[0],),device=self.device).long()#
         return self.p_losses(x,c,t,*args,**kwargs)
 
     def apply_model(self,x_noisy,t,cond,return_ids=False):
@@ -1044,9 +1044,15 @@ class AutoDM(DDPM):
                 # if 'temporal' in param or 'gated' in param:
                 #     print(f"model:add {param} into optimizers")
                 #     params.append(param)
-                if 'gated' in name:
+                if 'gated' in name or 'diffusion_model.input_blocks.0.0' in name or 'diffusion_model.out.2' in name:
                     print(f"model:add {name} into optimizers")
                     params.append(param)
+                elif not 'temporal' in name:
+                    param.requires_grad = False
+                else:
+                    # assert param.requires_grad == True
+                    param.requires_grad = False
+                
         if self.cond_stage_trainable:
             print("add encoder parameters into optimizers")
             params = params  + list(self.hdmap_encoder.parameters()) + list(self.box_encoder.parameters())
@@ -1358,17 +1364,24 @@ if __name__ == '__main__':
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
     network = instantiate_from_config(cfg['model'])#.to('cuda:7')
     x = torch.randn((2,2,448,768,3))#.to('cuda:7')
+    # x.requires_grad_(True)
     hdmap = torch.randn((2,2,448,768,4))#.to('cuda:7')
+    # hdmap.requires_grad_(True)
     text = torch.randn((2,2,768))#.to('cuda:7')
+    # text.requires_grad_(True)
     boxes = torch.randn((2,2,50,16))#.to('cuda:7')
+    # boxes.requires_grad_(True)
     box_category = torch.randn(2,2,50,768)#.to('cuda:7')
+    # box_category.requires_grad_(True)
     out = {'text':text,
            '3Dbox':boxes,
            'category':box_category,
            'reference_image':x,
            'HDmap':hdmap}
     # network.log_images(out)
-    #network.shared_step(out)
+    # loss,loss_dict = network.shared_step(out)
     network.configure_optimizers()
+    # loss,loss_dict = network.validation_step(out,0)
+    # loss.backward()
 
 

@@ -18,7 +18,7 @@ model:
     unet_trainable: True
     learn_logvar: True
     cond_stage_config: 
-        target: __is_unconditional__
+        target: ldm.models.autoencoder.FrozenCLIPTextEmbedder
 
     scheduler_config: #10000 warmup steps
       target: ldm.lr_scheduler.LambdaLinearScheduler
@@ -42,15 +42,17 @@ model:
         use_scale_shift_norm: False
         resblock_updown: False
         context_dim: 768
+        use_checkpoint: False
         use_spatial_transformer: True
-        ckpt_path: 'stable_diffusion/sd-v1-4.ckpt'
-        batch_size: 1
-        movie_len: 1
+        ckpt_path: 'stable_diffusion/sd-v1-4-full-ema.ckpt'
+        batch_size: 2
+        movie_len: 2
         height: 7
         width: 12
         obj_dims: 768
         outpadding: [[-1,0],[0,0],[0,-1]]
-        ignore_keys: ['model.diffusion_model.input_blocks.0.0','model.diffusion_model.out.2','cond_stage_model','first_stage_model']
+        ignore_keys: ['model.diffusion_model.input_blocks.0.0','model.diffusion_model.out.2','cond_stage_model','first_stage_model',
+        'model_ema.diffusion_modelinput_blocks00','model_ema.diffusion_modelout2']
 
       
     ref_img_config:
@@ -116,7 +118,6 @@ data:
         cfg:
           version: advanced_12Hz_trainval
           dataroot: /storage/group/4dvlab/datasets/nuScenes
-          device: 0
         num_boxes: 50
         split_name: train
         cond_stage_config: 
@@ -127,7 +128,6 @@ data:
         cfg:
           version: advanced_12Hz_trainval
           dataroot: /storage/group/4dvlab/datasets/nuScenes
-          device: 0
         num_boxes: 50
         split_name: val
         cond_stage_config: 

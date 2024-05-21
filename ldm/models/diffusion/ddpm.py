@@ -1040,9 +1040,12 @@ class AutoDM(DDPM):
         params = list()
         if self.unet_trainable:
             print("add unet model parameters into optimizers")
-            for param in self.model.parameters():
-                if 'temporal' in param or 'gated' in param:
-                    print(f"model:add {param} into optimizers")
+            for name,param in self.model.named_parameters():
+                # if 'temporal' in param or 'gated' in param:
+                #     print(f"model:add {param} into optimizers")
+                #     params.append(param)
+                if 'gated' in name:
+                    print(f"model:add {name} into optimizers")
                     params.append(param)
         if self.cond_stage_trainable:
             print("add encoder parameters into optimizers")
@@ -1365,6 +1368,7 @@ if __name__ == '__main__':
            'reference_image':x,
            'HDmap':hdmap}
     # network.log_images(out)
-    network.shared_step(out)
+    #network.shared_step(out)
+    network.configure_optimizers()
 
 

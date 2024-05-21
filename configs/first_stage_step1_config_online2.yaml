@@ -44,8 +44,8 @@ model:
         context_dim: 768
         use_spatial_transformer: True
         ckpt_path: 'stable_diffusion/sd-v1-4.ckpt'
-        batch_size: 2
-        movie_len: 2
+        batch_size: 1
+        movie_len: 1
         height: 7
         width: 12
         obj_dims: 768
@@ -107,7 +107,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 2
+    batch_size: 1
     num_workers: 0
     wrap: False
     train:
@@ -145,6 +145,6 @@ lightning:
 
   trainer:
     benchmark: True
-    gpus: 1,
+    gpus: 0,1,2,3
 
     

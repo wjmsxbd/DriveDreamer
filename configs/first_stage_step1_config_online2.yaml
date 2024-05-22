@@ -45,8 +45,8 @@ model:
         use_checkpoint: False
         use_spatial_transformer: True
         ckpt_path: 'stable_diffusion/sd-v1-4-full-ema.ckpt'
-        batch_size: 2
-        movie_len: 2
+        batch_size: 1
+        movie_len: 1
         height: 7
         width: 12
         obj_dims: 768
@@ -110,15 +110,15 @@ data:
   target: main.DataModuleFromConfig
   params:
     batch_size: 1
-    num_workers: 0
     wrap: False
+    num_workers: 0
     train:
       target: data.dataloader_first_stage.dataloader
       params:
         cfg:
           version: advanced_12Hz_trainval
           dataroot: /storage/group/4dvlab/datasets/nuScenes
-        num_boxes: 50
+        num_boxes: 70
         split_name: train
         cond_stage_config: 
           target: ldm.models.autoencoder.FrozenCLIPTextEmbedder
@@ -128,7 +128,7 @@ data:
         cfg:
           version: advanced_12Hz_trainval
           dataroot: /storage/group/4dvlab/datasets/nuScenes
-        num_boxes: 50
+        num_boxes: 70
         split_name: val
         cond_stage_config: 
           target: ldm.models.autoencoder.FrozenCLIPTextEmbedder

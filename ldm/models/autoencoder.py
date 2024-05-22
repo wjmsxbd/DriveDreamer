@@ -551,8 +551,6 @@ class FrozenCLIPTextEmbedder(nn.Module):
 
     def forward(self,text):
         tokens = clip.tokenize(text).cuda()
-        print('tokens device:'+str(tokens.device))
-        print('clip_device:'+str(self.device))
         z = self.model.encode_text(tokens)
         if self.normalize:
             z = z / torch.linalg.norm(z,dim=1,keepdim=True)

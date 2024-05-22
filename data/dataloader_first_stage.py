@@ -97,12 +97,16 @@ class dataloader(data.Dataset):
         if boxes.shape[0] == 0:
             boxes = torch.from_numpy(np.zeros((self.num_boxes,16)))
             category = torch.from_numpy(np.zeros((self.num_boxes,out['text'].shape[1])))
-        else:
+        elif boxes.shape[0]<self.num_boxes:
             boxes_zero = np.zeros((self.num_boxes - boxes.shape[0],16))
             boxes = torch.from_numpy(np.concatenate((boxes,boxes_zero),axis=0))
             category_embed = self.clip(category).cpu()
             category_zero = torch.zeros([self.num_boxes-category_embed.shape[0],category_embed.shape[1]])
             category = torch.cat([category_embed,category_zero],dim=0)
+        else:
+            boxes = torch.from_numpy(boxes[:self.num_boxes])
+            category_embed = self.clip(category).cpu()
+            category = category_embed[:self.num_boxes]
         out['3Dbox'] = boxes.unsqueeze(0).to(torch.float32)
         out['category'] = category.unsqueeze(0).to(torch.float32)
         return out

@@ -1044,14 +1044,20 @@ class AutoDM(DDPM):
                 # if 'temporal' in param or 'gated' in param:
                 #     print(f"model:add {param} into optimizers")
                 #     params.append(param)
+                # if 'gated' in name or 'diffusion_model.input_blocks.0.0' in name or 'diffusion_model.out.2' in name:
+                #     print(f"model:add {name} into optimizers")
+                #     params.append(param)
+                # elif 'transoformer'
+                # elif not 'temporal' in name:
+                #     param.requires_grad = False
+                # else:
+                #     # assert param.requires_grad == True
+                #     param.requires_grad = False
                 if 'gated' in name or 'diffusion_model.input_blocks.0.0' in name or 'diffusion_model.out.2' in name:
                     print(f"model:add {name} into optimizers")
                     params.append(param)
-                elif not 'temporal' in name:
-                    param.requires_grad = False
-                else:
-                    # assert param.requires_grad == True
-                    param.requires_grad = False
+                elif not 'transformer_blocks' in name:
+                    param.requires_grad=False
                 
         if self.cond_stage_trainable:
             print("add encoder parameters into optimizers")

@@ -1115,7 +1115,7 @@ class AutoDM(DDPM):
     @torch.no_grad()
     def p_sample(self,x,c,t,clip_denoised=False,repeat_noise=False,
                  return_codebook_ids=False,quantize_denoised=False,return_x0=False,
-                 tempperature=1.,noise_dropout=0.,score_corrector=None,corrector_kwargs=None):
+                 temperature=1.,noise_dropout=0.,score_corrector=None,corrector_kwargs=None):
         b,*_,device = *x.shape,x.device
         outputs = self.p_mean_variance(x=x,c=c,t=t,clip_denoised=clip_denoised,
                                        return_codebook_ids=return_codebook_ids,
@@ -1126,15 +1126,15 @@ class AutoDM(DDPM):
             raise DeprecationWarning("Support dropped.")
             model_mean, _, model_log_variance, logits = outputs
         elif return_x0:
-            model_mean,_,mean_log_variance,x0 = outputs
+            model_mean,_,model_log_variance,x0 = outputs
         else:
             model_mean,_,model_log_variance = outputs
         
-        noise = noise_like(x.shape,device,repeat_noise) * tempperature
+        noise = noise_like(x.shape,device,repeat_noise) * temperature
         if noise_dropout > 0.:
             noise = torch.nn.functional.dropout(noise,p=noise_dropout)
         #no noise when t==0
-        nonzero_mask = (1 - (t==0).float()).reshape(b,*((1,) * len(x.shape) - 1))
+        nonzero_mask = (1 - (t==0).float()).reshape(b,*((1,) * (len(x.shape) - 1)))
         if return_codebook_ids:
             return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise,logits.argmax(dim=1)
         if return_x0:
@@ -1181,9 +1181,11 @@ class AutoDM(DDPM):
                 tc = self.cond_ids[ts].to(cond.device)
                 cond = self.q_sample(x_start=cond,t=tc,noise=torch.randn_like(cond))
 
-            img,x0_partial = self.p_sample(img,cond,ts,clip_denoised=self.clip_denoised,
-                                           quantize_denoised=quantize_denoised,
-                                           temperature=temperature[i],noise_dropout=noise_dropout)
+            img, x0_partial = self.p_sample(img, cond, ts,
+                                            clip_denoised=self.clip_denoised,
+                                            quantize_denoised=quantize_denoised, return_x0=True,
+                                            temperature=temperature[i], noise_dropout=noise_dropout,
+                                            score_corrector=score_corrector, corrector_kwargs=corrector_kwargs)
             if mask is not None:
                 assert x0 is not None
                 img_orig = self.q_sample(x0,ts)
@@ -1245,7 +1247,7 @@ class AutoDM(DDPM):
                verbose=True,timesteps=None,quantize_denoised=False,
                mask=None,x0=None,shape=None,**kwargs):
         if shape is None:
-            shape = (batch_size,self.channels) + self.image_size
+            shape = (batch_size,self.channels) + tuple(self.image_size)
         if cond is not None:
             if isinstance(cond,dict):
                 cond = {key:cond[key][:batch_size] if not isinstance(cond[key],list) else
@@ -1326,7 +1328,7 @@ class AutoDM(DDPM):
             if inpaint:
                 #make a simple center square
                 b,h,w = z.shape[0],z.shape[2],z.shape[3]
-                mask = torch.onse(N,h,w).to(self.device)
+                mask = torch.ones(N,h,w).to(self.device)
                 # zeros will be filled in
                 mask[:, h // 4:3 * h // 4, w // 4:3 * w // 4] = 0.
                 mask = mask[:, None, ...]
@@ -1347,7 +1349,7 @@ class AutoDM(DDPM):
             if plot_progressive_rows:
                 with self.ema_scope("Plotting Progressives"):
                     img, progressives = self.progressive_denoising(c,
-                                                                shape=(self.channels, self.image_size, self.image_size),
+                                                                shape=(self.channels, self.image_size[0],self.image_size[1]),
                                                                 batch_size=N)
             prog_row = self._get_denoise_row_from_list(progressives, desc="Progressive Generation")
             log["progressive_row"] = prog_row
@@ -1369,15 +1371,15 @@ if __name__ == '__main__':
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
     network = instantiate_from_config(cfg['model'])#.to('cuda:7')
-    x = torch.randn((2,2,448,768,3))#.to('cuda:7')
+    x = torch.randn((2,1,448,768,3))#.to('cuda:7')
     # x.requires_grad_(True)
-    hdmap = torch.randn((2,2,448,768,4))#.to('cuda:7')
+    hdmap = torch.randn((2,1,448,768,4))#.to('cuda:7')
     # hdmap.requires_grad_(True)
-    text = torch.randn((2,2,768))#.to('cuda:7')
+    text = torch.randn((2,1,768))#.to('cuda:7')
     # text.requires_grad_(True)
-    boxes = torch.randn((2,2,50,16))#.to('cuda:7')
+    boxes = torch.randn((2,1,50,16))#.to('cuda:7')
     # boxes.requires_grad_(True)
-    box_category = torch.randn(2,2,50,768)#.to('cuda:7')
+    box_category = torch.randn(2,1,50,768)#.to('cuda:7')
     # box_category.requires_grad_(True)
     out = {'text':text,
            '3Dbox':boxes,
@@ -1386,7 +1388,8 @@ if __name__ == '__main__':
            'HDmap':hdmap}
     # network.log_images(out)
     # loss,loss_dict = network.shared_step(out)
-    network.configure_optimizers()
+    # network.configure_optimizers()
+    network.log_images(out)
     # loss,loss_dict = network.validation_step(out,0)
     # loss.backward()
 

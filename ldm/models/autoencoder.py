@@ -542,6 +542,7 @@ class FrozenCLIPTextEmbedder(nn.Module):
         self.max_length = max_length
         self.n_repeat = n_repeat
         self.normalize = normalize
+        
 
     def freeze(self):
         self.model = self.model.eval()
@@ -549,7 +550,7 @@ class FrozenCLIPTextEmbedder(nn.Module):
             param.requires_grad = False
 
     def forward(self,text):
-        tokens = clip.tokenize(text).to(self.device)
+        tokens = clip.tokenize(text).cuda()
         z = self.model.encode_text(tokens)
         if self.normalize:
             z = z / torch.linalg.norm(z,dim=1,keepdim=True)

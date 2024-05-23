@@ -87,8 +87,6 @@ class TimestepEmbedSequential(nn.Sequential,TimestepBlock):
             if isinstance(layer,TimestepBlock):
                 x = layer(x,emb)
             elif isinstance(layer,SpatialTransformer):
-                x = layer(x,text_emb)
-            elif isinstance(layer,UnetBlock):
                 x = layer(x,boxes_emb,text_emb)
             else:
                 x = layer(x)
@@ -102,12 +100,13 @@ class Upsample(nn.Module):
     :param dims: determines if the signal is 1D, 2D, or 3D. If 3D, then
                  upsampling occurs in the inner-two dimensions.
     """
-    def __init__(self,channels,use_conv,dims=2,out_channels=None,padding=1):
+    def __init__(self,channels,use_conv,dims=2,out_channels=None,padding=1,outpadding=None):
         super().__init__()
         self.channels = channels
         self.out_channels = out_channels or channels
         self.use_conv = use_conv
         self.dims = dims
+        self.outpadding = outpadding
         if use_conv:
             self.conv = conv_nd(dims,self.channels,self.out_channels,3,padding=padding)
 
@@ -118,7 +117,8 @@ class Upsample(nn.Module):
                 x,(x.shape[2],x.shape[3]*2,x.shape[4]*2),mode='nearest'
             )
         else:
-            x = F.interpolate(x,scale_factor=2,mode='nearest')
+            x = F.interpolate(x,(x.shape[2]*2+self.outpadding[0],x.shape[3]*2+self.outpadding[1]),mode='nearest')
+            # x = F.interpolate(x,scale_factor=2,mode='nearest')
         if self.use_conv:
             x = self.conv(x)
         return x
@@ -188,6 +188,7 @@ class ResBlock(TimestepBlock):
             out_padding=None,
             up=False,
             down=False,
+            outpadding=None,
     ):
         super().__init__()
         self.channels = channels
@@ -206,8 +207,8 @@ class ResBlock(TimestepBlock):
 
         self.updown = up or down
         if up:
-            self.h_upd = TransposedUpsample(channels,out_padding=out_padding)
-            self.x_upd = TransposedUpsample(channels,out_padding=out_padding)
+            self.h_upd = Upsample(channels,False,outpadding=outpadding)
+            self.x_upd = Upsample(channels,False,outpadding=outpadding)
         elif down:
             self.h_upd = Downsample(channels,False,dims)
             self.x_upd = Downsample(channels,False,dims)
@@ -847,6 +848,10 @@ class UNetModel(nn.Module):
         movie_len = None,
         height=None,
         width=None,
+        ckpt_path=None,
+        outpadding=None,
+        obj_dims=None,
+        ignore_keys=None,
     ):
         super().__init__()
         if use_spatial_transformer:
@@ -942,7 +947,7 @@ class UNetModel(nn.Module):
                             use_new_attention_order=use_new_attention_order,
                         ) if not use_spatial_transformer else SpatialTransformer(
                             ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,batch_size=self.batch_size,movie_len=self.movie_len,
-                            height=self.height,width=self.width
+                            height=self.height,width=self.width,obj_dims=obj_dims
                         )
                     )
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
@@ -968,6 +973,8 @@ class UNetModel(nn.Module):
                         )
                     )
                 )
+                self.height = (self.height+1) // 2
+                self.width = (self.width+1) // 2
                 ch = out_ch
                 input_block_chans.append(ch)
                 ds *= 2
@@ -998,7 +1005,7 @@ class UNetModel(nn.Module):
                 use_new_attention_order=use_new_attention_order,
             ) if not use_spatial_transformer else SpatialTransformer(
                             ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,batch_size=self.batch_size,movie_len=self.movie_len,
-                            height=self.height,width=self.width,
+                            height=self.height,width=self.width,obj_dims=obj_dims
                         ),
             ResBlock(
                 ch,
@@ -1045,7 +1052,7 @@ class UNetModel(nn.Module):
                             use_new_attention_order=use_new_attention_order,
                         ) if not use_spatial_transformer else SpatialTransformer(
                             ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,batch_size=self.batch_size,movie_len=self.movie_len,
-                            height=self.height,width=self.width
+                            height=self.height,width=self.width,obj_dims=obj_dims
                         )
                     )
                 if level and i == num_res_blocks:
@@ -1060,10 +1067,13 @@ class UNetModel(nn.Module):
                             use_checkpoint=use_checkpoint,
                             use_scale_shift_norm=use_scale_shift_norm,
                             up=True,
+                            outpadding=outpadding[level-1]
                         )
                         if resblock_updown
-                        else Upsample(ch, conv_resample, dims=dims, out_channels=out_ch)
+                        else Upsample(ch, conv_resample, dims=dims, out_channels=out_ch,outpadding=outpadding[level-1])
                     )
+                    self.height = self.height * 2 + outpadding[level-1][0]
+                    self.width = self.width * 2 + outpadding[level-1][1]
                     ds //= 2
                 self.output_blocks.append(TimestepEmbedSequential(*layers))
                 self._feature_size += ch
@@ -1097,12 +1107,18 @@ class UNetModel(nn.Module):
         self.output_blocks.apply(convert_module_to_f32)
 
     def from_pretrained_model(self,model_path):
-        if not os.path.exists(model_path,map_location='cpu'):
+        if not os.path.exists(model_path):
             raise RuntimeError(f'{model_path} does not exist')
-        state_dict = torch.load(model_path,map_location='cpu')
+        state_dict = torch.load(model_path,map_location='cpu')['state_dict']
+        my_model_state_dict = self.state_dict()
+        for param in state_dict.keys():
+            param = param[22:]
+            if param not in my_model_state_dict.keys():
+                print("Missing Key:"+str(param))
+        #torch.save(my_model_state_dict,'./my_model_state_dict.pt')
         self.load_state_dict(state_dict,strict=False)
 
-    def forward(self, x, timesteps=None, context=None, y=None,**kwargs):
+    def forward(self, x, timesteps=None, y=None,boxes_emb=None,text_emb=None):
         """
         Apply the model to an input batch.
         :param x: an [N x C x ...] Tensor of inputs.
@@ -1124,12 +1140,12 @@ class UNetModel(nn.Module):
 
         h = x.type(self.dtype)
         for module in self.input_blocks:
-            h = module(h, emb, context)
+            h = module(h, emb, boxes_emb,text_emb)
             hs.append(h)
-        h = self.middle_block(h, emb, context)
+        h = self.middle_block(h, emb, boxes_emb,text_emb)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
-            h = module(h, emb, context)
+            h = module(h, emb, boxes_emb,text_emb)
         h = h.type(x.dtype)
         if self.predict_codebook_ids:
             return self.id_predictor(h)

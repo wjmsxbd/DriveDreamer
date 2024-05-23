@@ -102,7 +102,7 @@ class TemporalAttention(nn.Module):
         self.norm = nn.LayerNorm(channels)
     
     def forward(self,x):
-        x = rearrange(x,'(b n) c h w -> (b h w) n c',b=self.batch_size,len=self.movie_len)
+        x = rearrange(x,'(b n) c h w -> (b h w) n c',b=self.batch_size,n=self.movie_len)
         x = x + self.positional_encoder(x)
         out = self.temporal_block(self.norm(x)) + x
         return out
@@ -234,9 +234,9 @@ class GatedSelfAttention(nn.Module):
         return x 
 
 class BasicTransformerBlock(nn.Module):
-    def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, gated_ff=True, checkpoint=True,batch_size=None,movie_len=None,height=None,width=None):
+    def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, gated_ff=True, checkpoint=True,batch_size=None,movie_len=None,height=None,width=None,obj_dims=None):
         super().__init__()
-        self.attn1 = GatedSelfAttention(query_dim=dim, heads=n_heads, dim_head=d_head, dropout=dropout)  # is a self-attention
+        self.attn1 = GatedSelfAttention(query_dim=dim,context_dim=obj_dims, n_heads=n_heads, d_head=d_head)  # is a self-attention
         self.ff = FeedForward(dim, dropout=dropout, glu=gated_ff)
         self.attn2 = CrossAttention(query_dim=dim, context_dim=context_dim,
                                     heads=n_heads, dim_head=d_head, dropout=dropout)  # is self-attn if context is none
@@ -249,13 +249,12 @@ class BasicTransformerBlock(nn.Module):
         self.height = height
         self.width = width
 
-    def forward(self, x, context=None):
-        return checkpoint(self._forward, (x, context), self.parameters(), self.checkpoint)
+    def forward(self, x, objs=None,context=None):
+        return checkpoint(self._forward, (x, objs,context), self.parameters(), self.checkpoint)
 
-    def _forward(self, x, context=None,objs=None):
+    def _forward(self, x, objs=None,context=None):
         x = rearrange(x,'(b h w) n c -> (b n) (h w) c',b=self.batch_size,h=self.height,w=self.width,n=self.movie_len)
-        objs = rearrange(objs,'b n m c -> (b n) m c')
-        x = self.attn1(self.norm1(x)) + x
+        x = self.attn1(self.norm1(x),objs) + x
         x = self.attn2(self.norm2(x), context=context) + x
         x = self.ff(self.norm3(x)) + x
         return x
@@ -269,7 +268,7 @@ class SpatialTransformer(nn.Module):
     Finally, reshape to image
     """
     def __init__(self,in_channels,n_heads,d_head,
-                 depth=1,dropout=0.,context_dim=None,batch_size=None,movie_len=None,height=None,width=None):
+                 depth=1,dropout=0.,context_dim=None,batch_size=None,movie_len=None,height=None,width=None,obj_dims=None):
         super().__init__()
         self.in_channels = in_channels
         inner_dim = n_heads * d_head
@@ -283,11 +282,22 @@ class SpatialTransformer(nn.Module):
                                  kernel_size=1,
                                  stride=1,
                                  padding=0)
+        # self.transformer_blocks = []
+        # self.temporal_blocks = []
+        # for d in range(depth):
+        #     self.temporal_blocks.append(TemporalAttention(inner_dim,n_heads,d_head,movie_len=movie_len))
+        #     self.transformer_blocks.append(BasicTransformerBlock(inner_dim,n_heads,d_head,dropout=dropout,context_dim=context_dim,obj_dims=obj_dims,batch_size=batch_size,movie_len=movie_len,height=height,width=width))    
         self.transformer_blocks = nn.ModuleList(
-            [item
-             for d in range(depth) for item in [TemporalAttention(inner_dim,n_heads,d_head),
-             BasicTransformerBlock(inner_dim,n_heads,d_head,dropout=dropout,context_dim=context_dim,batch_size=batch_size,movie_len=movie_len,height=height,width=width)]]
+            BasicTransformerBlock(inner_dim,n_heads,d_head,dropout=dropout,context_dim=context_dim,obj_dims=obj_dims,batch_size=batch_size,movie_len=movie_len,height=height,width=width) for d in range(depth)
         )
+        self.temporal_blocks = nn.ModuleList(
+            TemporalAttention(inner_dim,n_heads,d_head,batch_size=batch_size,movie_len=movie_len) for d in range(depth)
+        )
+        # self.transformer_blocks = nn.ModuleList(
+        #     [item
+        #      for d in range(depth) for item in [TemporalAttention(inner_dim,n_heads,d_head,movie_len=movie_len),
+        #      BasicTransformerBlock(inner_dim,n_heads,d_head,dropout=dropout,context_dim=context_dim,obj_dims=obj_dims,batch_size=batch_size,movie_len=movie_len,height=height,width=width)]]
+        # )
 
         self.proj_out = zero_module(nn.Conv2d(inner_dim,
                                               in_channels,
@@ -295,16 +305,19 @@ class SpatialTransformer(nn.Module):
                                               stride=1,
                                               padding=0))
         
-    def forward(self,x,context=None):
+    def forward(self,x,boxes_emb,text_emb):
         # b,c,h,w = x.shape
         x_in = x
         x = self.norm(x)
         x = self.proj_in(x)
         # x = rearrange(x,'b c h w -> b (h w) c')
-        for block in self.transformer_blocks:
-            x = block(x,context=context)
+        for d in range(len(self.transformer_blocks)):
+            x = self.temporal_blocks[d](x)
+            x = self.transformer_blocks[d](x,boxes_emb,text_emb)
+        # for block in self.transformer_blocks:
+        #     x = block(x,boxes_emb,text_emb)
         # x = rearrange(x,'b (h w) c -> b c h w',h=h,w=w)
-        x = rearrange(x,'(b n) (h w) c -> (b n) c h w',h=self.height,w=self.width)
+        x = rearrange(x,'bn (h w) c -> bn c h w',h=self.height,w=self.width)
         x = self.proj_out(x)
         return x + x_in
 

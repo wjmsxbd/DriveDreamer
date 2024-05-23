@@ -67,7 +67,7 @@ def extract_into_tensor(a,t,x_shape):
 def noise_like(shape,device,repeat=False):
     repeat_noise = lambda: torch.randn((1,*shape[1:]),device=device).repeat(shape[0],*((1,) * (len(shape) - 1)))
     noise = lambda: torch.randn(shape,device=device)
-    return repeat_noise() if repeat else noise
+    return repeat_noise() if repeat else noise()
 
 def checkpoint(func,inputs,params,flag):
     """
@@ -87,7 +87,7 @@ def checkpoint(func,inputs,params,flag):
     
 class CheckpointFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx,run_function,length,*args):
+    def forward(ctx, run_function, length, *args):
         ctx.run_function = run_function
         ctx.input_tensors = list(args[:length])
         ctx.input_params = list(args[length:])
@@ -95,26 +95,26 @@ class CheckpointFunction(torch.autograd.Function):
         with torch.no_grad():
             output_tensors = ctx.run_function(*ctx.input_tensors)
         return output_tensors
+
     @staticmethod
-    def backward(ctx,*output_grads):
+    def backward(ctx, *output_grads):
         ctx.input_tensors = [x.detach().requires_grad_(True) for x in ctx.input_tensors]
-        with torch.no_grad():
+        with torch.enable_grad():
             # Fixes a bug where the first op in run_function modifies the
             # Tensor storage in place, which is not allowed for detach()'d
             # Tensors.
             shallow_copies = [x.view_as(x) for x in ctx.input_tensors]
             output_tensors = ctx.run_function(*shallow_copies)
-
         input_grads = torch.autograd.grad(
             output_tensors,
             ctx.input_tensors + ctx.input_params,
             output_grads,
-            allow_unused=True
+            allow_unused=True,
         )
         del ctx.input_tensors
         del ctx.input_params
         del output_tensors
-        return (None,None) + input_grads
+        return (None, None) + input_grads
     
 
 def timestep_embedding(timesteps,dim,max_period=10000,repeat_only=False,):

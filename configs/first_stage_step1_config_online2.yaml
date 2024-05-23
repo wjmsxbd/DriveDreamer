@@ -10,15 +10,15 @@ model:
     timesteps: 1000
     loss_type: l1
     cond_stage_key: "image"
-    image_size: (1600,900)
-    channels: 3
+    image_size: [7,12]
+    channels: 8
     cond_stage_trainable: True
     scale_by_std: True
     monitor: 'val/loss_simple_ema'
     unet_trainable: True
     learn_logvar: True
     cond_stage_config: 
-        target: __is_unconditional__
+        target: ldm.models.autoencoder.FrozenCLIPTextEmbedder
 
     scheduler_config: #10000 warmup steps
       target: ldm.lr_scheduler.LambdaLinearScheduler
@@ -29,39 +29,49 @@ model:
         f_max: [1.]
         f_min: [1.]
     unet_config:
-      target: ldm.modules.diffusionmodules.openaimodel.UnetModel
+      target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
-        image_size: (768,448)
+        image_size: [7,12]
         in_channels: 16
         out_channels: 8
-        model_channels: 192
-        attention_resolutions: [1,2,4,8] #32 16 8 4
+        model_channels: 320
+        attention_resolutions: [1,2,4] #32 16 8 4
         num_res_blocks: 2
-        channel_mult: [1,2,2,4,4] #32,16,8,4,2
+        channel_mult: [1,2,4,4] #32,16,8,4,2
         num_heads: 8
-        use_scale_shift_norm: True
-        resblock_updown: True
+        use_scale_shift_norm: False
+        resblock_updown: False
         context_dim: 768
+        use_checkpoint: False
         use_spatial_transformer: True
+        ckpt_path: '../../DriverDreamer/stable_diffusion/sd-v1-4.ckpt'
+        batch_size: 1
+        movie_len: 1
+        height: 7
+        width: 12
+        obj_dims: 768
+        outpadding: [[-1,0],[0,0],[0,-1]]
+        ignore_keys: ['model.diffusion_model.input_blocks.0.0','model.diffusion_model.out.2','cond_stage_model','first_stage_model']
+
       
     ref_img_config:
       target: ldm.models.autoencoder.AutoencoderKL
       params:
         embed_dim: 8
         monitor: "val/rec_loss"
-        ckpt_path:
+        ckpt_path: 'logs/2024-05-14T13-26-34_autoencoder/checkpoints/epoch=000036.ckpt'
         ddconfig:
           double_z: True
           z_channels: 8
           resolution: 256
           in_channels: 3
           out_ch: 3
-          ch: 4
-          ch_mult: [1,1,2,2] #num_down=len(ch_mult)-1
+          ch: 128
+          ch_mult: [1,2,4,4] #num_down=len(ch_mult)-1
           num_res_blocks: 2
           attn_resolutions: []
           dropout: 0.0
-          num_groups: 4
+          num_groups: 32
         lossconfig:
           target: torch.nn.Identity
     
@@ -77,12 +87,12 @@ model:
           resolution: 256
           in_channels: 4
           out_ch: 4
-          ch: 4
+          ch: 128
           ch_mult: [1,1,2,2]
           num_res_blocks: 2
           attn_resolutions: []
           dropout: 0.0
-          num_groups: 4
+          num_groups: 32
         lossconfig:
           target: torch.nn.Identity
     box_config:
@@ -97,28 +107,26 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 16
-    num_workers: 0
+    batch_size: 1
     wrap: False
+    num_workers: 0
     train:
-      target: data.data_loader_online.dataloader
+      target: data.dataloader_first_stage.dataloader
       params:
         cfg:
           version: advanced_12Hz_trainval
-          dataroot: ../../../share/nuScenes
-          device: 6
-        num_boxes: 50
+          dataroot: /remote-home/share/nuScenes
+        num_boxes: 70
         split_name: train
         cond_stage_config: 
           target: ldm.models.autoencoder.FrozenCLIPTextEmbedder
     validation:
-      target: data.data_loader_online.dataloader
+      target: data.dataloader_first_stage.dataloader
       params:
         cfg:
           version: advanced_12Hz_trainval
-          dataroot: ../../../share/nuScenes
-          device: 6
-        num_boxes: 50
+          dataroot: /remote-home/share/nuScenes
+        num_boxes: 70
         split_name: val
         cond_stage_config: 
           target: ldm.models.autoencoder.FrozenCLIPTextEmbedder
@@ -135,6 +143,6 @@ lightning:
 
   trainer:
     benchmark: True
-    gpus: 1,
+    gpus: 0,
 
     

@@ -11,7 +11,7 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "args":[
-                "--base","configs/vqautoencoder.yaml",//"configs/first_stage_step1_config_online2.yaml"
+                "--base","configs/first_stage_step1_config_online2.yaml",//"configs/first_stage_step1_config_online2.yaml"
                 "--train","True"
             ]
         }

@@ -83,7 +83,8 @@ class PositionalEncoder(nn.Module):
     def __init__(self,d_model,seq_len):
         super().__init__()
         self.d_model = d_model
-        pe = torch.zeros(seq_len,d_model)
+        self.seq_len = seq_len
+        pe = torch.zeros((seq_len,d_model))
         for pos in range(seq_len):
             for i in range(0,d_model-1,2):
                 pe[pos,i] = math.sin(pos/(10000 ** ((2*i)/d_model)))

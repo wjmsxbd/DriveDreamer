@@ -5,6 +5,8 @@ https://github.com/openai/improved-diffusion/blob/e94489283bb876ac1477d5dd7709bb
 https://github.com/CompVis/taming-transformers
 -- merci
 """
+import os
+
 import sys
 sys.path.append('.')
 sys.path.append('..')
@@ -23,7 +25,7 @@ from pytorch_lightning.utilities.distributed import rank_zero_only
 from ldm.util import log_txt_as_img,exists,default,ismap,isimage,mean_flat, count_params, instantiate_from_config
 from ldm.modules.ema import LitEma
 from ldm.modules.distributions.distributions import normal_kl, DiagonalGuassianDistribution
-from ldm.models.autoencoder import AutoencoderKL
+from ldm.models.autoencoder import AutoencoderKL,VQModelInterface
 from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
 from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.attention import PositionalEncoder
@@ -54,7 +56,7 @@ class DDPM(pl.LightningModule):
                  ignore_keys=[],
                  load_only_unet=False,
                  monitor="val/loss",
-                 use_ema=True,
+                 use_ema=False,
                  first_stage_key="reference_image",
                  image_size=256,
                  channels=3,
@@ -85,6 +87,7 @@ class DDPM(pl.LightningModule):
         self.channels = channels
         self.use_positional_encodings = use_positional_encodings
         self.model = DiffusionWrapper(unet_config)
+
         count_params(self.model,verbose=True)
         self.use_ema = use_ema
         if self.use_ema:
@@ -113,6 +116,7 @@ class DDPM(pl.LightningModule):
         if self.learn_logvar:
             self.logvar = nn.Parameter(self.logvar,requires_grad=True)
 
+
     def register_schedule(self,given_betas=None,beta_schedule="linear",timesteps=1000,
                           linear_start=1e-4,linear_end=2e-2,cosine_s=8e-3):
         if exists(given_betas):
@@ -133,7 +137,7 @@ class DDPM(pl.LightningModule):
 
         self.register_buffer('betas',to_torch(betas))
         self.register_buffer('alphas_cumprod',to_torch(alphas_cumprod))
-        self.register_buffer('alphas_cumpord_prev',to_torch(alphas_cumprod_prev))
+        self.register_buffer('alphas_cumprod_prev',to_torch(alphas_cumprod_prev))
 
         # calculations for diffusion q(x_t | x_{t-1}) and others
         self.register_buffer('sqrt_alphas_cumprod',to_torch(np.sqrt(alphas_cumprod)))
@@ -414,9 +418,12 @@ class DiffusionWrapper(pl.LightningModule):
     def __init__(self,diff_model_config):
         super().__init__()
         self.diffusion_model = instantiate_from_config(diff_model_config)
+    
+    def from_pretrained_model(self,model_path):
+        self.diffusion_model.from_pretrained_model(model_path)
 
     def forward(self,x,t,boxes_emb,text_emb):
-        return self.diffusion_model(x,t,boxes_emb,text_emb)
+        return self.diffusion_model(x,t,boxes_emb=boxes_emb,text_emb=text_emb)
 
 #TODO:whether need split image
 class AutoDM(DDPM):
@@ -445,9 +452,8 @@ class AutoDM(DDPM):
         #     conditioning_key = 'concat' if concat_mode else 'crossattn'
         # if cond_stage_config == '__is_unconditional__':
         #     conditioning_key = None
-        ckpt_path = kwargs.pop('ckpt_path',None)
-        ignore_keys = kwargs.pop("ignore_keys",[])
         super().__init__(conditioning_key=None,*args,**kwargs)
+        unet_config = kwargs.pop('unet_config',[])
         self.concat_mode = concat_mode
         self.cond_stage_trainable = cond_stage_trainable
         self.cond_stage_key = cond_stage_key
@@ -484,9 +490,31 @@ class AutoDM(DDPM):
         self.clip_denoised = False
         self.bbox_tokenizer = None
         self.restarted_from_ckpt = False
-        if ckpt_path is not None:
-            self.init_from_ckpt(ckpt_path,ignore_keys)
+        if unet_config['params']['ckpt_path'] is not None:
+            # self.model.from_pretrained_model(unet_config['params']['ckpt_path'])
+            self.from_pretrained_model(unet_config['params']['ckpt_path'],unet_config['params']['ignore_keys'])
             self.restarted_from_ckpt = True
+
+    def from_pretrained_model(self,model_path,ignore_keys):
+        if not os.path.exists(model_path):
+            raise RuntimeError(f'{model_path} does not exist')
+        sd = torch.load(model_path,map_location='cpu')['state_dict']
+        my_model_state_dict = self.state_dict()
+        keys = list(sd.keys())
+        # for param in state_dict.keys():
+        #     if param not in my_model_state_dict.keys():
+        #         print("Missing Key:"+str(param))
+        #     else:
+        #         for ignore_key in ignore_keys:
+        #             if not param.startswith(ignore_key):
+        #                 params[param] = state_dict[param]
+        for k in keys:
+            for ik in ignore_keys:
+                if k.startswith(ik):
+                    print('Delete Key {} from state_dict'.format(k))
+                    del(sd[k])
+        #torch.save(my_model_state_dict,'./my_model_state_dict.pt')
+        self.load_state_dict(sd,strict=False)
 
     def make_cond_schedule(self,):
         self.cond_ids = torch.full(size=(self.num_timesteps,),fill_value=self.num_timesteps - 1,dtype=torch.long)
@@ -614,12 +642,12 @@ class AutoDM(DDPM):
         return loss
     
     @torch.no_grad()
-    def validation_step(self,batch,batch_idx):
-        _,loss_dict_no_ema = self.shared_step(batch)
+    def validation_step(self, batch, batch_idx):
+        _, loss_dict_no_ema = self.shared_step(batch)
         with self.ema_scope():
-            _,loss_dict_ema = self.shared_step(batch)
-            loss_dict_ema = {key+'_ema':loss_dict_ema[key] for key in loss_dict_ema}
-            self.log_dict(loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
+            _, loss_dict_ema = self.shared_step(batch)
+            loss_dict_ema = {key + '_ema': loss_dict_ema[key] for key in loss_dict_ema}
+        self.log_dict(loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
         self.log_dict(loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
 
     def get_fold_unfold(self,x,kernel_size,stride,uf=1,df=1):# todo load once not every time, shorten code
@@ -725,16 +753,18 @@ class AutoDM(DDPM):
         boxes = batch['3Dbox']
         boxes_category = batch['category']
         text = batch['text']
+        boxes = rearrange(boxes,'b n x c -> (b n) x c')
+        boxes_category = rearrange(boxes_category,'b n x c -> (b n) x c')
+        text = rearrange(text,'b n c -> (b n) c').unsqueeze(1)
         x = ref_img
-        x = self.ref_img_encoder(ref_img)
         z = self.ref_img_encoder.encode(x)
         z = self.get_first_stage_encoding(z)
         out = [z]
         c = {}
-        c['hdmap'] = hdmap
-        c['boxes'] = boxes
-        c['category'] = boxes_category
-        c['text'] = text
+        c['hdmap'] = hdmap.to(torch.float32)
+        c['boxes'] = boxes.to(torch.float32)
+        c['category'] = boxes_category.to(torch.float32)
+        c['text'] = text.to(torch.float32)
         if return_first_stage_outputs:
             x_rec = self.decode_first_stage(z)
             out.extend([x,x_rec])
@@ -774,19 +804,20 @@ class AutoDM(DDPM):
     def shared_step(self,batch,**kwargs):
         ref_img = super().get_input(batch,'reference_image') # (b n c h w)
         hdmap = super().get_input(batch,'HDmap') # (b n c h w)
-        x = ref_img
-        x = self.ref_img_encoder(ref_img)
+        x = ref_img.to(torch.float32)
         x = self.get_first_stage_encoding(self.ref_img_encoder.encode(x))
         c = {}
-        c['hdmap'] = hdmap
-        c['boxes'] = batch['3Dbox']
-        c['category'] = batch['category']
-        c['text'] = batch['text']
+        c['hdmap'] = hdmap.to(torch.float32)
+        boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d')
+        boxes_category = rearrange(batch['category'],'b n c d -> (b n) c d')
+        c['boxes'] = boxes.to(torch.float32)
+        c['category'] = boxes_category.to(torch.float32)
+        c['text'] = rearrange(batch['text'],'b n d -> (b n) d').unsqueeze(1).to(torch.float32)
         loss,loss_dict = self(x,c)
         return loss,loss_dict
 
     def forward(self,x,c,*args,**kwargs):
-        t = torch.randint(0,self.num_timesteps,(x.shape[0],)).long()#device=self.device
+        t = torch.randint(0,self.num_timesteps,(x.shape[0],),device=self.device).long()#
         return self.p_losses(x,c,t,*args,**kwargs)
 
     def apply_model(self,x_noisy,t,cond,return_ids=False):
@@ -858,10 +889,9 @@ class AutoDM(DDPM):
             hdmap = self.get_first_stage_encoding(self.hdmap_encoder.encode(cond['hdmap']))
             boxes_emb = self.box_encoder(cond['boxes'],cond['category'])
             text_emb = cond['text']
-            z = torch.cat([z,hdmap],dim=4)
-            z = rearrange(z,'b n c h w -> (b n) c h w')
+            z = torch.cat([x_noisy,hdmap],dim=1)
             #TODO:need reshape z
-            x_recon = self.model(z,t,boxes_emb,text_emb)
+            x_recon = self.model(z,t,boxes_emb=boxes_emb,text_emb=text_emb)
         return x_recon
 
 
@@ -901,7 +931,12 @@ class AutoDM(DDPM):
 
         return loss,loss_dict
     
-    def decode_first_stage(self,z):
+    def decode_first_stage(self,z,predict_cids=False,force_not_quantize=False):
+        if predict_cids:
+            if z.dim() == 4:
+                z = torch.argmax(z.exp(), dim=1).long()
+            z = self.ref_img_encoder.quantize.get_codebook_entry(z, shape=None)
+            z = rearrange(z, 'b h w c -> b c h w').contiguous()
         z = 1. / self.scale_factor * z
 
         if hasattr(self,"split_input_params"):
@@ -937,9 +972,17 @@ class AutoDM(DDPM):
             else:
                 return self.ref_img_encoder.decode(z)
         else:
-            return self.ref_img_encoder.decode(z)
+            if isinstance(self.ref_img_encoder,VQModelInterface):
+                return self.ref_img_encoder.decode(z,force_not_quantize=predict_cids or force_not_quantize)
+            else:
+                return self.ref_img_encoder.decode(z)
     
-    def differentiable_decode_first_stage(self,z):
+    def differentiable_decode_first_stage(self,z,predict_cids=False, force_not_quantize=False):
+        if predict_cids:
+            if z.dim() == 4:
+                z = torch.argmax(z.exp(), dim=1).long()
+            z = self.ref_img_encoder.quantize.get_codebook_entry(z, shape=None)
+            z = rearrange(z, 'b h w c -> b c h w').contiguous()
         z = 1. / self.scale_factor * z
 
         if hasattr(self,"split_input_params"):
@@ -975,7 +1018,10 @@ class AutoDM(DDPM):
             else:
                 return self.ref_img_encoder.decode(z)
         else:
-            return self.ref_img_encoder.decode(z)
+            if isinstance(self.ref_img_encoder,VQModelInterface):
+                return self.ref_img_encoder.decode(z,force_not_quantize=predict_cids or force_not_quantize)
+            else:
+                return self.ref_img_encoder.decode(z)
     
     def _rescale_annotations(self,bboxes,crop_coordinates):
         def rescale_bbox(bbox):
@@ -1010,10 +1056,25 @@ class AutoDM(DDPM):
         params = list()
         if self.unet_trainable:
             print("add unet model parameters into optimizers")
-            for param in self.model.parameters():
-                if 'temporal' in param or 'gated' in param:
-                    print(f"model:add {param} into optimizers")
+            for name,param in self.model.named_parameters():
+                # if 'temporal' in param or 'gated' in param:
+                #     print(f"model:add {param} into optimizers")
+                #     params.append(param)
+                # if 'gated' in name or 'diffusion_model.input_blocks.0.0' in name or 'diffusion_model.out.2' in name:
+                #     print(f"model:add {name} into optimizers")
+                #     params.append(param)
+                # elif 'transoformer'
+                # elif not 'temporal' in name:
+                #     param.requires_grad = False
+                # else:
+                #     # assert param.requires_grad == True
+                #     param.requires_grad = False
+                if 'gated' in name or 'diffusion_model.input_blocks.0.0' in name or 'diffusion_model.out.2' in name:
+                    print(f"model:add {name} into optimizers")
                     params.append(param)
+                elif not 'transformer_blocks' in name:
+                    param.requires_grad=False
+                
         if self.cond_stage_trainable:
             print("add encoder parameters into optimizers")
             params = params  + list(self.hdmap_encoder.parameters()) + list(self.box_encoder.parameters())
@@ -1070,7 +1131,7 @@ class AutoDM(DDPM):
     @torch.no_grad()
     def p_sample(self,x,c,t,clip_denoised=False,repeat_noise=False,
                  return_codebook_ids=False,quantize_denoised=False,return_x0=False,
-                 tempperature=1.,noise_dropout=0.,score_corrector=None,corrector_kwargs=None):
+                 temperature=1.,noise_dropout=0.,score_corrector=None,corrector_kwargs=None):
         b,*_,device = *x.shape,x.device
         outputs = self.p_mean_variance(x=x,c=c,t=t,clip_denoised=clip_denoised,
                                        return_codebook_ids=return_codebook_ids,
@@ -1081,15 +1142,15 @@ class AutoDM(DDPM):
             raise DeprecationWarning("Support dropped.")
             model_mean, _, model_log_variance, logits = outputs
         elif return_x0:
-            model_mean,_,mean_log_variance,x0 = outputs
+            model_mean,_,model_log_variance,x0 = outputs
         else:
             model_mean,_,model_log_variance = outputs
         
-        noise = noise_like(x.shape,device,repeat_noise) * tempperature
+        noise = noise_like(x.shape,device,repeat_noise) * temperature
         if noise_dropout > 0.:
             noise = torch.nn.functional.dropout(noise,p=noise_dropout)
         #no noise when t==0
-        nonzero_mask = (1 - (t==0).float()).reshape(b,*((1,) * len(x.shape) - 1))
+        nonzero_mask = (1 - (t==0).float()).reshape(b,*((1,) * (len(x.shape) - 1)))
         if return_codebook_ids:
             return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise,logits.argmax(dim=1)
         if return_x0:
@@ -1136,9 +1197,11 @@ class AutoDM(DDPM):
                 tc = self.cond_ids[ts].to(cond.device)
                 cond = self.q_sample(x_start=cond,t=tc,noise=torch.randn_like(cond))
 
-            img,x0_partial = self.p_sample(img,cond,ts,clip_denoised=self.clip_denoised,
-                                           quantize_denoised=quantize_denoised,
-                                           temperature=temperature[i],noise_dropout=noise_dropout)
+            img, x0_partial = self.p_sample(img, cond, ts,
+                                            clip_denoised=self.clip_denoised,
+                                            quantize_denoised=quantize_denoised, return_x0=True,
+                                            temperature=temperature[i], noise_dropout=noise_dropout,
+                                            score_corrector=score_corrector, corrector_kwargs=corrector_kwargs)
             if mask is not None:
                 assert x0 is not None
                 img_orig = self.q_sample(x0,ts)
@@ -1200,7 +1263,7 @@ class AutoDM(DDPM):
                verbose=True,timesteps=None,quantize_denoised=False,
                mask=None,x0=None,shape=None,**kwargs):
         if shape is None:
-            shape = (batch_size,self.channels) + self.image_size
+            shape = (batch_size,self.channels) + tuple(self.image_size)
         if cond is not None:
             if isinstance(cond,dict):
                 cond = {key:cond[key][:batch_size] if not isinstance(cond[key],list) else
@@ -1215,7 +1278,7 @@ class AutoDM(DDPM):
     def sample_log(self,cond,batch_size,ddim,ddim_steps,**kwargs):
         if ddim:
             ddim_sampler = DDIMSampler(self)
-            shape = (self.channels,) + self.image_size
+            shape = (self.channels,) + tuple(self.image_size)
             samples,intermediates = ddim_sampler.sample(ddim_steps,batch_size,
                                                         shape,cond,verbose=False,**kwargs)
         else:
@@ -1281,7 +1344,7 @@ class AutoDM(DDPM):
             if inpaint:
                 #make a simple center square
                 b,h,w = z.shape[0],z.shape[2],z.shape[3]
-                mask = torch.onse(N,h,w).to(self.device)
+                mask = torch.ones(N,h,w).to(self.device)
                 # zeros will be filled in
                 mask[:, h // 4:3 * h // 4, w // 4:3 * w // 4] = 0.
                 mask = mask[:, None, ...]
@@ -1302,7 +1365,7 @@ class AutoDM(DDPM):
             if plot_progressive_rows:
                 with self.ema_scope("Plotting Progressives"):
                     img, progressives = self.progressive_denoising(c,
-                                                                shape=(self.channels, self.image_size, self.image_size),
+                                                                shape=(self.channels, self.image_size[0],self.image_size[1]),
                                                                 batch_size=N)
             prog_row = self._get_denoise_row_from_list(progressives, desc="Progressive Generation")
             log["progressive_row"] = prog_row
@@ -1318,22 +1381,32 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/first_stage_step1_config_online.yaml',
+                        default='configs/first_stage_step1_config_online2.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
-    network = instantiate_from_config(cfg['model'])
-    x = torch.randn((2,2,448,768,3))
-    hdmap = torch.randn((2,2,448,768,4))
-    text = torch.randn((2,2,768))
-    boxes = torch.randn((2,2,50,16))
-    box_category = torch.randn(2,2,50,768)
+    network = instantiate_from_config(cfg['model'])#.to('cuda:7')
+    x = torch.randn((2,1,448,768,3))#.to('cuda:7')
+    # x.requires_grad_(True)
+    hdmap = torch.randn((2,1,448,768,4))#.to('cuda:7')
+    # hdmap.requires_grad_(True)
+    text = torch.randn((2,1,768))#.to('cuda:7')
+    # text.requires_grad_(True)
+    boxes = torch.randn((2,1,50,16))#.to('cuda:7')
+    # boxes.requires_grad_(True)
+    box_category = torch.randn(2,1,50,768)#.to('cuda:7')
+    # box_category.requires_grad_(True)
     out = {'text':text,
            '3Dbox':boxes,
            'category':box_category,
            'reference_image':x,
            'HDmap':hdmap}
-    network.shared_step(out)
+    # network.log_images(out)
+    # loss,loss_dict = network.shared_step(out)
+    # network.configure_optimizers()
+    network.log_images(out)
+    # loss,loss_dict = network.validation_step(out,0)
+    # loss.backward()
 
 

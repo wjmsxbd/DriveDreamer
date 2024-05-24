@@ -1,94 +1,123 @@
 model:
-  base_learning_rate: 5e-5
+  base_learning_rate: 5.0e-05
   target: ldm.models.diffusion.ddpm.AutoDM
   params:
-    base_learning_rate: 5e-5
+    base_learning_rate: 5.0e-05
     linear_start: 0.0015
     linear_end: 0.0155
     num_timesteps_cond: 1
     log_every_t: 200
     timesteps: 1000
     loss_type: l1
-    cond_stage_key: "image"
-    image_size: [7,12]
+    cond_stage_key: image
+    image_size:
+    - 7
+    - 12
     channels: 8
-    cond_stage_trainable: True
-    scale_by_std: True
-    monitor: 'val/loss_simple_ema'
-    unet_trainable: True
-    learn_logvar: True
-    cond_stage_config: 
-        target: ldm.models.autoencoder.FrozenCLIPTextEmbedder
-
-    scheduler_config: #10000 warmup steps
+    cond_stage_trainable: true
+    scale_by_std: true
+    monitor: val/loss_simple_ema
+    unet_trainable: true
+    learn_logvar: true
+    cond_stage_config:
+      target: ldm.models.autoencoder.FrozenCLIPTextEmbedder
+    scheduler_config:
       target: ldm.lr_scheduler.LambdaLinearScheduler
       params:
-        warm_up_steps: [10000]
-        cycle_lengths: [10000000000000]
-        f_start: [1.e-6]
-        f_max: [1.]
-        f_min: [1.]
+        warm_up_steps:
+        - 10000
+        cycle_lengths:
+        - 10000000000000
+        f_start:
+        - 1.0e-06
+        f_max:
+        - 1.0
+        f_min:
+        - 1.0
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
-        image_size: [7,12]
+        image_size:
+        - 7
+        - 12
         in_channels: 16
         out_channels: 8
         model_channels: 320
-        attention_resolutions: [1,2,4] #32 16 8 4
+        attention_resolutions:
+        - 1
+        - 2
+        - 4
         num_res_blocks: 2
-        channel_mult: [1,2,4,4] #32,16,8,4,2
+        channel_mult:
+        - 1
+        - 2
+        - 4
+        - 4
         num_heads: 8
-        use_scale_shift_norm: False
-        resblock_updown: False
+        use_scale_shift_norm: false
+        resblock_updown: false
         context_dim: 768
-        use_checkpoint: False
-        use_spatial_transformer: True
-        ckpt_path: '../../DriverDreamer/stable_diffusion/sd-v1-4.ckpt'
-        batch_size: 1
+        use_checkpoint: false
+        use_spatial_transformer: true
+        ckpt_path: stable_diffusion/sd-v1-4.ckpt
         movie_len: 1
         height: 7
         width: 12
         obj_dims: 768
-        outpadding: [[-1,0],[0,0],[0,-1]]
-        ignore_keys: ['model.diffusion_model.input_blocks.0.0','model.diffusion_model.out.2','cond_stage_model','first_stage_model']
-
-      
+        outpadding:
+        - - -1
+          - 0
+        - - 0
+          - 0
+        - - 0
+          - -1
+        ignore_keys:
+        - model.diffusion_model.input_blocks.0.0
+        - model.diffusion_model.out.2
+        - cond_stage_model
+        - first_stage_model
     ref_img_config:
       target: ldm.models.autoencoder.AutoencoderKL
       params:
         embed_dim: 8
-        monitor: "val/rec_loss"
-        ckpt_path: 'logs/2024-05-14T13-26-34_autoencoder/checkpoints/epoch=000036.ckpt'
+        monitor: val/rec_loss
+        ckpt_path: logs/2024-05-14T13-26-34_autoencoder/checkpoints/epoch=000036.ckpt
         ddconfig:
-          double_z: True
+          double_z: true
           z_channels: 8
           resolution: 256
           in_channels: 3
           out_ch: 3
           ch: 128
-          ch_mult: [1,2,4,4] #num_down=len(ch_mult)-1
+          ch_mult:
+          - 1
+          - 2
+          - 4
+          - 4
           num_res_blocks: 2
           attn_resolutions: []
           dropout: 0.0
           num_groups: 32
         lossconfig:
           target: torch.nn.Identity
-    
     hdmap_config:
       target: ldm.models.autoencoder.AutoencoderKL
       params:
         embed_dim: 8
-        monitor: "val/rec_loss"
-        ckpt_path:
+        monitor: val/rec_loss
+        ckpt_path: null
         ddconfig:
-          double_z: True
+          double_z: true
           z_channels: 8
           resolution: 256
           in_channels: 4
           out_ch: 4
           ch: 128
-          ch_mult: [1,1,2,2]
+          ch_mult:
+          - 1
+          - 1
+          - 2
+          - 2
           num_res_blocks: 2
           attn_resolutions: []
           dropout: 0.0
@@ -99,39 +128,39 @@ model:
       target: ldm.models.autoencoder.Fourier_Embedding
       params:
         in_channels: 16
-        ch: [256,512,768]
+        ch:
+        - 256
+        - 512
+        - 768
         context_dims: 768
         sigma: 1
-        trainable: True
-
+        trainable: true
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 1
-    wrap: False
+    batch_size: 8
+    wrap: false
     num_workers: 0
     train:
       target: data.dataloader_first_stage.dataloader
       params:
         cfg:
           version: advanced_12Hz_trainval
-          dataroot: /remote-home/share/nuScenes
+          dataroot: /storage/group/4dvlab/datasets/nuScenes
         num_boxes: 70
         split_name: train
-        cond_stage_config: 
+        cond_stage_config:
           target: ldm.models.autoencoder.FrozenCLIPTextEmbedder
     validation:
       target: data.dataloader_first_stage.dataloader
       params:
         cfg:
           version: advanced_12Hz_trainval
-          dataroot: /remote-home/share/nuScenes
+          dataroot: /storage/group/4dvlab/datasets/nuScenes
         num_boxes: 70
         split_name: val
-        cond_stage_config: 
+        cond_stage_config:
           target: ldm.models.autoencoder.FrozenCLIPTextEmbedder
-
-
 lightning:
   callbacks:
     image_logger:
@@ -139,10 +168,8 @@ lightning:
       params:
         batch_frequency: 5000
         max_images: 8
-        increase_log_steps: False
-
+        increase_log_steps: false
   trainer:
-    benchmark: True
-    gpus: 0,
-
-    
+    benchmark: true
+    gpus: 0,1,2,3
+    accelerator: ddp

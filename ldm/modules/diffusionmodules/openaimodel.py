@@ -844,7 +844,6 @@ class UNetModel(nn.Module):
         context_dim=None,                 # custom transformer support
         n_embed=None,                     # custom support for prediction of discrete ids into codebook of first stage vq model
         legacy=True,
-        batch_size=None,
         movie_len = None,
         height=None,
         width=None,
@@ -879,7 +878,6 @@ class UNetModel(nn.Module):
         self.num_res_blocks = num_res_blocks
         self.attention_resolutions = attention_resolutions
         self.dropout = dropout
-        self.batch_size = batch_size
         self.movie_len = movie_len
         self.height = height
         self.width = width
@@ -946,7 +944,7 @@ class UNetModel(nn.Module):
                             num_head_channels=dim_head,
                             use_new_attention_order=use_new_attention_order,
                         ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,batch_size=self.batch_size,movie_len=self.movie_len,
+                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,movie_len=self.movie_len,
                             height=self.height,width=self.width,obj_dims=obj_dims
                         )
                     )
@@ -1004,7 +1002,7 @@ class UNetModel(nn.Module):
                 num_head_channels=dim_head,
                 use_new_attention_order=use_new_attention_order,
             ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,batch_size=self.batch_size,movie_len=self.movie_len,
+                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,movie_len=self.movie_len,
                             height=self.height,width=self.width,obj_dims=obj_dims
                         ),
             ResBlock(
@@ -1051,7 +1049,7 @@ class UNetModel(nn.Module):
                             num_head_channels=dim_head,
                             use_new_attention_order=use_new_attention_order,
                         ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,batch_size=self.batch_size,movie_len=self.movie_len,
+                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,movie_len=self.movie_len,
                             height=self.height,width=self.width,obj_dims=obj_dims
                         )
                     )

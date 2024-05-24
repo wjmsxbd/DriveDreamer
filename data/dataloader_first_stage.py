@@ -71,7 +71,6 @@ class dataloader(data.Dataset):
         scene_token = self.nusc.get('sample',sample_token)['scene_token']
         scene = self.nusc.get('scene',scene_token)
         text = scene['description']
-        print(f'get:text {text}')
         log_token = scene['log_token']
         log = self.nusc.get('log',log_token)
         nusc_map = self.nusc_maps[log['location']]

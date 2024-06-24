@@ -70,7 +70,7 @@ class Downsample(nn.Module):
                                         padding=0)
     def forward(self,x):
         if self.with_conv:
-            # pad = (0,0,0,0)
+            # pad = (0,1,0,1)
             # x = torch.nn.functional.pad(x,pad,mode='constant',value=0)
             x = self.conv(x)
         else:
@@ -979,8 +979,8 @@ class Downsample_Diffusion(nn.Module):
                                         padding=0)
     def forward(self,x):
         if self.with_conv:
-            # pad = (0,0,0,0)
-            # x = torch.nn.functional.pad(x,pad,mode='constant',value=0)
+            pad = (0,1,0,1)
+            x = torch.nn.functional.pad(x,pad,mode='constant',value=0)
             x = self.conv(x)
         else:
             x = torch.nn.functional.avg_pool2d(x,kernel_size=4,stride=4)

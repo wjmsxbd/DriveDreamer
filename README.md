@@ -80,8 +80,6 @@ pip install -r requirement.txt
     }
 }
 
-#### DownLoad
-
 ```
 #### Condition
 Condition部分的数据通过在线处理得到。
@@ -92,6 +90,7 @@ Condition部分的数据通过在线处理得到。
 #### Text
 记录了该场景下的description，经过CLIP之后大小为(1,768)
 
+#### DownLoad
 
 ### Create stable_diffusion directory
 `

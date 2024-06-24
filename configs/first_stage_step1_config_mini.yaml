@@ -61,7 +61,7 @@ model:
       params:
         embed_dim: 4
         monitor: "val/rec_loss"
-        ckpt_path: logs/2024-06-14T17-41-36_autoencoder_finetune/checkpoints/epoch=000001.ckpt
+        ckpt_path: stable_diffusion/epoch=000001.ckpt
         ddconfig:
           double_z: True
           z_channels: 4

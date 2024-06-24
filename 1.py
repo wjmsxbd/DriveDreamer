@@ -1,14 +1,17 @@
+import psutil
+import os
+import time
 import torch
-from nuscenes.nuscenes import NuScenes
 import pickle
+# process = psutil.Process(42776)
 
-# data_path = '/remote-home/share/nuScenes/nuScenes_advanced_infos_train.pkl'
-# with open(data_path,'rb') as file:
-#     data_infos = pickle.load(file)
+# while True:
+#     # 获取内存信息
+#     mem_info = process.memory_info()
+#     print(f"RSS: {mem_info.rss / 1024 / 1024:.2f} MB; VMS: {mem_info.vms / 1024 / 1024:.2f} MB")
+#     time.sleep(10)  # 每10秒检查一次
 
-# print(data_infos['infos'][0])
-# token = data_infos['infos'][0]['token']
-# nusc = NuScenes(version='advanced_12Hz_trainval',dataroot='/remote-home/share/nuScenes',verbose=True)
-# x=1
-
-print("!!!!!!!!!!!!!!!!test")
+model_path = 'stable_diffusion/vista.safetensors'
+with open(model_path,'rb') as file:
+    data = pickle.load(file)
+print(data)

@@ -252,12 +252,21 @@ class BasicTransformerBlock(nn.Module):
         return checkpoint(self._forward, (x, objs,context), self.parameters(), self.checkpoint)
 
     def _forward(self, x, objs=None,context=None):
+        # with temporal blocks
         bhw = x.shape[0]
         batch_size = bhw // self.height // self.width
         x = rearrange(x,'(b h w) n c -> (b n) (h w) c',b=batch_size,h=self.height,w=self.width,n=self.movie_len)
         x = self.attn1(self.norm1(x),objs) + x
         x = self.attn2(self.norm2(x), context=context) + x
         x = self.ff(self.norm3(x)) + x
+
+        # without temporal blocks
+        # bn = x.shape[0]
+        # batch_size = bn / self.movie_len
+        # x = rearrange(x,'bn c h w -> bn (h w) c',h=self.height,w=self.width)
+        # x = self.attn1(self.norm1(x),objs) + x
+        # x = self.attn2(self.norm2(x), context=context) + x
+        # x = self.ff(self.norm3(x)) + x
         return x
 
 class SpatialTransformer(nn.Module):

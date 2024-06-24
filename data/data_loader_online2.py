@@ -30,10 +30,10 @@ def disabled_train(self,mode=True):
     return self
 
 class dataloader(data.Dataset):
-    def __init__(self,cfg,split_name='train'):
+    def __init__(self,cfg,split_name='train',device=None):
         self.split_name = split_name
         self.cfg = cfg
-        self.dataset = glob.glob(cfg['dataroot']+'*.jpg')
+        self.dataset = glob.glob(cfg['dataroot']+'samples/CAM_FRONT/*.jpg') + glob.glob(cfg['dataroot']+'sweeps/CAM_FRONT/*.jpg')
         self.len = len(self.dataset)
         split = int(self.len * 0.80)
         if split_name == 'train':
@@ -125,7 +125,7 @@ class dataloader(data.Dataset):
         # boxes.requires_grad_(True)
         # box_category = torch.randn(50,768)
         # box_category.requires_grad_(True)
-        out['reference_image'] = torch.from_numpy(cam_front_img / 255.).to(torch.float32)
+        out['reference_image'] = torch.from_numpy(cam_front_img / 255. * 2 - 1.0 ).to(torch.float32)
         # out = {'text':text,
         #     '3Dbox':boxes,
         #     'category':box_category,

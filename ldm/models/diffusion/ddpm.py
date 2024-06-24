@@ -383,7 +383,7 @@ class DDPM(pl.LightningModule):
 
         for t in range(self.num_timesteps):
             if t % self.log_every_t == 0 or t == self.num_timesteps - 1:
-                t = repeat(torch.tensor([t],'1 -> b',b = n_row))
+                t = repeat(torch.tensor([t]),'1 -> b',b = n_row)
                 t = t.to(self.device).long()
                 noise = torch.randn_like(x_start)
                 x_noisy = self.q_sample(x_start=x_start,t=t,noise=noise)
@@ -471,6 +471,9 @@ class AutoDM(DDPM):
         for param in self.ref_img_encoder.parameters():
             param.requires_grad = False
         self.hdmap_encoder = instantiate_from_config(hdmap_config)
+        self.hdmap_encoder.eval()
+        for param in self.hdmap_encoder.parameters():
+            param.requires_grad = False
         self.box_encoder = instantiate_from_config(box_config)
         #self.instantiate_cond_stage(cond_stage_config)
         # self.split_input_params = {
@@ -564,11 +567,11 @@ class AutoDM(DDPM):
         for zd in tqdm(samples,desc=desc):
             denoise_row.append(self.decode_first_stage(zd.to(self.device),
                                                        force_not_quantize=force_no_decoder_quantization))
-        n_imgs_per_orw = len(denoise_row)
+        n_imgs_per_row = len(denoise_row)
         denoise_row = torch.stack(denoise_row) #n_log_step n_row C H W
         denoise_grid = rearrange(denoise_row,'n b c h w -> b n c h w')
         denoise_grid = rearrange(denoise_grid,'b n c h w -> (b n) c h w')
-        denoise_grid = make_grid(denoise_grid,nrow=n_imgs_per_orw)
+        denoise_grid = make_grid(denoise_grid,nrow=n_imgs_per_row)
         return denoise_grid
         
     def get_first_stage_encoding(self,encoder_posterior):
@@ -710,7 +713,6 @@ class AutoDM(DDPM):
 
     #check whether need / 255.
     def encode_first_stage(self,x,encoder):
-        x = x / 255.
         if hasattr(self,'split_input_params'):
             if self.split_input_params['patch_distributed_vq']:
                 ks = self.split_input_params["ks"] #eg. (128,128)
@@ -1069,11 +1071,14 @@ class AutoDM(DDPM):
                 # else:
                 #     # assert param.requires_grad == True
                 #     param.requires_grad = False
-                if 'gated' in name or 'diffusion_model.input_blocks.0.0' in name or 'diffusion_model.out.2' in name:
+                # if 'gated' in name or 'diffusion_model.input_blocks.0.0' in name or 'diffusion_model.out.2' in name :
+                #     print(f"model:add {name} into optimizers")
+                #     params.append(param)
+                # elif not 'transformer_blocks' in name:
+                #     param.requires_grad=False
+                if not 'temporal' in name and 'diffusion_model' in name:
                     print(f"model:add {name} into optimizers")
                     params.append(param)
-                elif not 'transformer_blocks' in name:
-                    param.requires_grad=False
                 
         if self.cond_stage_trainable:
             print("add encoder parameters into optimizers")
@@ -1298,6 +1303,7 @@ class AutoDM(DDPM):
         n_row = min(x.shape[0],n_row)
         log['inputs'] = x
         log['reconstruction'] = x_rec
+        # log['hdmap'] = c['hdmap']
 
         if plot_diffusion_rows:
             #get diffusion row
@@ -1421,6 +1427,9 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         for param in self.first_stage_model.parameters():
             param.requires_grad = False
         self.hdmap_encoder = instantiate_from_config(hdmap_config)
+        # self.hdmap_encoder.eval()
+        # for param in self.hdmap_encoder.parameters():
+        #     param.requires_grad = False
         self.box_encoder = instantiate_from_config(box_config)
         #self.instantiate_cond_stage(cond_stage_config)
         # self.split_input_params = {
@@ -1514,11 +1523,11 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         for zd in tqdm(samples,desc=desc):
             denoise_row.append(self.decode_first_stage(zd.to(self.device),
                                                        force_not_quantize=force_no_decoder_quantization))
-        n_imgs_per_orw = len(denoise_row)
+        n_imgs_per_row = len(denoise_row)
         denoise_row = torch.stack(denoise_row) #n_log_step n_row C H W
         denoise_grid = rearrange(denoise_row,'n b c h w -> b n c h w')
         denoise_grid = rearrange(denoise_grid,'b n c h w -> (b n) c h w')
-        denoise_grid = make_grid(denoise_grid,nrow=n_imgs_per_orw)
+        denoise_grid = make_grid(denoise_grid,nrow=n_imgs_per_row)
         return denoise_grid
         
     def get_first_stage_encoding(self,encoder_posterior):
@@ -1660,7 +1669,6 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
 
     #check whether need / 255.
     def encode_first_stage(self,x,encoder):
-        x = x / 255.
         if hasattr(self,'split_input_params'):
             if self.split_input_params['patch_distributed_vq']:
                 ks = self.split_input_params["ks"] #eg. (128,128)
@@ -2019,15 +2027,18 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
                 # else:
                 #     # assert param.requires_grad == True
                 #     param.requires_grad = False
-                if 'gated' in name or 'diffusion_model.input_blocks.0.0' in name or 'diffusion_model.out.2' in name:
+                # if 'gated' in name or 'diffusion_model.input_blocks.0.0' in name or 'diffusion_model.out.2' in name:
+                #     print(f"model:add {name} into optimizers")
+                #     params.append(param)
+                # elif not 'transformer_blocks' in name:
+                #     param.requires_grad=False
+                if not 'temporal' in name and 'diffusion_model' in name:
                     print(f"model:add {name} into optimizers")
                     params.append(param)
-                elif not 'transformer_blocks' in name:
-                    param.requires_grad=False
                 
         if self.cond_stage_trainable:
             print("add encoder parameters into optimizers")
-            params = params  + list(self.hdmap_encoder.parameters()) + list(self.box_encoder.parameters())
+            params = params + list(self.box_encoder.parameters()) + list(self.hdmap_encoder.parameters())
         if self.learn_logvar:
             print("Diffusion model optimizing logvar")
             params.append(self.logvar)
@@ -2269,6 +2280,10 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
 
         if sample:
             # get denoise row
+            c['hdmap'] = c['hdmap'][:N]
+            c['boxes'] = c['boxes'][:N]
+            c['category'] = c['category'][:N]
+            c['text'] = c['text'][:N]
             with self.ema_scope("Plotting"):
                 samples,z_denoise_row = self.sample_log(cond=c,batch_size=N,ddim=use_ddim,
                                                         ddim_steps=ddim_steps,eta=ddim_eta)
@@ -2331,7 +2346,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/first_stage_step1_config_stablediffusionencoder.yaml',
+                        default='configs/first_stage_step1_config_online3.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
@@ -2352,10 +2367,10 @@ if __name__ == '__main__':
            'category':box_category,
            'reference_image':x,
            'HDmap':hdmap}
-    # network.log_images(out)
+    network.log_images(out)
     # loss,loss_dict = network.shared_step(out)
     # network.configure_optimizers()
-    network.shared_step(out)
+    # network.shared_step(out)
     # loss,loss_dict = network.validation_step(out,0)
     # loss.backward()
 

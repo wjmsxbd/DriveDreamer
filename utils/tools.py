@@ -60,7 +60,7 @@ def get_box_in_image(box:Box,intrinsic:np.ndarray):
 
 def get_3dbox(sample_data_token:str,nusc:NuScenes,imsize:tuple,out_path=None):
     data_path,boxes,camera_intrinsic = nusc.get_sample_data(sample_data_token,box_vis_level=True)
-    #fig = plt.figure(figsize=(16,9),facecolor='black',dpi=100)
+    # fig = plt.figure(figsize=(16,9),facecolor='black',dpi=100)
     # ax = fig.add_axes([0,0,1,1])
     # ax.set_xlim(0,imsize[0])
     # ax.set_ylim(0,imsize[1])
@@ -68,7 +68,7 @@ def get_3dbox(sample_data_token:str,nusc:NuScenes,imsize:tuple,out_path=None):
     box_list = []
     for box in boxes:
         c = np.array([1.0,0.0,0.0])
-        #box.render(ax, view=camera_intrinsic, normalize=True, colors=(c, c, c))
+        # box.render(ax, view=camera_intrinsic, normalize=True, colors=(c, c, c))
         box_category.append(box.name)
         box_list.append(get_box_in_image(box,camera_intrinsic))
 

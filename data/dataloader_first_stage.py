@@ -24,6 +24,7 @@ import matplotlib.image as mpimg
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from einops import repeat
 import omegaconf
+from PIL import Image
 
 def disabled_train(self,mode=True):
     """Overwrite model.train with this function to make sure train/eval mode
@@ -55,6 +56,7 @@ class dataloader(data.Dataset):
         with open(data_info_path,'rb') as f:
             data_infos = pickle.load(f)
         self.data_infos = list(sorted(data_infos['infos'],key=lambda e:e['timestamp']))
+        print(len(self.data_infos))
 
     def __len__(self):
         return len(self.data_infos)
@@ -83,14 +85,19 @@ class dataloader(data.Dataset):
         # cam_front_img = mpimg.imread(cam_front_path)
         # imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
         # cam_front_img = Image.fromarray(cam_front_img)
-        ref_img,boxes,hdmap,category,yaw,translation = get_this_scene_info(self.cfg['dataroot'],self.nusc,nusc_map,sample_token)
+        if self.cfg['img_size'] is not None:
+            ref_img,boxes,hdmap,category,yaw,translation = get_this_scene_info(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']))
+        else:
+            ref_img,boxes,hdmap,category,yaw,translation = get_this_scene_info(self.cfg['dataroot'],self.nusc,nusc_map,sample_token)
         out = {}
         boxes = np.array(boxes).astype(np.float32)
-        ref_img = torch.from_numpy(ref_img / 255.).to(torch.float32)
-        hdmap = torch.from_numpy(hdmap / 255.).to(torch.float32)
+        ref_img = torch.from_numpy(ref_img / 255. * 2 - 1.0).to(torch.float32)
+        hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.0).to(torch.float32)
 
         out['reference_image'] = ref_img.unsqueeze(0)
-        out['HDmap'] = hdmap.unsqueeze(0)
+        out['HDmap'] = hdmap[:,:,:3].unsqueeze(0)
+        
+        
         out['text'] = self.clip(text).cpu().to(torch.float32)
         out['text'] = repeat(out['text'],'n c -> (repeat n) c',repeat=out['reference_image'].shape[0])
         if boxes.shape[0] == 0:
@@ -113,20 +120,88 @@ class dataloader(data.Dataset):
     def __getitem__(self,idx):
         return self.get_data_info(idx)
     
+def save_tensor_as_image(tensor, file_path):
+    if tensor.is_cuda:
+        tensor = tensor.cpu()
+
+    if len(tensor.shape) == 4:
+        tensor = tensor.squeeze(0)
+
+    # mean = torch.tensor([0.485, 0.456, 0.406])
+    # std = torch.tensor([0.229, 0.224, 0.225])
+    # tensor = tensor * std[:, None, None] + mean[:, None, None]
+
+    tensor = tensor.clamp(-1, 1)  # 确保值在[0, 1]之间
+    tensor = (tensor + 1.0) / 2.0
+    tensor = tensor * 255.0
+
+    tensor = tensor.byte()
+
+
+    tensor = tensor.permute(1, 2, 0)
+
+
+    numpy_array = tensor.numpy()
+
+    image = Image.fromarray(numpy_array)
+
+    image.save(file_path)
+
 
 if __name__ == '__main__':
+    # _____________________________________________________________
+    # import argparse
+    # parser = argparse.ArgumentParser(description='AutoDM-training')
+    # parser.add_argument('--config',
+    #                     default='configs/first_stage_step1_config_online2.yaml',
+    #                     type=str,
+    #                     help="config path")
+    # cmd_args = parser.parse_args()
+    # cfg = omegaconf.OmegaConf.load(cmd_args.config)
+    # # print("get cfg!!!!!!!!!!!!")
+    # cfg.data.params.train.params['device'] = 0
+    # data_loader = dataloader(**cfg.data.params.train.params)
+    # network = instantiate_from_config(cfg['model'])
+    # model_path = 'logs/2024-05-24T17-05-15_first_stage_step1_config_online2/checkpoints/epoch=000008.ckpt'
+    # # model_path = 'logs/2024-05-25T05-27-43_first_stage_step1_config_online3/checkpoints/epoch=000000.ckpt'
+    # network.init_from_ckpt(model_path)
+    # network = network.eval().cuda()
+    # save_path = 'myencodersd/'
+    # # save_path = 'sd_images/'
+    # for i in range(200,250,10):
+    #     input_data = data_loader.__getitem__(i)
+    #     input_data = {k:v.unsqueeze(0).cuda() for k,v in input_data.items()}
+    #     logs = network.log_images(input_data)
+    #     save_tensor_as_image(logs['inputs'],file_path=save_path+f'inputs_{i:02d}.jpg')
+    #     save_tensor_as_image(logs['samples'],file_path=save_path+f'samples{i:02d}.jpg')
+    #     # logs['hdmap'] = logs['hdmap'][:,:3]
+    #     # print(logs['hdmap'].shape)
+    #     # save_tensor_as_image(logs['hdmap'],file_path=save_path+f'hdmap{i:02d}.jpg')
+    # # out = data_loader.__getitem__(0)
+    # # print([v.shape for k,v in out.items()])
+    # # print(out.keys())
+    
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/first_stage_step1_config_online2.yaml',
+                        default='configs/first_stage_step1_config_mini.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
-    print("get cfg!!!!!!!!!!!!")
+    cfg.data.params.train.params['device'] = 0
     data_loader = dataloader(**cfg.data.params.train.params)
-    out = data_loader.__getitem__(0)
-    print([v.shape for k,v in out.items()])
-    print(out.keys())
-    
+    network = instantiate_from_config(cfg['model'])
+    model_path = 'logs/2024-06-20T03-51-30_first_stage_step1_config_mini/checkpoints/last.ckpt'
+    network.init_from_ckpt(model_path)
+    network = network.eval().cuda()
+    save_path = 'all_pics/add_night_condition/'
+    for i in range(2000,4400,400):
+        input_data = data_loader.__getitem__(i)
+        input_data = {k:v.unsqueeze(0).cuda() for k,v in input_data.items()}
+        logs = network.log_images(input_data)
+        save_tensor_as_image(logs['inputs'],file_path=save_path+f'inputs_{i:02d}.jpg')
+        save_tensor_as_image(logs['samples'],file_path=save_path+f'samples{i:02d}.jpg')
+        
 
+    

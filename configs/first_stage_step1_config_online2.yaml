@@ -16,7 +16,7 @@ model:
     channels: 8
     cond_stage_trainable: true
     scale_by_std: true
-    monitor: val/loss_simple_ema
+    monitor: val/loss_simple
     unet_trainable: true
     learn_logvar: true
     cond_stage_config:
@@ -59,7 +59,7 @@ model:
         context_dim: 768
         use_checkpoint: false
         use_spatial_transformer: true
-        ckpt_path: stable_diffusion/sd-v1-4.ckpt
+        ckpt_path: 
         movie_len: 1
         height: 7
         width: 12
@@ -71,17 +71,13 @@ model:
           - 0
         - - 0
           - -1
-        ignore_keys:
-        - model.diffusion_model.input_blocks.0.0
-        - model.diffusion_model.out.2
-        - cond_stage_model
-        - first_stage_model
+        # ignore_keys: ['hdmap']
     ref_img_config:
       target: ldm.models.autoencoder.AutoencoderKL
       params:
         embed_dim: 8
         monitor: val/rec_loss
-        ckpt_path: logs/2024-05-14T13-26-34_autoencoder/checkpoints/epoch=000036.ckpt
+        # ckpt_path: logs/2024-05-14T13-26-34_autoencoder/checkpoints/epoch=000036.ckpt
         ddconfig:
           double_z: true
           z_channels: 8
@@ -105,7 +101,7 @@ model:
       params:
         embed_dim: 8
         monitor: val/rec_loss
-        ckpt_path: null
+        # ckpt_path: logs/2024-05-14T13-26-34_autoencoder/checkpoints/epoch=000036.ckpt
         ddconfig:
           double_z: true
           z_channels: 8
@@ -171,5 +167,5 @@ lightning:
         increase_log_steps: false
   trainer:
     benchmark: true
-    gpus: 0,1,2,3
+    gpus: 0,1,2
     accelerator: ddp

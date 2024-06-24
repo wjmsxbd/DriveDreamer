@@ -48,8 +48,8 @@ class VQModel(pl.LightningModule):
         self.embed_dim = embed_dim
         self.n_embed = n_embed
         self.image_key = image_key
-        self.encoder = Encoder(**ddconfig)
-        self.decoder = Decoder(**ddconfig)
+        self.encoder = Encoder_Diffusion(**ddconfig)
+        self.decoder = Decoder_Diffusion(**ddconfig)
         self.loss = instantiate_from_config(lossconfig)
         self.quantize = VectorQuantizer(n_embed, embed_dim, beta=0.25,
                                         remap=remap,
@@ -306,7 +306,9 @@ class AutoencoderKL(pl.LightningModule):
                  ignore_keys=[],
                  image_key="reference_image",
                  colorize_nlabels=None,
-                 monitor=None,):
+                 monitor=None,
+                 use_finetune=False,
+                 train_downsample=False):
         super().__init__()
         self.image_key = image_key
         self.encoder = Encoder(**ddconfig)
@@ -316,6 +318,7 @@ class AutoencoderKL(pl.LightningModule):
         self.quant_conv = torch.nn.Conv2d(2*ddconfig["z_channels"], 2*embed_dim, 1)
         self.post_quant_conv = torch.nn.Conv2d(embed_dim, ddconfig["z_channels"], 1)
         self.embed_dim = embed_dim
+        self.train_downsample=train_downsample
         if colorize_nlabels is not None:
             assert type(colorize_nlabels)==int
             self.register_buffer("colorize", torch.randn(3, colorize_nlabels, 1, 1))
@@ -323,13 +326,14 @@ class AutoencoderKL(pl.LightningModule):
             self.monitor = monitor
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+        self.use_finetune = use_finetune
 
     def init_from_ckpt(self,path,ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
         keys = list(sd.keys())
         for k in keys:
             for ik in ignore_keys:
-                if k.startswith(ik):
+                if ik in k:
                     print("Deleting key {} from state_dict.".format(k))
                     del sd[k]
         self.load_state_dict(sd, strict=False)
@@ -396,11 +400,20 @@ class AutoencoderKL(pl.LightningModule):
     
     def configure_optimizers(self):
         lr = self.learning_rate
-        opt_ae = torch.optim.Adam(list(self.encoder.parameters())+
-                                  list(self.decoder.parameters())+
-                                  list(self.quant_conv.parameters())+
-                                  list(self.post_quant_conv.parameters()),
-                                  lr=lr,betas=(0.5,0.9))
+        params = []
+        if self.train_downsample:
+            for name,param in self.named_parameters():
+                if 'downsample' in name:
+                    params.append(param)
+                    print(f"add:{name}")
+            opt_ae = torch.optim.Adam(params)
+        else:
+            print("add all!!!!!!!!!!!!!!")
+            opt_ae = torch.optim.Adam(list(self.encoder.parameters())+
+                                    list(self.decoder.parameters())+
+                                    list(self.quant_conv.parameters())+
+                                    list(self.post_quant_conv.parameters()),
+                                    lr=lr,betas=(0.5,0.9))
         opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
                                     lr=lr,betas=(0.5,0.9))
         return [opt_ae,opt_disc],[]
@@ -573,7 +586,8 @@ class AutoencoderKL_Diffusion(pl.LightningModule):
                  ignore_keys=[],
                  image_key="reference_image",
                  colorize_nlabels=None,
-                 monitor=None,):
+                 monitor=None,
+                 use_finetune=False):
         super().__init__()
         self.image_key = image_key
         self.encoder = Encoder_Diffusion(**ddconfig)
@@ -588,17 +602,30 @@ class AutoencoderKL_Diffusion(pl.LightningModule):
             self.register_buffer("colorize", torch.randn(3, colorize_nlabels, 1, 1))
         if monitor is not None:
             self.monitor = monitor
+        self.use_finetune=use_finetune
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+        
 
     def init_from_ckpt(self,path,ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
         keys = list(sd.keys())
+        # for name,param in self.named_parameters():
+        #     flag = False
+        #     for ik in ignore_keys:
+        #         if name.startswith(ik):
+        #             flag=True
+        #     if flag or name.startswith('decoder'):
+        #         print(f"add {name} grad = true")
+        #         param.requires_grad=True
+        #     else:
+        #         param.requires_grad=False
         for k in keys:
             for ik in ignore_keys:
                 if k.startswith(ik):
                     print("Deleting key {} from state_dict.".format(k))
                     del sd[k]
+                    
         self.load_state_dict(sd, strict=False)
         print(f"Restored from {path}")
     
@@ -663,14 +690,22 @@ class AutoencoderKL_Diffusion(pl.LightningModule):
     
     def configure_optimizers(self):
         lr = self.learning_rate
-        opt_ae = torch.optim.Adam(list(self.encoder.parameters())+
-                                  list(self.decoder.parameters())+
-                                  list(self.quant_conv.parameters())+
-                                  list(self.post_quant_conv.parameters()),
-                                  lr=lr,betas=(0.5,0.9))
-        opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
+        if self.use_finetune:
+            opt_ae = torch.optim.Adam(list(self.quant_conv.parameters())+
+                                    list(self.post_quant_conv.parameters()),
                                     lr=lr,betas=(0.5,0.9))
-        return [opt_ae,opt_disc],[]
+            opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
+                                        lr=lr,betas=(0.5,0.9))
+            return [opt_ae,opt_disc],[]
+        else:
+            opt_ae = torch.optim.Adam(list(self.encoder.parameters())+
+                                    list(self.decoder.parameters())+
+                                    list(self.quant_conv.parameters())+
+                                    list(self.post_quant_conv.parameters()),
+                                    lr=lr,betas=(0.5,0.9))
+            opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
+                                        lr=lr,betas=(0.5,0.9))
+            return [opt_ae,opt_disc],[]
     
     def get_last_layer(self):
         return self.decoder.conv_out.weight

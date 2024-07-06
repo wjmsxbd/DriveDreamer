@@ -18,7 +18,7 @@ from nuscenes.map_expansion.map_api import NuScenesMap,NuScenesMapExplorer
 from pyquaternion import Quaternion
 from nuscenes.nuscenes import NuScenes
 from torch.utils import data
-from utils.tools import get_this_scene_info
+from utils.tools import get_this_scene_info_with_lidar
 from ldm.util import instantiate_from_config
 import matplotlib.image as mpimg
 from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -49,14 +49,34 @@ class dataloader(data.Dataset):
         }
         #$self.instantiate_cond_stage(cond_stage_config)
         self.clip = self.clip.to(self.device)
+        self.capture_frequency = cfg.capture_frequency
         self.load_data_infos()
 
     def load_data_infos(self):
         data_info_path = os.path.join(self.cfg['dataroot'],f"nuScenes_advanced_infos_{self.split_name}.pkl")
         with open(data_info_path,'rb') as f:
             data_infos = pickle.load(f)
-        self.data_infos = list(sorted(data_infos['infos'],key=lambda e:e['timestamp']))
+        sorted_data_infos = list(sorted(data_infos['infos'],key=lambda e:e['timestamp']))
+        scene_infos = dict()
+        for data_info in sorted_data_infos:
+            sample_token = data_info['token']
+            scene_token = self.nusc.get('sample',sample_token)['scene_token']
+            scene = self.nusc.get('scene',scene_token)
+            if not scene['name'] in scene_infos.keys():
+                scene_infos[scene['name']] = [data_info]
+            else:
+                scene_infos[scene['name']].append(data_info)
+        
+        self.data_infos = []
+        capture_frequency = 0
+        for scene_name,data_infos in scene_infos.items():
+
+            for data_info in data_infos:
+                if capture_frequency == 0:
+                    self.data_infos.append(data_info)
+                capture_frequency = (capture_frequency + 1) % self.capture_frequency
         print(len(self.data_infos))
+        
 
     def __len__(self):
         return len(self.data_infos)
@@ -76,8 +96,6 @@ class dataloader(data.Dataset):
         log_token = scene['log_token']
         log = self.nusc.get('log',log_token)
         nusc_map = self.nusc_maps[log['location']]
-        
-        # self.nusc.render_pointcloud_in_image(sample_token,out_path='000.jpg')
 
         # sample_record = self.nusc.get('sample',sample_token)
         # cam_front_token = sample_record['data']['CAM_FRONT']
@@ -87,14 +105,18 @@ class dataloader(data.Dataset):
         # imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
         # cam_front_img = Image.fromarray(cam_front_img)
         if self.cfg['img_size'] is not None:
-            ref_img,boxes,hdmap,category,yaw,translation = get_this_scene_info(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']))
+            ref_img,boxes,hdmap,category,depth_cam_front_img,range_image = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']))
         else:
-            ref_img,boxes,hdmap,category,yaw,translation = get_this_scene_info(self.cfg['dataroot'],self.nusc,nusc_map,sample_token)
+            ref_img,boxes,hdmap,category,depth_cam_front_img,range_image = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token)
         out = {}
         boxes = np.array(boxes).astype(np.float32)
         ref_img = torch.from_numpy(ref_img / 255. * 2 - 1.0).to(torch.float32)
         hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.0).to(torch.float32)
+        depth_cam_front_img = torch.from_numpy(depth_cam_front_img / 255. * 2 - 1.0).to(torch.float32)
+        range_image = torch.from_numpy(range_image / 255. * 2 - 1.0).to(torch.float32)
 
+        out['range_image'] = range_image[:,:,:3].unsqueeze(0)
+        out['depth_cam_front_img'] = depth_cam_front_img.unsqueeze(0)
         out['reference_image'] = ref_img.unsqueeze(0)
         out['HDmap'] = hdmap[:,:,:3].unsqueeze(0)
         
@@ -184,24 +206,25 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/first_stage_step1_config_high.yaml',
+                        default='configs/copy_test.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
     cfg.data.params.train.params['device'] = 0
     data_loader = dataloader(**cfg.data.params.train.params)
-    network = instantiate_from_config(cfg['model'])
-    model_path = 'logs/2024-06-24T07-06-16_first_stage_step1_config_mini/checkpoints/last.ckpt'
-    network.init_from_ckpt(model_path)
-    network = network.eval().cuda()
-    save_path = 'all_pics/add_night_condition/'
-    for i in range(1,2001,10000):
-        input_data = data_loader.__getitem__(i)
-        input_data = {k:v.unsqueeze(0).cuda() for k,v in input_data.items()}
-        logs = network.log_images(input_data)
-        save_tensor_as_image(logs['inputs'],file_path=save_path+f'inputs_{i:02d}.jpg')
-        save_tensor_as_image(logs['samples'],file_path=save_path+f'samples{i:02d}.jpg')
+    data_loader.__getitem__(0)
+    # network = instantiate_from_config(cfg['model'])
+    # model_path = 'logs/2024-06-24T07-06-16_first_stage_step1_config_mini/checkpoints/last.ckpt'
+    # network.init_from_ckpt(model_path)
+    # network = network.eval().cuda()
+    # save_path = 'all_pics/add_night_condition/'
+    # for i in range(1,2001,10000):
+    #     input_data = data_loader.__getitem__(i)
+    #     input_data = {k:v.unsqueeze(0).cuda() for k,v in input_data.items()}
+    #     logs = network.log_images(input_data)
+    #     save_tensor_as_image(logs['inputs'],file_path=save_path+f'inputs_{i:02d}.jpg')
+    #     save_tensor_as_image(logs['samples'],file_path=save_path+f'samples{i:02d}.jpg')
         
 
     

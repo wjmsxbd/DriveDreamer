@@ -11,6 +11,8 @@ from queue import Queue
 from inspect import isfunction
 from PIL import Image,ImageDraw,ImageFont
 
+to_cpu = lambda tensor: tensor.detach().cpu().numpy()
+
 def log_txt_as_img(wh,xc,size=10):
     # wh a tuple of (width, height)
     # xc a list of captions to plot

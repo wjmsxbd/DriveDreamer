@@ -220,11 +220,14 @@ class GatedSelfAttention(nn.Module):
         self.scale = 1  
 
 
-    def forward(self, x, objs):
+    def forward(self, x, objs=None):
 
         N_visual = x.shape[1]
-        objs = self.linear(objs)
-        h = self.norm1(torch.cat([x,objs],dim=1))
+        if not objs is None:
+            objs = self.linear(objs)
+            h = self.norm1(torch.cat([x,objs],dim=1))
+        else:
+            h = self.norm1(x)
         # h = rearrange(h,'b n c -> b c n')
         h = self.scale * torch.tanh(self.alpha_attn) * self.gated_attention_block(h)
         # h = rearrange(h,'b n c -> b c n')
@@ -256,7 +259,11 @@ class BasicTransformerBlock(nn.Module):
         bhw = x.shape[0]
         batch_size = bhw // self.height // self.width
         x = rearrange(x,'(b h w) n c -> (b n) (h w) c',b=batch_size,h=self.height,w=self.width,n=self.movie_len)
-        x = self.attn1(self.norm1(x),objs) + x
+        if objs is None:
+            x = self.attn1(self.norm1(x)) + x
+        else:
+            x = self.attn1(self.norm1(x),objs) + x
+        
         x = self.attn2(self.norm2(x), context=context) + x
         x = self.ff(self.norm3(x)) + x
 
@@ -314,7 +321,7 @@ class SpatialTransformer(nn.Module):
                                               stride=1,
                                               padding=0))
         
-    def forward(self,x,boxes_emb,text_emb):
+    def forward(self,x,boxes_emb=None,text_emb=None):
         # b,c,h,w = x.shape
         x_in = x
         x = self.norm(x)
@@ -322,7 +329,10 @@ class SpatialTransformer(nn.Module):
         # x = rearrange(x,'b c h w -> b (h w) c')
         for d in range(len(self.transformer_blocks)):
             x = self.temporal_blocks[d](x)
-            x = self.transformer_blocks[d](x,boxes_emb,text_emb)
+            if boxes_emb is None:
+                x = self.transformer_blocks[d](x,context=text_emb)
+            else:
+                x = self.transformer_blocks[d](x,boxes_emb,text_emb)
         # for block in self.transformer_blocks:
         #     x = block(x,boxes_emb,text_emb)
         # x = rearrange(x,'b (h w) c -> b c h w',h=h,w=w)

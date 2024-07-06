@@ -1,6 +1,7 @@
 import torch
 import cv2
 import numpy as np
+import os.path as osp
 from PIL import Image
 import matplotlib.pyplot as plt
 from nuscenes.utils.splits import create_splits_scenes
@@ -19,6 +20,9 @@ import os,random
 from torch.utils import data
 import matplotlib.image as mpimg
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from nuscenes.lidarseg.lidarseg_utils import colormap_to_colors,get_labels_in_coloring,create_lidarseg_legend,paint_points_label
+from nuscenes.panoptic.panoptic_utils import paint_panop_points_label,stuff_cat_ids
+from typing import Tuple, List, Iterable
 
 LOGGER_DEFAULT_FORMAT = ('<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> |'
                   ' <level>{level: <8}</level> |'
@@ -242,6 +246,7 @@ def get_this_scene_info(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_to
     cam_front_img = mpimg.imread(cam_front_path)
     #mpimg.imsave(f'./temp/camera_front/{count:02d}.jpg',cam_front_img)
     imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
+    print(imsize)
     cam_front_img = Image.fromarray(cam_front_img)
     cam_front_img = np.array(cam_front_img.resize(img_size))
 
@@ -255,3 +260,251 @@ def get_this_scene_info(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_to
     plt.close(hdmap_fig)
     return cam_front_img,box_list,now_hdmap,box_category,yaw,translation
     
+
+def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448)):
+    sample_record = nusc.get('sample',sample_token)
+    cam_front_token = sample_record['data']['CAM_FRONT']
+    cam_front_path = nusc.get('sample_data',cam_front_token)['filename']
+    depth_cam_front_path = cam_front_path.split('/')
+    depth_cam_front_path[0] = depth_cam_front_path[0] + '_depth'
+    depth_cam_front_path[-1] = depth_cam_front_path[-1].split('.')[0] + '_depth.png'
+    cam_front_path = os.path.join(dataset_dir,cam_front_path)
+    depth_cam_front_path = os.path.join(dataset_dir,*depth_cam_front_path)
+
+    depth_cam_front_img = mpimg.imread(depth_cam_front_path).astype(np.float32)
+    mpimg.imsave(f'./temp/depth_camera_front/{sample_token}.png',depth_cam_front_img)
+    cam_front_img = mpimg.imread(cam_front_path)
+    #mpimg.imsave(f'./temp/camera_front/{count:02d}.jpg',cam_front_img)
+    imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
+    cam_front_img = Image.fromarray(cam_front_img)
+    cam_front_img = np.array(cam_front_img.resize(img_size))
+    depth_cam_front_img = (depth_cam_front_img * 255.).astype(np.uint8)
+    #print(depth_cam_front_img.min(),depth_cam_front_img.max())
+    depth_cam_front_img = Image.fromarray(depth_cam_front_img)
+    depth_cam_front_img = np.array(depth_cam_front_img.resize(img_size))
+
+    
+
+    box_list,box_category = get_3dbox(cam_front_token,nusc,imsize)#out_path=f'./temp/3dbox/{count:02d}.jpg'
+    hdmap_fig,hdmap_ax,yaw,translation = get_hdmap(cam_front_token,nusc,nusc_map)#,outpath=f'./temp/hdmap/{count:02d}.jpg'
+    range_image_fig,range_image_ax = render_pointcloud_in_image(nusc,sample_token)#out_path='000.jpg'
+    range_image = convert_fig_to_numpy(range_image_fig,imsize)
+    range_image = Image.fromarray(range_image)
+    range_image = np.array(range_image.resize(img_size))
+
+    now_hdmap = convert_fig_to_numpy(hdmap_fig,imsize)
+    now_hdmap = Image.fromarray(now_hdmap)
+    now_hdmap = np.array(now_hdmap.resize(img_size))
+
+    box_list = np.array(box_list)
+    plt.close(hdmap_fig)
+    plt.close(range_image_fig)
+    return cam_front_img,box_list,now_hdmap,box_category,depth_cam_front_img,range_image
+
+def render_pointcloud_in_image(nusc: NuScenes,sample_token:str,dot_size:int = 5,pointsensor_channel: str='LIDAR_TOP',
+                               camera_channel:str='CAM_FRONT',out_path:str=None,
+                               render_intensity:bool = False,
+                               show_lidarseg: bool = False,
+                               filter_lidarseg_labels: bool = False,
+                               show_lidarseg_legend: bool = False,
+                               verbose: bool = True,
+                               lidarseg_preds_bin_path: str = None,
+                               show_panoptic: bool = False) -> None:
+    """
+        Scatter-plots a pointcloud on top of image.
+        :param sample_token: Sample token.
+        :param dot_size: Scatter plot dot size.
+        :param pointsensor_channel: RADAR or LIDAR channel name, e.g. 'LIDAR_TOP'.
+        :param camera_channel: Camera channel name, e.g. 'CAM_FRONT'.
+        :param out_path: Optional path to save the rendered figure to disk.
+        :param render_intensity: Whether to render lidar intensity instead of point depth.
+        :param show_lidarseg: Whether to render lidarseg labels instead of point depth.
+        :param filter_lidarseg_labels: Only show lidar points which belong to the given list of classes.
+        :param ax: Axes onto which to render.
+        :param show_lidarseg_legend: Whether to display the legend for the lidarseg labels in the frame.
+        :param verbose: Whether to display the image in a window.
+        :param lidarseg_preds_bin_path: A path to the .bin file which contains the user's lidar segmentation
+                                        predictions for the sample.
+        :param show_panoptic: When set to True, the lidar data is colored with the panoptic labels. When set
+            to False, the colors of the lidar data represent the distance from the center of the ego vehicle.
+            If show_lidarseg is True, show_panoptic will be set to False.
+        """
+    if show_lidarseg:
+        show_panoptic = False
+    sample_record = nusc.get('sample',sample_token)
+    pointsensor_token = sample_record['data'][pointsensor_channel]
+    camera_token = sample_record['data'][camera_channel]
+
+    points,coloring,im = map_pointcloud_to_image(nusc,pointsensor_token,camera_token,
+                                                 render_intensity=render_intensity,
+                                                 show_lidarseg=show_lidarseg,
+                                                 filter_lidarseg_labels=filter_lidarseg_labels,
+                                                 lidarseg_preds_bin_path=lidarseg_preds_bin_path,
+                                                 show_panoptic=show_panoptic)
+    # Init axes.
+    fig,ax = plt.subplots(1,1,figsize=(16,9))
+    if lidarseg_preds_bin_path:
+        fig.canvas.set_window_title(sample_token + "(prediction)")
+    else:
+        fig.canvas.set_window_title(sample_token)
+    
+    # ax.imshow(im)
+    ax.scatter(points[0,:],points[1,:],c=coloring,s=dot_size)
+    ax.axis('off')
+
+    if pointsensor_channel == 'LIDAR_TOP' and (show_lidarseg or show_panoptic) and show_lidarseg_legend:
+        # If user does not specify a filter, then set the filter to contain the classes present in the pointcloud
+        # after it has been projected onto the image; this will allow displaying the legend only for classes which
+        # are present in the image (instead of all the classes).
+        if filter_lidarseg_labels is None:
+            if show_lidarseg:
+                # Since the labels are stored as class indices, we get the RGB colors from the
+                # colormap in an array where the position of the RGB color corresponds to the index
+                # of the class it represents.
+                color_legend = colormap_to_colors(nusc.colormap,nusc.lidarseg_name2idx_mapping)
+                filter_lidarseg_labels = get_labels_in_coloring(color_legend,coloring)
+            else:
+                filter_lidarseg_labels = stuff_cat_ids(len(nusc.lidarseg_name2idx_mapping))
+
+        if filter_lidarseg_labels and show_panoptic:
+            stuff_labels = set(stuff_cat_ids(len(nusc.lidarseg_name2idx_mapping)))
+            filter_lidarseg_labels = list(stuff_labels.intersection(set(filter_lidarseg_labels)))
+
+        create_lidarseg_legend(filter_lidarseg_labels,nusc.lidarseg_name2idx_mapping,nusc.colormap,
+                               loc='upper left',ncol=1,bbox_to_anchor=(1.05,1.0))
+    if out_path is not None:
+        plt.savefig(out_path,bbox_inches='tight',pad_inches=0,dpi=200)
+    if verbose:
+        plt.show()
+    return fig,ax
+
+
+def map_pointcloud_to_image(nusc:NuScenes,
+                            pointsensor_token:str,
+                            camera_token:str,
+                            min_dist:float=1.0,
+                            render_intensity:bool=False,
+                            show_lidarseg:bool=False,
+                            filter_lidarseg_labels:List=None,
+                            lidarseg_preds_bin_path:str=None,
+                            show_panoptic:bool=False) -> Tuple:
+    """
+    Given a point sensor (lidar/radar) token and camera sample_data token, load pointcloud and map it to the image
+    plane.
+    :param pointsensor_token: Lidar/radar sample_data token.
+    :param camera_token: Camera sample_data token.
+    :param min_dist: Distance from the camera below which points are discarded.
+    :param render_intensity: Whether to render lidar intensity instead of point depth.
+    :param show_lidarseg: Whether to render lidar intensity instead of point depth.
+    :param filter_lidarseg_labels: Only show lidar points which belong to the given list of classes. If None
+        or the list is empty, all classes will be displayed.
+    :param lidarseg_preds_bin_path: A path to the .bin file which contains the user's lidar segmentation
+                                    predictions for the sample.
+    :param show_panoptic: When set to True, the lidar data is colored with the panoptic labels. When set
+        to False, the colors of the lidar data represent the distance from the center of the ego vehicle.
+        If show_lidarseg is True, show_panoptic will be set to False.
+    :return (pointcloud <np.float: 2, n)>, coloring <np.float: n>, image <Image>).
+    """
+    cam = nusc.get('sample_data',camera_token)
+    pointsensor = nusc.get('sample_data',pointsensor_token)
+    pcl_path = osp.join(nusc.dataroot,pointsensor['filename'])
+    if pointsensor['sensor_modality'] == 'lidar':
+        if show_lidarseg or show_panoptic:
+            gt_from = 'lidarseg' if show_lidarseg else 'panopic'
+            assert hasattr(nusc,gt_from),f'Error: nuScenes-{gt_from} not installed!'
+
+            # Ensure that lidar pointcloud is from a keyframe.
+            assert pointsensor['is_key_frame'], \
+                    'Error: Only pointclouds which are keyframes have lidar segmentation labels. Rendering aborted.'
+            assert not render_intensity, 'Error: Invalid options selected. You can only select either ' \
+                                             'render_intensity or show_lidarseg, not both.'
+        pc = LidarPointCloud.from_file(pcl_path)
+    else:
+        pc = LidarPointCloud.from_file(pcl_path)
+
+    im = Image.open(osp.join(nusc.dataroot,cam['filename']))
+    # Points live in the point sensor frame. So they need to be transformed via global to the image plane.
+    # First step: transform the pointcloud to the ego vehicle frame for the timestamp of the sweep.
+    cs_record = nusc.get('calibrated_sensor',pointsensor['calibrated_sensor_token'])
+    pc.rotate(Quaternion(cs_record['rotation']).rotation_matrix)
+    pc.translate(np.array(cs_record['translation']))
+
+    # Second step: transform from ego to the global frame.
+    poserecord = nusc.get('ego_pose',pointsensor['ego_pose_token'])
+    pc.rotate(Quaternion(poserecord['rotation']).rotation_matrix.T)
+    pc.translate(np.array(poserecord['translation']))
+
+    # Third step: transform from global into the ego vehicle frame for the timestamp of the image.
+    poserecord = nusc.get('ego_pose',pointsensor['ego_pose_token'])
+    pc.translate(-np.array(poserecord['translation']))
+    pc.rotate(Quaternion(poserecord['rotation']).rotation_matrix.T)
+
+    # Fourth step: transform from ego into the camera.
+    cs_record = nusc.get('calibrated_sensor',cam['calibrated_sensor_token'])
+    pc.translate(-np.array(cs_record['translation']))
+    pc.rotate(Quaternion(cs_record['rotation']).rotation_matrix.T)
+
+    # Fifth step: actually take a "picture" of the point cloud.
+    # Grab the depths (camera frame z axis points away from the camera).
+    depths = pc.points[2,:]
+
+    if render_intensity:
+        assert pointsensor['sensor_modality'] == 'lidar', 'Error: Can only render intensity for lidar, ' \
+                                                              'not %s!' % pointsensor['sensor_modality']
+        # Retrieve the color from the intensities.
+        # Performs arbitary scaling to achieve more visually pleasing results.
+        intensities = pc.points[3,:]
+        intensities = (intensities - np.min(intensities)) / (np.max(intensities) - np.min(intensities))
+        intensities = intensities ** 0.1
+        intensities = np.maximum(0,intensities - 0.5)
+        coloring = intensities
+    elif show_lidarseg or show_panoptic:
+        assert pointsensor['sensor_modality'] == 'lidar', 'Error: Can only render lidarseg labels for lidar, ' \
+                                                              'not %s!' % pointsensor['sensor_modality']
+        gt_from = 'lidarseg' if show_lidarseg else 'panoptic'
+        semantic_table = getattr(nusc, gt_from)
+        if lidarseg_preds_bin_path:
+            sample_token = nusc.get('sample_data', pointsensor_token)['sample_token']
+            lidarseg_labels_filename = lidarseg_preds_bin_path
+            assert os.path.exists(lidarseg_labels_filename), \
+                'Error: Unable to find {} to load the predictions for sample token {} (lidar ' \
+                'sample data token {}) from.'.format(lidarseg_labels_filename, sample_token, pointsensor_token)
+        else:
+            if len(semantic_table) > 0: # Ensure {lidarseg/panoptic}.json is not empty (e.g. in case of v1.0-test).
+                lidarseg_labels_filename = osp.join(nusc.dataroot,
+                                                    nusc.get(gt_from, pointsensor_token)['filename'])
+            else:
+                lidarseg_labels_filename = None
+        if lidarseg_labels_filename:
+                # Paint each label in the pointcloud with a RGBA value.
+            if show_lidarseg:
+                coloring = paint_points_label(lidarseg_labels_filename,
+                                                filter_lidarseg_labels,
+                                                nusc.lidarseg_name2idx_mapping,
+                                                nusc.colormap)
+            else:
+                coloring = paint_panop_points_label(lidarseg_labels_filename,
+                                                    filter_lidarseg_labels,
+                                                    nusc.lidarseg_name2idx_mapping,
+                                                    nusc.colormap)
+        else:
+            coloring = depths
+            print(f'Warning: There are no lidarseg labels in {nusc.version}. Points will be colored according '
+                    f'to distance from the ego vehicle instead.')
+    else:
+        # Retrieve the color from the depth.
+        coloring = depths
+    # Take the actual picture (matrix multiplication with camera-matrix + renormalization).
+    points = view_points(pc.points[:3, :], np.array(cs_record['camera_intrinsic']), normalize=True)
+    # Remove points that are either outside or behind the camera. Leave a margin of 1 pixel for aesthetic reasons.
+    # Also make sure points are at least 1m in front of the camera to avoid seeing the lidar points on the camera
+    # casing for non-keyframes which are slightly out of sync.
+    mask = np.ones(depths.shape[0], dtype=bool)
+    mask = np.logical_and(mask, depths > min_dist)
+    mask = np.logical_and(mask, points[0, :] > 1)
+    mask = np.logical_and(mask, points[0, :] < im.size[0] - 1)
+    mask = np.logical_and(mask, points[1, :] > 1)
+    mask = np.logical_and(mask, points[1, :] < im.size[1] - 1)
+    points = points[:, mask]
+    coloring = coloring[mask]
+    return points, coloring, im

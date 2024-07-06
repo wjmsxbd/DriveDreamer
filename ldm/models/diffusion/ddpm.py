@@ -22,7 +22,7 @@ from functools import partial
 from tqdm import tqdm
 from torchvision.utils import make_grid
 from pytorch_lightning.utilities.distributed import rank_zero_only
-from ldm.util import log_txt_as_img,exists,default,ismap,isimage,mean_flat, count_params, instantiate_from_config
+from ldm.util import log_txt_as_img,exists,default,ismap,isimage,mean_flat, count_params, instantiate_from_config,to_cpu
 from ldm.modules.ema import LitEma
 from ldm.modules.distributions.distributions import normal_kl, DiagonalGuassianDistribution
 from ldm.models.autoencoder import AutoencoderKL,VQModelInterface
@@ -31,6 +31,7 @@ from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.attention import PositionalEncoder
 from ldm.modules.diffusionmodules.util import extract_into_tensor
 import omegaconf
+import time
 
 __conditioning_keys__ = {'concat':'c_concat',
                          'crossattn':'c_crossattn',
@@ -422,8 +423,8 @@ class DiffusionWrapper(pl.LightningModule):
     def from_pretrained_model(self,model_path):
         self.diffusion_model.from_pretrained_model(model_path)
 
-    def forward(self,x,t,boxes_emb,text_emb):
-        return self.diffusion_model(x,t,boxes_emb=boxes_emb,text_emb=text_emb)
+    def forward(self,x,t,y=None,boxes_emb=None,text_emb=None):
+        return self.diffusion_model(x,t,y=y,boxes_emb=boxes_emb,text_emb=text_emb)
 
 #TODO:whether need split image
 class AutoDM(DDPM):
@@ -759,7 +760,8 @@ class AutoDM(DDPM):
         boxes_category = rearrange(boxes_category,'b n x c -> (b n) x c')
         text = rearrange(text,'b n c -> (b n) c').unsqueeze(1)
         x = ref_img
-        z = self.ref_img_encoder.encode(x)
+        z = self.encode_first_stage(x,self.ref_img_encoder)
+        # z = self.ref_img_encoder.encode(x)
         z = self.get_first_stage_encoding(z)
         out = [z]
         c = {}
@@ -807,7 +809,7 @@ class AutoDM(DDPM):
         ref_img = super().get_input(batch,'reference_image') # (b n c h w)
         hdmap = super().get_input(batch,'HDmap') # (b n c h w)
         x = ref_img.to(torch.float32)
-        x = self.get_first_stage_encoding(self.ref_img_encoder.encode(x))
+        x = self.get_first_stage_encoding(self.encode_first_stage(x,self.ref_img_encoder))
         c = {}
         c['hdmap'] = hdmap.to(torch.float32)
         boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d')
@@ -869,9 +871,9 @@ class AutoDM(DDPM):
             output_list = []
             for i in range(z.shape[-1]):
                 z = z_list[i]
-                z = self.get_first_stage_encoding(self.ref_img_encoder.encode(z))
+                z = self.get_first_stage_encoding(self.encode_first_stage(z,self.ref_img_encoder))
                 hdmap = hdmap_list[i]
-                hdmap = self.get_first_stage_encoding(self.hdmap_encoder.encode(hdmap))
+                hdmap = self.get_first_stage_encoding(self.encode_first_stage(hdmap,self.hdmap_encoder))
                 z = torch.cat([z,hdmap],dim=1)
                 boxes = boxes_list[i]
                 
@@ -888,7 +890,7 @@ class AutoDM(DDPM):
             # stitch crops together
             x_recon = fold(0) / normalization
         else:
-            hdmap = self.get_first_stage_encoding(self.hdmap_encoder.encode(cond['hdmap']))
+            hdmap = self.get_first_stage_encoding(self.encode_first_stage(cond['hdmap'],self.hdmap_encoder))
             boxes_emb = self.box_encoder(cond['boxes'],cond['category'])
             text_emb = cond['text']
             z = torch.cat([x_noisy,hdmap],dim=1)
@@ -1398,6 +1400,9 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
                  scale_factor=1.0,
                  scale_by_std=False,
                  unet_trainable=True,
+                 split_input_params=None,
+                 movie_len = 1,
+                 range_image_config = None,
                  *args,**kwargs):
         self.num_timesteps_cond = default(num_timesteps_cond,1)
         self.scale_by_std = scale_by_std
@@ -1431,24 +1436,16 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         # for param in self.hdmap_encoder.parameters():
         #     param.requires_grad = False
         self.box_encoder = instantiate_from_config(box_config)
+        if not range_image_config is None:
+            self.range_image_encoder = instantiate_from_config(range_image_config)
         #self.instantiate_cond_stage(cond_stage_config)
-        # self.split_input_params = {
-        #     "ks":(1024,1024),
-        #     "stride":(512,512),
-        #     "vqf": 64,
-        #     "patch_distributed_vq": True,
-        #     "tie_breaker":False,
-        #     "patch_distributed_vq": True,
-        #     "tie_braker": False,
-        #     "clip_max_weight": 0.5,
-        #     "clip_min_weight": 0.01,
-        #     "clip_max_tie_weight": 0.5,
-        #     "clip_min_tie_weight": 0.01
-        # }
+        if not split_input_params is None:
+            self.split_input_params = split_input_params
         self.cond_stage_forward = cond_stage_forward
         self.clip_denoised = False
         self.bbox_tokenizer = None
         self.restarted_from_ckpt = False
+        self.movie_len = movie_len
         if unet_config['params']['ckpt_path'] is not None:
             # self.model.from_pretrained_model(unet_config['params']['ckpt_path'])
             self.from_pretrained_model(unet_config['params']['ckpt_path'],unet_config['params']['ignore_keys'])
@@ -1565,7 +1562,7 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         :return: normalized distance to image border,
          wtith min distance = 0 at border and max dist = 0.5 at image center
         """
-        lower_right_corner = torch.tensor([h-1,w-1]).view(1,1,2)
+        lower_right_corner = torch.tensor([h,w]).view(1,1,2)
         arr = self.meshgrid(h,w) / lower_right_corner
         dist_left_up = torch.min(arr,dim=-1,keepdims=True)[0]
         dist_right_down = torch.min(1-arr,dim=-1,keepdims=True)[0]
@@ -1578,7 +1575,7 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
                                self.split_input_params["clip_max_weight"],)
         weighting = weighting.view(1,h*w,1).repeat(1,1,Ly*Lx).to(device)
 
-        if self.split_input_params["tie_breaker"]:
+        if self.split_input_params["tie_braker"]:
             L_weighting = self.delta_border(Ly,Lx)
             L_weighting = torch.clip(L_weighting,
                                      self.split_input_params["clip_min_tie_weight"],
@@ -1634,7 +1631,7 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
             fold_params = dict(kernel_size=kernel_size,dilation=1,padding=0,stride=stride)
             unfold = torch.nn.Unfold(**fold_params)
             #TODO:check kernel size
-            fold_params2 = dict(kernel_size=(kernel_size[0]*uf,kernel_size[0]*uf),
+            fold_params2 = dict(kernel_size=(kernel_size[0]*uf,kernel_size[1]*uf),
                                 dilation=1,padding=0,
                                 stride=(stride[0]*uf,stride[1]*uf))
             fold = torch.nn.Fold(output_size=(x.shape[2]*uf,x.shape[3]*uf),**fold_params2)
@@ -1647,7 +1644,7 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
             unfold = torch.nn.Unfold(**fold_params)
             
             #TODO:check kernel size
-            fold_params2 = dict(kernel_size=(kernel_size[0] // df,kernel_size[0] // df),
+            fold_params2 = dict(kernel_size=(kernel_size[0] // df,kernel_size[1] // df),
                                 dilation=1,padding=0,
                                 stride=(stride[0] // df,stride[1] // df))
             fold = torch.nn.Fold(output_size=(x.shape[2] // df,x.shape[3] // df),**fold_params2)
@@ -1658,23 +1655,24 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
             raise NotImplementedError
         return fold,unfold,normalization,weighting
     
-    def get_first_stage_encoding(self,encoder_posterior):
-        if isinstance(encoder_posterior,DiagonalGuassianDistribution):
-            z = encoder_posterior.sample()
-        elif isinstance(encoder_posterior,torch.Tensor):
-            z = encoder_posterior
-        else:
-            raise NotImplementedError(f'encoder_posterior of type {type(encoder_posterior)} not yet implemented')
-        return self.scale_factor * z
+    # def get_first_stage_encoding(self,encoder_posterior):
+    #     if isinstance(encoder_posterior,DiagonalGuassianDistribution):
+    #         z = encoder_posterior.sample()
+    #     elif isinstance(encoder_posterior,torch.Tensor):
+    #         z = encoder_posterior
+    #     else:
+    #         raise NotImplementedError(f'encoder_posterior of type {type(encoder_posterior)} not yet implemented')
+    #     return self.scale_factor * z
 
     #check whether need / 255.
+    @torch.no_grad()
     def encode_first_stage(self,x,encoder):
         if hasattr(self,'split_input_params'):
             if self.split_input_params['patch_distributed_vq']:
-                ks = self.split_input_params["ks"] #eg. (128,128)
-                stride = self.split_input_params["stride"] # eg. (64,64)
+                ks = self.split_input_params["ks_enc"] #eg. (128,128)
+                stride = self.split_input_params["stride_enc"] # eg. (64,64)
                 df = self.split_input_params["vqf"]
-                self.split_input_params["original_image_size"] = x.shape[-2:]
+                # self.split_input_params["original_image_size"] = x.shape[-2:]
                 bs,nc,h,w = x.shape
                 if ks[0] > h or ks[1] > w:
                     ks = (min(ks[0],h),min(ks[1],w))
@@ -1714,18 +1712,27 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         boxes = rearrange(boxes,'b n x c -> (b n) x c')
         boxes_category = rearrange(boxes_category,'b n x c -> (b n) x c')
         text = rearrange(text,'b n c -> (b n) c').unsqueeze(1)
+        range_image = batch['range_image']
+        range_image = rearrange(range_image,'b n h w c -> (b n) c h w')
+        depth_cam_front_img = batch['depth_cam_front_img']
+        depth_cam_front_img = rearrange(depth_cam_front_img,'b n h w c -> (b n) c h w ')
+
         x = ref_img
-        z = self.first_stage_model.encode(x)
+        z = self.encode_first_stage(x,self.first_stage_model)
+        # z = self.first_stage_model.encode(x)
         z = self.get_first_stage_encoding(z)
-        out = [z]
+        lidar_z = self.get_first_stage_encoding(self.encode_first_stage(range_image,self.range_image_encoder))
+        out = [z,lidar_z]
         c = {}
         c['hdmap'] = hdmap.to(torch.float32)
         c['boxes'] = boxes.to(torch.float32)
         c['category'] = boxes_category.to(torch.float32)
         c['text'] = text.to(torch.float32)
+        c['depth_cam_front_img'] = depth_cam_front_img.to(torch.float32)
         if return_first_stage_outputs:
             x_rec = self.decode_first_stage(z)
-            out.extend([x,x_rec])
+            lidar_rec = self.decode_first_stage(lidar_z)
+            out.extend([x,x_rec,range_image,lidar_rec])
         out.append(c)
         return out
         # ref_img = super().get_input(batch,'reference_image')
@@ -1762,30 +1769,43 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
     def shared_step(self,batch,**kwargs):
         ref_img = super().get_input(batch,'reference_image') # (b n c h w)
         hdmap = super().get_input(batch,'HDmap') # (b n c h w)
+        if 'range_image' in batch.keys():
+            range_image = super().get_input(batch,'range_image')
+            depth_cam_front_img = super().get_input(batch,'depth_cam_front_img')
+        else:
+            range_image = None
+            depth_cam_front_img = None
         x = ref_img.to(torch.float32)
-        x = self.get_first_stage_encoding(self.first_stage_model.encode(x))
+        start_time = time.time()
+        x = self.get_first_stage_encoding(self.encode_first_stage(x,self.first_stage_model))
         c = {}
+        hdmap = self.get_first_stage_encoding(self.encode_first_stage(hdmap,self.hdmap_encoder))
+        if 'range_image' in batch.keys():
+            range_image = self.get_first_stage_encoding(self.encode_first_stage(range_image,self.range_image_encoder))
+            depth_cam_front_img = self.get_first_stage_encoding(self.encode_first_stage(depth_cam_front_img,self.range_image_encoder))
         c['hdmap'] = hdmap.to(torch.float32)
         boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d')
         boxes_category = rearrange(batch['category'],'b n c d -> (b n) c d')
         c['boxes'] = boxes.to(torch.float32)
         c['category'] = boxes_category.to(torch.float32)
         c['text'] = rearrange(batch['text'],'b n d -> (b n) d').unsqueeze(1).to(torch.float32)
-        loss,loss_dict = self(x,c)
+        c['depth_cam_front_img'] = depth_cam_front_img
+        end_time = time.time()
+        print(f"shared_step_pre:{end_time-start_time}")
+        loss,loss_dict = self(x,range_image,c)
         return loss,loss_dict
 
-    def forward(self,x,c,*args,**kwargs):
+    def forward(self,x,range_image,c,*args,**kwargs):
         t = torch.randint(0,self.num_timesteps,(x.shape[0],),device=self.device).long()#
-        return self.p_losses(x,c,t,*args,**kwargs)
+        return self.p_losses(x,range_image,c,t,*args,**kwargs)
 
-    def apply_model(self,x_noisy,t,cond,return_ids=False):
+    def apply_model(self,x_noisy,t,cond,range_image_noisy=None,x_start=None,return_ids=False):
         #TODO:wrong
         if hasattr(self,"split_input_params"):
-            ks = self.split_input_params["ks"]  # eg. (128, 128)
-            stride = self.split_input_params["stride"]  # eg. (64, 64)
-
+            ks = self.split_input_params["ks_dif"]  # eg. (128, 128)
+            stride = self.split_input_params["stride_dif"]  # eg. (64, 64)
+            start_time = time.time()
             h, w = x_noisy.shape[-2:]
-
             fold,unfold,normalization,weighting = self.get_fold_unfold(x_noisy,ks,stride)
 
             z = unfold(x_noisy) # (bn, nc*prod(**ks),L)
@@ -1799,77 +1819,139 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
             hdmap_split = unfold_hdmap(cond['hdmap'])
             hdmap_split = hdmap_split.view((hdmap_split.shape[0],-1,ks[0],ks[1],hdmap_split.shape[-1]))
             hdmap_list = [hdmap_split[:,:,:,:,i] for i in range(hdmap_split.shape[-1])]
+
             #boxes
             boxes_list = []
             boxes_category_list = []
-            col_h = np.arange(0,h-ks[0],stride[0])
-            row_w = np.arange(0,w-ks[1],stride[1])
+            full_img_w,full_img_h = self.split_input_params['original_image_size']
+            col_h = np.arange(0,h-ks[0]+1,stride[0]) / x_noisy.shape[-2]
+            row_w = np.arange(0,w-ks[1]+1,stride[1]) / x_noisy.shape[-1]
+            boxes = cond['boxes'].reshape(-1,2,8)
+            boxes[:,0] /= full_img_w
+            boxes[:,1] /= full_img_h
             boxes = cond['boxes'].reshape(x_noisy.shape[0],-1,2,8)
             boxes_category = cond['category']
+            ks_scale = [ks[0]/x_noisy.shape[-2],ks[1]/x_noisy.shape[-1]]
             for i in range(len(col_h)):
                 for j in range(len(row_w)):
-                    min_x = row_w[j]
-                    min_y = col_h[i]
-                    max_x = row_w[j] + ks[1]
-                    max_y = col_h[i] + ks[0]
-                    visible = np.logical_and(boxes[:,:,0,:]>=min_x,boxes[:,:,0,:]<=max_x)
-                    visible = np.logical_and(visible,boxes[:,:,1,:]>=min_y)
-                    visible = np.logical_and(visible,boxes[:,:,1,:]<=max_y)
+                    min_y = row_w[j]
+                    min_x = col_h[i]
+                    max_y = row_w[j] + ks_scale[1]
+                    max_x = col_h[i] + ks_scale[0]
+                    visible = np.logical_and(boxes[:,:,0,:].cpu()>=min_x,boxes[:,:,0,:].cpu()<=max_x)
+                    visible = np.logical_and(visible,boxes[:,:,1,:].cpu()>=min_y)
+                    visible = np.logical_and(visible,boxes[:,:,1,:].cpu()<=max_y)
                     visible = torch.any(visible,dim=-1,keepdim=True).bool()
-                    boxes_mask = visible.unsqueeze(3).repeat(1,1,2,8)
+                    boxes_mask = visible.unsqueeze(3).repeat(1,1,2,8).to(boxes.device)
                     patch_boxes = torch.masked_fill(boxes,boxes_mask,0).reshape(x_noisy.shape[0],-1,16)
                     boxes_list.append(patch_boxes)
-                    category_mask = visible.repeat(1,1,768)
+                    category_mask = visible.repeat(1,1,768).to(boxes.device)
                     patch_category = torch.masked_fill(boxes_category,category_mask,0)
                     boxes_category_list.append(patch_category)
+
             output_list = []
+            classes = torch.tensor([[1.,0.],[0.,1.]],device=self.device,dtype=self.dtype)
+            classes_emb = torch.cat([torch.sin(classes),torch.cos(classes)],dim=-1)
+            boxes_emb_list = []
+            end_time = time.time()
+            print(f"apply_model_pre:{end_time-start_time}")
+            start_time = time.time()
             for i in range(z.shape[-1]):
                 z = z_list[i]
-                z = self.get_first_stage_encoding(self.first_stage_model.encode(z))
+                # z = self.get_first_stage_encoding(self.encode_first_stage(z,self.first_stage_model))
                 hdmap = hdmap_list[i]
-                hdmap = self.get_first_stage_encoding(self.hdmap_encoder.encode(hdmap))
+                # hdmap = self.get_first_stage_encoding(self.encode_first_stage(hdmap,self.hdmap_encoder))
                 z = torch.cat([z,hdmap],dim=1)
                 boxes = boxes_list[i]
                 
                 #boxes = rearrange(boxes,'b n c -> (b n) c')
                 boxes_category = boxes_category_list[i]
                 boxes_emb = self.box_encoder(boxes,boxes_category)
+                boxes_emb_list.append(boxes_emb)
                 text_emb = cond['text']
-                output = self.model(z,t,boxes_emb,text_emb)
+                output = self.model(z,t,y=classes_emb[0],boxes_emb=boxes_emb,text_emb=text_emb)
                 output_list.append(output)
-            o = torch.stack(output_list,axis=-1)
-            o = o * weighting
-            # Reverse reshape to img shape
-            o = o.view((o.shape[0],-1,o.shape[-1])) #(bn,nc*ks[0]*ks[1],L)
-            # stitch crops together
-            x_recon = fold(0) / normalization
+
+            if not range_image_noisy is None:
+                #range_image
+                fold_range_image,unfold_range_image,normalization_range_image,weighting_range_image = self.get_fold_unfold(range_image_noisy,ks,stride)
+                range_image_split = unfold_range_image(range_image_noisy)
+                range_image_split = range_image_split.view((range_image_split.shape[0],-1,ks[0],ks[1],range_image_split.shape[-1]))
+                range_image_split = [range_image_split[:,:,:,:,i] for i in range(range_image_split.shape[-1])]
+
+                #depth_cam_front_img
+                fold_depth_cam_front_img,unfold_depth_cam_front_img,normalization_depth_cam_front_img,weighting_depth_cam_front_img = self.get_fold_unfold(cond['depth_cam_front_img'],ks,stride)
+                depth_cam_front_img_split = unfold_depth_cam_front_img(cond['depth_cam_front_img'])
+                depth_cam_front_img_split = depth_cam_front_img_split.view(depth_cam_front_img_split.shape[0],-1,ks[0],ks[1],depth_cam_front_img_split.shape[-1])
+                depth_cam_front_img_split = [depth_cam_front_img_split[:,:,:,:,i] for i in range(depth_cam_front_img_split.shape[-1])]
+
+                #x_start
+                fold_x_start,unfold_x_start,normalization_x_start,weighting_x_start = self.get_fold_unfold(x_start,ks,stride)
+                x_start_split = unfold_x_start(x_start)
+                x_start_split = x_start_split.view(x_start_split.shape[0],-1,ks[0],ks[1],x_start_split.shape[-1])
+                x_start_split = [x_start_split[:,:,:,:,i] for i in range(x_start_split.shape[-1])]
+            
+                range_image_output = []
+                for i in range(len(range_image_split)):
+                    range_image = range_image_split[i]
+                    x_start = x_start_split[i]
+                    depth_cam_front_img = depth_cam_front_img_split[i]
+                    text_emb = cond['text']
+                    range_image = torch.cat((range_image,x_start),dim=1)
+                    boxes_emb = boxes_emb_list[i]
+                    output = self.model(range_image,t,y=classes_emb[1],boxes_emb=boxes_emb,text_emb=depth_cam_front_img.reshape(depth_cam_front_img.shape[0],1,-1))
+                    range_image_output.append(output)
+                o_ori = torch.stack(output_list,axis=-1)
+                o_ori = o_ori * weighting
+                # Reverse reshape to img shape
+                o_ori = o_ori.view((o_ori.shape[0],-1,o_ori.shape[-1])) #(bn,nc*ks[0]*ks[1],L)
+                # stitch crops together
+                x_recon = fold(o_ori) / normalization
+                o_range = torch.stack(range_image_output,axis=-1)
+                o_range = o_range * weighting_range_image
+                o_range = o_range.view((o_range.shape[0],-1,o_range.shape[-1]))
+                range_recon = fold_range_image(o_range) / normalization_range_image
+                end_time = time.time()
+                print(f"model_inference:{end_time-start_time}")
+                return x_recon,range_recon
         else:
-            hdmap = self.get_first_stage_encoding(self.hdmap_encoder.encode(cond['hdmap']))
+            # hdmap = self.get_first_stage_encoding(self.encode_first_stage(cond['hdmap'],self.hdmap_encoder))
             boxes_emb = self.box_encoder(cond['boxes'],cond['category'])
             text_emb = cond['text']
-            z = torch.cat([x_noisy,hdmap],dim=1)
+            depth_cam_front_img = cond['depth_cam_front_img']
+            classes = torch.tensor([[1.,0.],[0.,1.]],device=self.device,dtype=self.dtype)
+            classes_emb = torch.cat([torch.sin(classes),torch.cos(classes)],dim=-1)
+            z = torch.cat([x_noisy,cond['hdmap']],dim=1)
             #TODO:need reshape z
-            x_recon = self.model(z,t,boxes_emb=boxes_emb,text_emb=text_emb)
-        return x_recon
+            x_recon = self.model(z,t,y=classes_emb[0],boxes_emb=boxes_emb,text_emb=text_emb)
+            z = torch.cat([range_image_noisy,x_start],dim=1)
+            range_recon = self.model(z,t,y=classes_emb[1],boxes_emb=boxes_emb,text_emb=depth_cam_front_img.reshape(depth_cam_front_img.shape[0],4,-1))
+        return x_recon,range_recon
 
 
     
-    def p_losses(self,x_start,cond,t,noise=None):
+    def p_losses(self,x_start,range_image_start,cond,t,noise=None):
         noise = default(noise,lambda:torch.randn_like(x_start)).to(x_start.device)        
         x_noisy = self.q_sample(x_start=x_start,t=t,noise=noise)
-        model_output = self.apply_model(x_noisy,t,cond)
+        if not range_image_start is None:
+            range_image_noisy = self.q_sample(x_start=range_image_start,t=t,noise=noise)
+        else:
+            range_image_noisy = None
+        x_recon,lidar_recon = self.apply_model(x_noisy,t,cond,range_image_noisy,x_start)
 
         loss_dict = {}
         prefix = 'train' if self.training else 'val'
 
         if self.parameterization == 'x0':
-            target = x_start
+            target_x,target_lidar = x_start,range_image_start
         elif self.parameterization == 'eps':
-            target = noise
+            target_x,target_lidar = noise,noise
         else:
             raise NotImplementedError()
-        
-        loss_simple = self.get_loss(model_output,target,mean=False).mean([1,2,3])
+        if not range_image_start is None:
+            loss_simple = self.get_loss(x_recon,target_x,mean=False).mean([1,2,3]) + self.get_loss(lidar_recon,target_lidar,mean=False).mean([1,2,3])
+        else:
+            loss_simple = self.get_loss(x_recon,target_x,mean=False).mean([1,2,3])
         loss_dict.update({f'{prefix}/loss_simple':loss_simple.mean()})
 
         logvar_t = self.logvar[t].to(self.device)
@@ -1881,12 +1963,14 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
 
         loss = self.l_simple_weight * loss.mean()
 
-        loss_vlb = self.get_loss(model_output,target,mean=False).mean(dim=[1,2,3])
+        if not range_image_start is None:
+            loss_vlb = self.get_loss(x_recon,target_x,mean=False).mean(dim=[1,2,3]) + self.get_loss(lidar_recon,target_lidar,mean=False).mean([1,2,3])
+        else:
+            loss_vlb = self.get_loss(x_recon,target_x,mean=False).mean(dim=[1,2,3])
         loss_vlb = (self.lvlb_weights[t] * loss_vlb).mean()
         loss_dict.update({f'{prefix}/loss_vlb':loss_vlb})
         loss += (self.original_elbo_weight * loss_vlb)
         loss_dict.update({f'{prefix}/loss':loss})
-
         return loss,loss_dict
     
     def decode_first_stage(self,z,predict_cids=False,force_not_quantize=False):
@@ -1899,8 +1983,8 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
 
         if hasattr(self,"split_input_params"):
             if self.split_input_params["patch_distributed_vq"]:
-                ks = self.split_input_params["ks"]
-                stride = self.split_input_params["stride"]
+                ks = self.split_input_params["ks_enc"]
+                stride = self.split_input_params["stride_enc"]
                 uf = self.split_input_params["vqf"]
                 bs,nc,h,w = z.shape
                 if ks[0] > h or ks[1] > w:
@@ -2038,7 +2122,7 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
                 
         if self.cond_stage_trainable:
             print("add encoder parameters into optimizers")
-            params = params + list(self.box_encoder.parameters()) + list(self.hdmap_encoder.parameters())
+            params = params + list(self.box_encoder.parameters()) # + list(self.hdmap_encoder.parameters())
         if self.learn_logvar:
             print("Diffusion model optimizing logvar")
             params.append(self.logvar)
@@ -2253,24 +2337,30 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
                    plot_diffusion_rows=True,**kwargs):
         use_ddim = ddim_steps is not None
         log = dict()
-        z,x,x_rec,c = self.get_input(batch,return_first_stage_outputs=True)
+        z,lidar_z,x,x_rec,range_image,lidar_rec,c = self.get_input(batch,return_first_stage_outputs=True)
 
         N = min(x.shape[0],N)
         n_row = min(x.shape[0],n_row)
         log['inputs'] = x
         log['reconstruction'] = x_rec
+        # log['lidar_inputs'] = range_image
+        # log['lidar_reconstruction'] =  lidar_rec
 
         if plot_diffusion_rows:
             #get diffusion row
             diffusion_row = list()
             z_start = z[:n_row]
+            # lidar_start = lidar_z[:n_row]
+            
             for t in range(self.num_timesteps):
                 if t % self.log_every_t == 0 or t == self.num_timesteps - 1:
                     t = repeat(torch.tensor([t]),'1 -> b',b=n_row)
                     t = t.to(self.device).long()
                     noise = torch.randn_like(z_start)
                     z_noisy = self.q_sample(x_start=z_start,t=t,noise=noise)
+                    # lidar_noisy = self.q_sample(x_start=lidar_start,t=t,noise=noise)
                     diffusion_row.append(self.decode_first_stage(z_noisy))
+
 
             diffusion_row = torch.stack(diffusion_row) # n_log_step,n_row,C,H,W
             diffusion_grid = rearrange(diffusion_row, 'n b c h w -> b n c h w')
@@ -2346,28 +2436,41 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/first_stage_step1_config_online3.yaml',
+                        default='configs/copy_test.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
     network = instantiate_from_config(cfg['model'])#.to('cuda:7')
-    x = torch.randn((2,1,448,768,3))#.to('cuda:7')
+    x = torch.randn((1,1,224,384,3))
     # x.requires_grad_(True)
-    hdmap = torch.randn((2,1,448,768,4))#.to('cuda:7')
+    hdmap = torch.randn((1,1,224,384,3))
     # hdmap.requires_grad_(True)
-    text = torch.randn((2,1,768))#.to('cuda:7')
+    text = torch.randn((1,1,768))
     # text.requires_grad_(True)
-    boxes = torch.randn((2,1,50,16))#.to('cuda:7')
+    boxes = torch.randn((1,1,50,16))
     # boxes.requires_grad_(True)
-    box_category = torch.randn(2,1,50,768)#.to('cuda:7')
+    box_category = torch.randn(1,1,50,768)
     # box_category.requires_grad_(True)
+    import matplotlib.image as mpimg
+    from PIL import Image
+    range_image = mpimg.imread('000.jpg')
+    range_image = Image.fromarray(range_image[:,:,:3])
+    range_image = np.array(range_image.resize((384,224)))
+    range_image = torch.tensor(range_image,dtype=torch.float32)
+    range_image = range_image.unsqueeze(0)
+    range_image = range_image.unsqueeze(0)
+
+    depth_cam_front_img = torch.randn((1,1,224,384,3))
     out = {'text':text,
            '3Dbox':boxes,
            'category':box_category,
            'reference_image':x,
-           'HDmap':hdmap}
-    network.log_images(out)
+           'HDmap':hdmap,
+           "range_image":range_image,
+           "depth_cam_front_img":depth_cam_front_img}
+    loss,loss_dict = network.shared_step(out)
+    loss.backward()
     # loss,loss_dict = network.shared_step(out)
     # network.configure_optimizers()
     # network.shared_step(out)

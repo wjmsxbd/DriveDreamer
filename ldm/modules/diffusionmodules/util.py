@@ -6,6 +6,7 @@ from einops import repeat
 from ldm.util import instantiate_from_config
 import math
 
+
 def make_beta_schedule(schedule, n_timestep, linear_start=1e-4, linear_end=2e-2, cosine_s=8e-3):
     if schedule == "linear":
         betas = (
@@ -98,13 +99,22 @@ class CheckpointFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, *output_grads):
-        ctx.input_tensors = [x.detach().requires_grad_(True) for x in ctx.input_tensors]
+        # print("input tensors:")
+        # print(ctx.input_tensors)
+        # input_tensor_shape = [x.shape for x in ctx.input_tensors if not x is None]
+        # print(input_tensor_shape)
+        # print("input params")
+        # print(ctx.input_params)
+        # param_shape = [x.shape for x in ctx.input_params]
+        # print(param_shape)
+        ctx.input_tensors = [x.detach().requires_grad_(True) if not x is None else None for x in ctx.input_tensors]
         with torch.enable_grad():
             # Fixes a bug where the first op in run_function modifies the
             # Tensor storage in place, which is not allowed for detach()'d
             # Tensors.
-            shallow_copies = [x.view_as(x) for x in ctx.input_tensors]
+            shallow_copies = [x.view_as(x) if not x is None else None for x in ctx.input_tensors]
             output_tensors = ctx.run_function(*shallow_copies)
+        ctx.input_tensors = [x if not x is None else torch.tensor([0],requires_grad=True) for x in ctx.input_tensors]
         input_grads = torch.autograd.grad(
             output_tensors,
             ctx.input_tensors + ctx.input_params,

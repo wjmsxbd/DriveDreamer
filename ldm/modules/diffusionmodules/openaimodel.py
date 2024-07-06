@@ -87,7 +87,10 @@ class TimestepEmbedSequential(nn.Sequential,TimestepBlock):
             if isinstance(layer,TimestepBlock):
                 x = layer(x,emb)
             elif isinstance(layer,SpatialTransformer):
-                x = layer(x,boxes_emb,text_emb)
+                if boxes_emb is None:
+                    x = layer(x,text_emb=text_emb)
+                else:
+                    x = layer(x,boxes_emb,text_emb)
             else:
                 x = layer(x)
         return x
@@ -788,6 +791,73 @@ class QKVAttention(nn.Module):
 #         else:
 #             return self.out(h)
 
+class GaussianFourierProjection(nn.Module):
+    """Gaussian Fourier embeddings for noise levels."""
+    def __init__(
+        self,embeddiing_size: int = 256,scale:float=1.0,set_W_to_weight=True,log=True,flip_sin_to_cos=False
+    ):
+        super().__init__()
+        self.weight = nn.Parameter(torch.randn(2,embeddiing_size) * scale,requires_grad=False)
+        self.log = log
+        self.flip_sin_to_cos = flip_sin_to_cos
+
+        if set_W_to_weight:
+            # to delete later
+            self.W = nn.Parameter(torch.randn(embeddiing_size) * scale,requires_grad=False)
+            self.weight = self.W
+        
+    def forward(self,x):
+        if self.log:
+            x = torch.log(x)
+        x_proj = x * self.weight * 2 * np.pi
+        if self.flip_sin_to_cos:
+            out = torch.cat([torch.cos(x_proj),torch.sin(x_proj)],dim=-1)
+        else:
+            out = torch.cat([torch.sin(x_proj),torch.cos(x_proj)],dim=-1)
+        return out
+
+def get_timestep_embedding(timesteps:torch.Tensor,embedding_dim:int,flip_sin_to_cos:bool=False,downscale_freq_shift:float=1,scale:float=1,max_period:int=10000):
+     """
+    This matches the implementation in Denoising Diffusion Probabilistic Models: Create sinusoidal timestep embeddings.
+
+    :param timesteps: a 1-D Tensor of N indices, one per batch element.
+                      These may be fractional.
+    :param embedding_dim: the dimension of the output. :param max_period: controls the minimum frequency of the
+    embeddings. :return: an [N x dim] Tensor of positional embeddings.
+    """
+     
+     assert len(timesteps.shape) == 1, "Timesteps should be a 1d-array"
+     half_dim = embedding_dim // 2
+     exponent = math.log(max_period) * torch.arange(
+         start=0,end=half_dim,dtype=torch.float32,device=timesteps.device
+     )
+     exponent = exponent / (half_dim - downscale_freq_shift)
+     emb = torch.exp(exponent)
+     emb = timesteps[:,None].float() * emb[None,:]
+     emb = scale * emb
+     emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
+     if flip_sin_to_cos:
+        emb = torch.cat([emb[:, half_dim:], emb[:, :half_dim]], dim=-1)
+     if embedding_dim % 2 == 1:
+         emb = torch.nn.functional.pad(emb, (0, 1, 0, 0))
+     return emb
+
+
+class TimeSteps(nn.Module):
+    def __init__(self,num_channels:int,flip_sin_to_cos:bool,downscale_freq_shift:float):
+        super().__init__()
+        self.num_channels = num_channels
+        self.flip_sin_to_cos = flip_sin_to_cos
+        self.downscale_freq_shift = downscale_freq_shift
+    def forward(self,timesteps):
+        t_emb = get_timestep_embedding(
+            timesteps=timesteps,
+            embedding_dim=self.num_channels,
+            flip_sin_to_cos=self.flip_sin_to_cos,
+            downscale_freq_shift=self.downscale_freq_shift
+        )
+        return t_emb
+
 class UNetModel(nn.Module):
     """
     The full UNet model with attention and timestep embedding.
@@ -851,6 +921,9 @@ class UNetModel(nn.Module):
         outpadding=None,
         obj_dims=None,
         ignore_keys=None,
+        flip_sin_to_cos=True,
+        freq_shift=0,
+        class_embed_dim = 4,
     ):
         super().__init__()
         if use_spatial_transformer:
@@ -897,9 +970,15 @@ class UNetModel(nn.Module):
             nn.SiLU(),
             linear(time_embed_dim, time_embed_dim),
         )
-
+        
         if self.num_classes is not None:
-            self.label_emb = nn.Embedding(num_classes, time_embed_dim)
+            #self.time_proj = TimeSteps(time_embed_dim,flip_sin_to_cos,freq_shift)
+            self.label_emb = nn.Sequential(
+                linear(class_embed_dim,time_embed_dim),
+                nn.SiLU(),
+                linear(time_embed_dim,time_embed_dim)
+            )
+            # self.label_emb = nn.Embedding(num_classes, time_embed_dim)
 
         self.input_blocks = nn.ModuleList(
             [
@@ -1133,17 +1212,25 @@ class UNetModel(nn.Module):
         emb = self.time_embed(t_emb)
 
         if self.num_classes is not None:
-            assert y.shape == (x.shape[0],)
+            # assert y.shape == (x.shape[0],)
+            # if len(y.shape) == 1:
+            #     y = y[None,:].expand(x.shape[0],y.shape[0])
             emb = emb + self.label_emb(y)
 
         h = x.type(self.dtype)
         for module in self.input_blocks:
-            h = module(h, emb, boxes_emb,text_emb)
+            if boxes_emb is None:
+                h = module(h,emb,text_emb=text_emb)
+            else:
+                h = module(h, emb, boxes_emb,text_emb)
             hs.append(h)
         h = self.middle_block(h, emb, boxes_emb,text_emb)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
-            h = module(h, emb, boxes_emb,text_emb)
+            if boxes_emb is None:
+                h = module(h,emb,text_emb=text_emb)
+            else:
+                h = module(h, emb, boxes_emb,text_emb)
         h = h.type(x.dtype)
         if self.predict_codebook_ids:
             return self.id_predictor(h)

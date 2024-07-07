@@ -1,5 +1,12 @@
 # DriveDreamer
 ## 纯视觉训练
+
+### Switch Branch
+
+`
+git checkout master
+`
+
 ### Installation
 `
 pip install -r requirement.txt
@@ -8,6 +15,8 @@ pip install -r requirement.txt
 
 #### Data Preparation
 由于标注数据的频率只有2Hz，而相机捕获频率是12Hz，因此需要对非关键帧数据进行标注，得到[advanced_12Hz_trainval](https://drive.google.com/file/d/1t0kMU7Wk4CsH3f3rv-Utyin6PYtI0_Ns/view?usp=sharing)。然后在此基础上进行数据预处理，得到[nuScenes_advanced_infos_train.pkl](https://drive.google.com/file/d/1ulaKcqsu9p5z6w-2EoQyL42D95w0qOqY/view?usp=sharing)和[nuScenes_advanced_infos_val.pkl](https://drive.google.com/file/d/1K0YVPdk3OVDXMDG4agOGqi3Gv19OKspC/view?usp=sharing)
+
+如果需要自己在本地处理可以参考12Hz_data_process.md文件
 
 下载完数据之后需要按照以下路径存放数据
 ```
@@ -103,6 +112,13 @@ python main.py --base configs/first_stage_step1_config_mini.yaml --train True
 `
 
 ## 视觉+Range Image
+
+### Switch Branch
+
+`
+git checkout with_lidar
+`
+
 
 ### Installation
 `

@@ -296,7 +296,6 @@ class DDPM(pl.LightningModule):
         noise = default(noise,lambda:torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start,t=t,noise=noise)
         model_out = self.model(x_noisy,t)
-
         loss_dict = {}
         if self.parameterization == "eps":
             target = noise
@@ -1403,6 +1402,7 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
                  split_input_params=None,
                  movie_len = 1,
                  range_image_config = None,
+                 downsample_img_size = None,
                  *args,**kwargs):
         self.num_timesteps_cond = default(num_timesteps_cond,1)
         self.scale_by_std = scale_by_std
@@ -1446,6 +1446,7 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         self.bbox_tokenizer = None
         self.restarted_from_ckpt = False
         self.movie_len = movie_len
+        self.downsample_image_size = downsample_img_size
         if unet_config['params']['ckpt_path'] is not None:
             # self.model.from_pretrained_model(unet_config['params']['ckpt_path'])
             self.from_pretrained_model(unet_config['params']['ckpt_path'],unet_config['params']['ignore_keys'])
@@ -1722,6 +1723,8 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         # z = self.first_stage_model.encode(x)
         z = self.get_first_stage_encoding(z)
         lidar_z = self.get_first_stage_encoding(self.encode_first_stage(range_image,self.range_image_encoder))
+        hdmap = self.get_first_stage_encoding(self.encode_first_stage(hdmap,self.hdmap_encoder))
+        depth_cam_front_img = self.get_first_stage_encoding(self.encode_first_stage(depth_cam_front_img,self.range_image_encoder))
         out = [z,lidar_z]
         c = {}
         c['hdmap'] = hdmap.to(torch.float32)
@@ -1776,7 +1779,6 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
             range_image = None
             depth_cam_front_img = None
         x = ref_img.to(torch.float32)
-        start_time = time.time()
         x = self.get_first_stage_encoding(self.encode_first_stage(x,self.first_stage_model))
         c = {}
         hdmap = self.get_first_stage_encoding(self.encode_first_stage(hdmap,self.hdmap_encoder))
@@ -1790,8 +1792,6 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         c['category'] = boxes_category.to(torch.float32)
         c['text'] = rearrange(batch['text'],'b n d -> (b n) d').unsqueeze(1).to(torch.float32)
         c['depth_cam_front_img'] = depth_cam_front_img
-        end_time = time.time()
-        print(f"shared_step_pre:{end_time-start_time}")
         loss,loss_dict = self(x,range_image,c)
         return loss,loss_dict
 
@@ -1853,9 +1853,6 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
             classes = torch.tensor([[1.,0.],[0.,1.]],device=self.device,dtype=self.dtype)
             classes_emb = torch.cat([torch.sin(classes),torch.cos(classes)],dim=-1)
             boxes_emb_list = []
-            end_time = time.time()
-            print(f"apply_model_pre:{end_time-start_time}")
-            start_time = time.time()
             for i in range(z.shape[-1]):
                 z = z_list[i]
                 # z = self.get_first_stage_encoding(self.encode_first_stage(z,self.first_stage_model))
@@ -1911,9 +1908,8 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
                 o_range = o_range * weighting_range_image
                 o_range = o_range.view((o_range.shape[0],-1,o_range.shape[-1]))
                 range_recon = fold_range_image(o_range) / normalization_range_image
-                end_time = time.time()
-                print(f"model_inference:{end_time-start_time}")
                 return x_recon,range_recon
+            return x_recon
         else:
             # hdmap = self.get_first_stage_encoding(self.encode_first_stage(cond['hdmap'],self.hdmap_encoder))
             boxes_emb = self.box_encoder(cond['boxes'],cond['category'])
@@ -1938,7 +1934,6 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         else:
             range_image_noisy = None
         x_recon,lidar_recon = self.apply_model(x_noisy,t,cond,range_image_noisy,x_start)
-
         loss_dict = {}
         prefix = 'train' if self.training else 'val'
 
@@ -2018,6 +2013,52 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
                 return self.first_stage_model.decode(z,force_not_quantize=predict_cids or force_not_quantize)
             else:
                 return self.first_stage_model.decode(z)
+            
+    def decode_first_stage_with_lidar(self,z,predict_cids=False,force_not_quantize=False):
+        if predict_cids:
+            if z.dim() == 4:
+                z = torch.argmax(z.exp(), dim=1).long()
+            z = self.range_image_encoder.quantize.get_codebook_entry(z, shape=None)
+            z = rearrange(z, 'b h w c -> b c h w').contiguous()
+        z = 1. / self.scale_factor * z
+
+        if hasattr(self,"split_input_params"):
+            if self.split_input_params["patch_distributed_vq"]:
+                ks = self.split_input_params["ks_enc"]
+                stride = self.split_input_params["stride_enc"]
+                uf = self.split_input_params["vqf"]
+                bs,nc,h,w = z.shape
+                if ks[0] > h or ks[1] > w:
+                    ks = (min(ks[0], h), min(ks[1], w))
+                    print("reducing Kernel")
+
+                if stride[0] > h or stride[1] > w:
+                    stride = (min(stride[0], h), min(stride[1], w))
+                    print("reducing stride")
+                
+                fold, unfold, normalization, weighting = self.get_fold_unfold(z, ks, stride, uf=uf)
+
+                z = unfold(z)  # (bn, nc * prod(**ks), L)
+                # 1. Reshape to img shape
+                z = z.view((z.shape[0], -1, ks[0], ks[1], z.shape[-1]))  # (bn, nc, ks[0], ks[1], L )
+            
+                output_list = [self.range_image_encoder.decode(z[:, :, :, :, i])
+                                   for i in range(z.shape[-1])]
+                o = torch.stack(output_list, axis=-1)  # # (bn, nc, ks[0], ks[1], L)
+                o = o * weighting
+                # Reverse 1. reshape to img shape
+                o = o.view((o.shape[0], -1, o.shape[-1]))  # (bn, nc * ks[0] * ks[1], L)
+                # stitch crops together
+                decoded = fold(o)
+                decoded = decoded / normalization  # norm is shape (1, 1, h, w)
+                return decoded
+            else:
+                return self.range_image_encoder.decode(z)
+        else:
+            if isinstance(self.range_image_encoder,VQModelInterface):
+                return self.range_image_encoder.decode(z,force_not_quantize=predict_cids or force_not_quantize)
+            else:
+                return self.range_image_encoder.decode(z)
     
     def differentiable_decode_first_stage(self,z,predict_cids=False, force_not_quantize=False):
         if predict_cids:
@@ -2323,13 +2364,13 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
     def sample_log(self,cond,batch_size,ddim,ddim_steps,**kwargs):
         if ddim:
             ddim_sampler = DDIMSampler(self)
-            shape = (self.channels,) + tuple(self.image_size)
-            samples,intermediates = ddim_sampler.sample(ddim_steps,batch_size,
+            shape = (self.channels,) + tuple(self.downsample_image_size)
+            samples,sample_lidar,intermediates = ddim_sampler.sample(ddim_steps,batch_size,
                                                         shape,cond,verbose=False,**kwargs)
         else:
             samples,intermediates = self.sample(cond=cond,batch_size=batch_size,
                                                 return_intermediates=True,**kwargs)
-        return samples,intermediates
+        return samples,sample_lidar,intermediates
     
     @torch.no_grad()
     def log_images(self,batch,N=8,n_row=4,sample=True,ddim_steps=200,ddim_eta=1.,return_keys=None,
@@ -2343,14 +2384,15 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         n_row = min(x.shape[0],n_row)
         log['inputs'] = x
         log['reconstruction'] = x_rec
-        # log['lidar_inputs'] = range_image
-        # log['lidar_reconstruction'] =  lidar_rec
+        log['lidar_inputs'] = range_image
+        log['lidar_reconstruction'] =  lidar_rec
 
         if plot_diffusion_rows:
             #get diffusion row
             diffusion_row = list()
+            lidar_diffusion_row = list()
             z_start = z[:n_row]
-            # lidar_start = lidar_z[:n_row]
+            lidar_start = lidar_z[:n_row]
             
             for t in range(self.num_timesteps):
                 if t % self.log_every_t == 0 or t == self.num_timesteps - 1:
@@ -2358,8 +2400,9 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
                     t = t.to(self.device).long()
                     noise = torch.randn_like(z_start)
                     z_noisy = self.q_sample(x_start=z_start,t=t,noise=noise)
-                    # lidar_noisy = self.q_sample(x_start=lidar_start,t=t,noise=noise)
+                    lidar_noisy = self.q_sample(x_start=lidar_start,t=t,noise=noise)
                     diffusion_row.append(self.decode_first_stage(z_noisy))
+                    lidar_diffusion_row.append(self.decode_first_stage(lidar_noisy))
 
 
             diffusion_row = torch.stack(diffusion_row) # n_log_step,n_row,C,H,W
@@ -2367,6 +2410,11 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
             diffusion_grid = rearrange(diffusion_grid, 'b n c h w -> (b n) c h w')
             diffusion_grid = make_grid(diffusion_grid, nrow=diffusion_row.shape[0])
             log['diffusion_row'] = diffusion_grid
+            lidar_diffusion_row = torch.stack(lidar_diffusion_row)
+            lidar_diffusion_grid = rearrange(lidar_diffusion_row,'n b c h w -> b n c h w') 
+            lidar_diffusion_grid = rearrange(lidar_diffusion_grid,'b n c h w -> (b n) c h w')
+            lidar_diffusion_grid = make_grid(lidar_diffusion_grid,nrow=lidar_diffusion_row.shape[0])
+            log['lidar_diffusion_row'] = lidar_diffusion_grid
 
         if sample:
             # get denoise row
@@ -2374,15 +2422,19 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
             c['boxes'] = c['boxes'][:N]
             c['category'] = c['category'][:N]
             c['text'] = c['text'][:N]
+            c['depth_cam_front_img'] = c['depth_cam_front_img'][:N]
+            c['x_start'] = z[:N]
             with self.ema_scope("Plotting"):
-                samples,z_denoise_row = self.sample_log(cond=c,batch_size=N,ddim=use_ddim,
+                samples,sample_lidar,z_denoise_row = self.sample_log(cond=c,batch_size=N,ddim=use_ddim,
                                                         ddim_steps=ddim_steps,eta=ddim_eta)
                 # samples, z_denoise_row = self.sample(cond=c, batch_size=N, return_intermediates=True)
             x_samples = self.decode_first_stage(samples)
+            lidar_sample = self.decode_first_stage_with_lidar(sample_lidar)
             log["samples"] = x_samples
-            if plot_denoise_rows:
-                denoise_grid = self._get_denoise_row_from_list(z_denoise_row)
-                log['denoise_row'] = denoise_grid
+            log['lidar_samples'] = lidar_sample
+            # if plot_denoise_rows:
+            #     denoise_grid = self._get_denoise_row_from_list(z_denoise_row)
+            #     log['denoise_row'] = denoise_grid
             
             # if quantize_denoised and not isinstance(self.first_stage_model, AutoencoderKL) and not isinstance(
             #         self.first_stage_model, IdentityFirstStage):
@@ -2396,34 +2448,34 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
             #     x_samples = self.decode_first_stage(samples.to(self.device))
             #     log["samples_x0_quantized"] = x_samples
 
-            if inpaint:
-                #make a simple center square
-                b,h,w = z.shape[0],z.shape[2],z.shape[3]
-                mask = torch.ones(N,h,w).to(self.device)
-                # zeros will be filled in
-                mask[:, h // 4:3 * h // 4, w // 4:3 * w // 4] = 0.
-                mask = mask[:, None, ...]
-                with self.ema_scope("Plotting Inpaint"):
+            # if inpaint:
+            #     #make a simple center square
+            #     b,h,w = z.shape[0],z.shape[2],z.shape[3]
+            #     mask = torch.ones(N,h,w).to(self.device)
+            #     # zeros will be filled in
+            #     mask[:, h // 4:3 * h // 4, w // 4:3 * w // 4] = 0.
+            #     mask = mask[:, None, ...]
+            #     with self.ema_scope("Plotting Inpaint"):
 
-                    samples,_ = self.sample_log(cond=c,batch_size=N,ddim=use_ddim,eta=ddim_eta,
-                                                ddim_steps=ddim_steps,x0=z[:N],mask=mask)
-                x_samples = self.decode_first_stage(samples.to(self.device))
-                log['samples_inpainting'] = x_samples
-                log["mask"] = mask
+            #         samples,_ = self.sample_log(cond=c,batch_size=N,ddim=use_ddim,eta=ddim_eta,
+            #                                     ddim_steps=ddim_steps,x0=z[:N],mask=mask)
+            #     x_samples = self.decode_first_stage(samples.to(self.device))
+            #     log['samples_inpainting'] = x_samples
+            #     log["mask"] = mask
 
-                #outpaint
-                with self.ema_scope("Plotting Outpaint"):
-                    samples,_ = self.sample_log(cond=c,batch_size=N,ddim=use_ddim,eta=ddim_eta,
-                                                ddim_steps=ddim_steps,x0=z[:N],mask=mask)
-                x_samples = self.decode_first_stage(samples.to(self.device))
-                log["samples_outpainting"] = x_samples
-            if plot_progressive_rows:
-                with self.ema_scope("Plotting Progressives"):
-                    img, progressives = self.progressive_denoising(c,
-                                                                shape=(self.channels, self.image_size[0],self.image_size[1]),
-                                                                batch_size=N)
-            prog_row = self._get_denoise_row_from_list(progressives, desc="Progressive Generation")
-            log["progressive_row"] = prog_row
+            #     #outpaint
+            #     with self.ema_scope("Plotting Outpaint"):
+            #         samples,_ = self.sample_log(cond=c,batch_size=N,ddim=use_ddim,eta=ddim_eta,
+            #                                     ddim_steps=ddim_steps,x0=z[:N],mask=mask)
+            #     x_samples = self.decode_first_stage(samples.to(self.device))
+            #     log["samples_outpainting"] = x_samples
+            # if plot_progressive_rows:
+            #     with self.ema_scope("Plotting Progressives"):
+            #         img, progressives = self.progressive_denoising(c,
+            #                                                     shape=(self.channels, self.image_size[0],self.image_size[1]),
+            #                                                     batch_size=N)
+            # prog_row = self._get_denoise_row_from_list(progressives, desc="Progressive Generation")
+            # log["progressive_row"] = prog_row
             if return_keys:
                 if np.intersect1d(list(log.keys()),return_keys).shape[0] == 0:
                     return log
@@ -2436,7 +2488,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/copy_test.yaml',
+                        default='configs/first_stage_step1_config_test.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
@@ -2470,6 +2522,7 @@ if __name__ == '__main__':
            "range_image":range_image,
            "depth_cam_front_img":depth_cam_front_img}
     loss,loss_dict = network.shared_step(out)
+    print(loss)
     loss.backward()
     # loss,loss_dict = network.shared_step(out)
     # network.configure_optimizers()

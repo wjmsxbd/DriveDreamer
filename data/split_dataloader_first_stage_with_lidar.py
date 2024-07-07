@@ -53,8 +53,8 @@ class dataloader(data.Dataset):
         self.img_size = cfg['img_size']
         self.stride = cfg['stride']
         self.ori_img_size = cfg['ori_img_size']
-        Lx = (self.img_size[0] - self.clip_img_size[0]) // self.stride[0]
-        Ly = (self.img_size[1] - self.clip_img_size[1]) // self.stride[1]
+        Lx = (self.img_size[0] - self.clip_img_size[0]) // self.stride[0] + 1
+        Ly = (self.img_size[1] - self.clip_img_size[1]) // self.stride[1] + 1
         self.L = [Lx,Ly]
         self.scale = Lx*Ly
         self.capture_frequency = cfg.capture_frequency
@@ -159,7 +159,7 @@ class dataloader(data.Dataset):
             visible = visible.any()
             if visible:
                 boxes_now[i] = torch.from_numpy(box).reshape(-1)
-                boxes_category[i] = self.clip(category).cpu()
+                boxes_category[i] = self.clip(category[i]).cpu()
             
 
         # if boxes.shape[0] == 0:
@@ -252,7 +252,8 @@ if __name__ == '__main__':
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
     cfg.data.params.train.params['device'] = 0
-    data_loader = dataloader(**cfg.data.params.train.params)
+    data_loader = dataloader(**cfg.data.params.validation.params)
+    print(len(data_loader))
     out = data_loader.__getitem__(0)
     out_shape = [value.shape for key,value in out.items()]
     # network = instantiate_from_config(cfg['model'])

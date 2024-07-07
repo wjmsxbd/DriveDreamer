@@ -1216,7 +1216,6 @@ class UNetModel(nn.Module):
             # if len(y.shape) == 1:
             #     y = y[None,:].expand(x.shape[0],y.shape[0])
             emb = emb + self.label_emb(y)
-
         h = x.type(self.dtype)
         for module in self.input_blocks:
             if boxes_emb is None:

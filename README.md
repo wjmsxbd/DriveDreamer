@@ -1,5 +1,12 @@
 # DriveDreamer
 ## 纯视觉训练
+
+### Switch Branch
+
+`
+git checkout master
+`
+
 ### Installation
 `
 pip install -r requirement.txt
@@ -103,6 +110,13 @@ python main.py --base configs/first_stage_step1_config_mini.yaml --train True
 `
 
 ## 视觉+Range Image
+
+### Switch Branch
+
+`
+git checkout with_lidar
+`
+
 
 ### Installation
 `

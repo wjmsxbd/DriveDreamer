@@ -60,7 +60,7 @@ model:
         use_checkpoint: False
         use_spatial_transformer: True
         # ckpt_path: stable_diffusion/sd-v1-4.ckpt
-        ckpt_path: logs/2024-06-24T07-06-16_first_stage_step1_config_mini/checkpoints/last.ckpt
+        ckpt_path: stable_diffusion/sd-v1-4.ckpt
         movie_len: 1
         height: 16
         width: 48

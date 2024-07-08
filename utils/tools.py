@@ -272,7 +272,7 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
     depth_cam_front_path = os.path.join(dataset_dir,*depth_cam_front_path)
 
     depth_cam_front_img = mpimg.imread(depth_cam_front_path).astype(np.float32)
-    mpimg.imsave(f'./temp/depth_camera_front/{sample_token}.png',depth_cam_front_img)
+    # mpimg.imsave(f'./temp/depth_camera_front/{sample_token}.png',depth_cam_front_img)
     cam_front_img = mpimg.imread(cam_front_path)
     #mpimg.imsave(f'./temp/camera_front/{count:02d}.jpg',cam_front_img)
     imsize = (cam_front_img.shape[1],cam_front_img.shape[0])

@@ -2346,32 +2346,32 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/first_stage_step1_config_online3.yaml',
+                        default='configs/first_stage_step1_config_video.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
     network = instantiate_from_config(cfg['model'])#.to('cuda:7')
-    x = torch.randn((2,1,448,768,3))#.to('cuda:7')
+    x = torch.randn((2,5,128,256,3))#.to('cuda:7')
     # x.requires_grad_(True)
-    hdmap = torch.randn((2,1,448,768,4))#.to('cuda:7')
+    hdmap = torch.randn((2,5,128,256,3))#.to('cuda:7')
     # hdmap.requires_grad_(True)
-    text = torch.randn((2,1,768))#.to('cuda:7')
+    text = torch.randn((2,5,768))#.to('cuda:7')
     # text.requires_grad_(True)
-    boxes = torch.randn((2,1,50,16))#.to('cuda:7')
+    boxes = torch.randn((2,5,50,16))#.to('cuda:7')
     # boxes.requires_grad_(True)
-    box_category = torch.randn(2,1,50,768)#.to('cuda:7')
+    box_category = torch.randn(2,5,50,768)#.to('cuda:7')
     # box_category.requires_grad_(True)
     out = {'text':text,
            '3Dbox':boxes,
            'category':box_category,
            'reference_image':x,
            'HDmap':hdmap}
-    network.log_images(out)
-    # loss,loss_dict = network.shared_step(out)
+    loss,loss_dict = network.shared_step(out)
     # network.configure_optimizers()
     # network.shared_step(out)
     # loss,loss_dict = network.validation_step(out,0)
-    # loss.backward()
+    loss.backward()
+    print(loss)
 
 

@@ -70,7 +70,10 @@ def get_3dbox(sample_data_token:str,nusc:NuScenes,imsize:tuple,out_path=None):
         c = np.array([1.0,0.0,0.0])
         # box.render(ax, view=camera_intrinsic, normalize=True, colors=(c, c, c))
         box_category.append(box.name)
-        box_list.append(get_box_in_image(box,camera_intrinsic))
+        box_xy = get_box_in_image(box,camera_intrinsic)
+        box_xy[0] = box_xy[0] / imsize[0]
+        box_xy[1] = box_xy[1] / imsize[1]
+        box_list.append(box_xy)
 
 
     # ax.axis('off')

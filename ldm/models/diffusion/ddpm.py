@@ -2340,13 +2340,106 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
                 else:
                     return {key:log[key] for key in return_keys}
             return log
+
+class PipelineParallelAutoDM(AutoDM_PretrainedAutoEncoder):
+    def __init__(self,devices,*args,**kwargs):
+        devices.sort()
+        self.devices_map = {i:devices[i] for i in range(len(devices))}
+        super(PipelineParallelAutoDM,self).__init__(*args,**kwargs)
+    
+    def convert_model_to_cuda(self,model,device):
+        return model.to(f"cuda:{device}")
+
+    def convert_data_to_cuda(self,data,device):
+        return data.to(f"cuda:{device}")
+
+    def make_schedule_to_cuda(self,device):
+        self.betas = self.convert_data_to_cuda(self.betas,device)
+        self.alphas_cumprod = self.convert_data_to_cuda(self.alphas_cumprod,device)
+        self.alphas_cumprod_prev = self.convert_data_to_cuda(self.alphas_cumprod_prev,device)
+
+
+        self.sqrt_alphas_cumprod = self.convert_data_to_cuda(self.sqrt_alphas_cumprod,device)
+        self.sqrt_one_minus_alphas_cumprod = self.convert_data_to_cuda(self.sqrt_one_minus_alphas_cumprod,device)
+        self.log_one_minus_alphas_cumprod = self.convert_data_to_cuda(self.log_one_minus_alphas_cumprod,device)
+        self.sqrt_recip_alphas_cumprod = self.convert_data_to_cuda(self.sqrt_recip_alphas_cumprod,device)
+        self.sqrt_recipm1_alphas_cumprod = self.convert_data_to_cuda(self.sqrt_recipm1_alphas_cumprod,device)
+        self.posterior_variance = self.convert_data_to_cuda(self.posterior_variance,device)
+        # calculations for posterior q(x_{t-1} | x_t, x_0)
+        self.posterior_log_variance_clipped = self.convert_data_to_cuda(self.posterior_log_variance_clipped,device)
+        self.posterior_mean_coef1 = self.convert_data_to_cuda(self.posterior_mean_coef1,device)
+        self.posterior_mean_coef2 = self.convert_data_to_cuda(self.posterior_mean_coef2,device)
+        self.lvlb_weights = self.convert_data_to_cuda(self.lvlb_weights,device)
         
+    def shared_step(self,batch,**kwargs):
+        loss,loss_dict = self(batch)
+        return loss,loss_dict
+
+
+    def forward(self,batch):
+        self.first_stage_model = self.convert_model_to_cuda(self.first_stage_model,self.devices_map[0])
+        self.hdmap_encoder = self.convert_model_to_cuda(self.hdmap_encoder,self.devices_map[0])
+        self.box_encoder = self.convert_model_to_cuda(self.box_encoder,self.devices_map[0])
+        batch['reference_image'] = self.convert_data_to_cuda(batch['reference_image'],self.devices_map[0])
+
+        x_start,cond = self.get_input(batch)
+        cond = {k:v.to(f'cuda:{self.devices_map[0]}') for k,v in cond.items()}
+
+        hdmap = self.get_first_stage_encoding(self.hdmap_encoder.encode(cond['hdmap']))
+        boxes_emb = self.box_encoder(cond['boxes'],cond['category'])
+        text_emb = cond['text']
+        t = torch.randint(0,self.num_timesteps,(x_start.shape[0],),device=x_start.device).long()
+        noise = torch.randn_like(x_start).to(x_start.device)
+        self.make_schedule_to_cuda(self.devices_map[0])
+        x_noisy = self.q_sample(x_start=x_start,t=t,noise=noise)
+
+        self.model = self.convert_model_to_cuda(self.model,self.devices_map[1])
+        
+        x_noisy = self.convert_data_to_cuda(x_noisy,device=self.devices_map[1])
+        t = self.convert_data_to_cuda(t,device=self.devices_map[1])
+        hdmap = self.convert_data_to_cuda(hdmap,device=self.devices_map[1])
+        boxes_emb = self.convert_data_to_cuda(boxes_emb,device=self.devices_map[1])
+        text_emb = self.convert_data_to_cuda(text_emb,device=self.devices_map[1])
+        self.make_schedule_to_cuda(self.devices_map[1])
+        z = torch.cat([x_noisy,hdmap],dim=1)
+        model_output = self.model(z,t,boxes_emb=boxes_emb,text_emb=text_emb)
+        loss_dict = {}
+        prefix = 'train' if self.training else 'val'
+
+        if self.parameterization == 'x0':
+            target = self.convert_data_to_cuda(x_start,self.devices_map[1])
+        elif self.parameterization == 'eps':
+            target = self.convert_data_to_cuda(noise,self.devices_map[1])
+        else:
+            raise NotImplementedError()
+        
+        loss_simple = self.get_loss(model_output,target,mean=False).mean([1,2,3])
+        loss_dict.update({f'{prefix}/loss_simple':loss_simple.mean()})
+
+        logvar_t = self.logvar[t].to(loss_simple.device)
+        loss = loss_simple / torch.exp(logvar_t) + logvar_t
+
+        if self.learn_logvar:
+            loss_dict.update({f'{prefix}/loss_gamma':loss.mean()})
+            loss_dict.update({'logvar':self.logvar.data.mean()})
+
+        loss = self.l_simple_weight * loss.mean()
+
+        loss_vlb = self.get_loss(model_output,target,mean=False).mean(dim=[1,2,3])
+        loss_vlb = (self.lvlb_weights[t] * loss_vlb).mean()
+        loss_dict.update({f'{prefix}/loss_vlb':loss_vlb})
+        loss += (self.original_elbo_weight * loss_vlb)
+        loss_dict.update({f'{prefix}/loss':loss})
+
+        return loss,loss_dict
+
+
         
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/first_stage_step1_config_video.yaml',
+                        default='configs/video_first_stage_config.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
@@ -2367,11 +2460,9 @@ if __name__ == '__main__':
            'category':box_category,
            'reference_image':x,
            'HDmap':hdmap}
-    loss,loss_dict = network.shared_step(out)
+    loss,loss_dict = network(out)
     # network.configure_optimizers()
     # network.shared_step(out)
     # loss,loss_dict = network.validation_step(out,0)
     loss.backward()
     print(loss)
-
-

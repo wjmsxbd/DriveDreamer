@@ -1210,7 +1210,6 @@ class UNetModel(nn.Module):
         hs = []
         t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False)
         emb = self.time_embed(t_emb)
-
         if self.num_classes is not None:
             # assert y.shape == (x.shape[0],)
             # if len(y.shape) == 1:

@@ -24,7 +24,7 @@ pip install -r requirement.txt
 ### Preparation
 
 #### Download nuScenes-map-expansion-v1.3.zip
-在(Nuscenes)[https://www.nuscenes.org/download]官网上下载nuScenes-map-expansion-v1.3.zip
+在[Nuscenes](https://www.nuscenes.org/download)官网上下载nuScenes-map-expansion-v1.3.zip
 解压到当前路径，得到如下路径：
 ```
 maps

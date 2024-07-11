@@ -61,7 +61,7 @@ model:
       params:
         embed_dim: 4
         monitor: "val/rec_loss"
-        ckpt_path: logs/2024-06-14T17-41-36_autoencoder_finetune/checkpoints/epoch=000001.ckpt
+        ckpt_path: stable_diffusion/kl-f8.ckpt
         ddconfig:
           double_z: True
           z_channels: 4
@@ -82,7 +82,7 @@ model:
       params:
         embed_dim: 4
         monitor: "val/rec_loss"
-        ckpt_path: 
+        ckpt_path: stable_diffusion/kl-f8.ckpt
         ddconfig:
           double_z: True
           z_channels: 4
@@ -90,7 +90,7 @@ model:
           in_channels: 3
           out_ch: 3
           ch: 128
-          ch_mult: [1,1,2,2]
+          ch_mult: [1,2,4,4]
           num_res_blocks: 2
           attn_resolutions: []
           dropout: 0.0

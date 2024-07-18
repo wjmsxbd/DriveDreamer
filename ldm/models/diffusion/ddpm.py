@@ -31,6 +31,8 @@ from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.attention import PositionalEncoder
 from ldm.modules.diffusionmodules.util import extract_into_tensor
 import omegaconf
+import concurrent.futures
+import threading
 
 __conditioning_keys__ = {'concat':'c_concat',
                          'crossattn':'c_crossattn',
@@ -1398,6 +1400,7 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
                  scale_factor=1.0,
                  scale_by_std=False,
                  unet_trainable=True,
+                 movie_len=1,
                  *args,**kwargs):
         self.num_timesteps_cond = default(num_timesteps_cond,1)
         self.scale_by_std = scale_by_std
@@ -1427,11 +1430,13 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         for param in self.first_stage_model.parameters():
             param.requires_grad = False
         self.hdmap_encoder = instantiate_from_config(hdmap_config)
+        self.movie_len = movie_len
         # self.hdmap_encoder.eval()
         # for param in self.hdmap_encoder.parameters():
         #     param.requires_grad = False
         self.box_encoder = instantiate_from_config(box_config)
-        #self.instantiate_cond_stage(cond_stage_config)
+        self.instantiate_cond_stage(cond_stage_config)
+        self.clip = self.clip.to(self.device)
         # self.split_input_params = {
         #     "ks":(1024,1024),
         #     "stride":(512,512),
@@ -1710,15 +1715,24 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         hdmap = super().get_input(batch,'HDmap')
         boxes = batch['3Dbox']
         boxes_category = batch['category']
-        text = batch['text']
+        text = np.zeros((len(batch['text'][0]),len(batch['text']),768))
+        for i in range(len(batch['text'][0])):
+            for j in range(len(batch['text'])):
+                text[i,j,0] = self.clip(batch['text'][j][i]).cpu().detach().numpy()
+        text = torch.tensor(text).to(self.device)
+        text = text.unsqueeze(1)
         boxes = rearrange(boxes,'b n x c -> (b n) x c')
-        boxes_category = rearrange(boxes_category,'b n x c -> (b n) x c')
-        text = rearrange(text,'b n c -> (b n) c').unsqueeze(1)
+        boxes_category = np.zeros((len(batch['category'][0]),len(batch['category']),768))
+        for i in range(len(batch['category'][0])):
+            for j in range(len(batch['category'])):
+                boxes_category[i][j] = self.clip(batch['category'][j][i]).cpu().detach().numpy()
+        boxes_category = torch.tensor(box_category).to(self.device)
         x = ref_img
         z = self.first_stage_model.encode(x)
         z = self.get_first_stage_encoding(z)
         out = [z]
         c = {}
+        hdmap = self.get_first_stage_encoding(self.hdmap_encoder.encode(hdmap))
         c['hdmap'] = hdmap.to(torch.float32)
         c['boxes'] = boxes.to(torch.float32)
         c['category'] = boxes_category.to(torch.float32)
@@ -1765,12 +1779,22 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         x = ref_img.to(torch.float32)
         x = self.get_first_stage_encoding(self.first_stage_model.encode(x))
         c = {}
+        hdmap = self.get_first_stage_encoding(self.hdmap_encoder.encode(hdmap))
         c['hdmap'] = hdmap.to(torch.float32)
         boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d')
-        boxes_category = rearrange(batch['category'],'b n c d -> (b n) c d')
+        boxes_category = np.zeros((len(batch['category'][0]),len(batch['category']),768))
+        for i in range(len(batch['category'][0])):
+            for j in range(len(batch['category'])):
+                boxes_category[i][j] = self.clip(batch['category'][j][i]).cpu().detach().numpy()
+        boxes_category = torch.tensor(boxes_category).to(self.device)
         c['boxes'] = boxes.to(torch.float32)
         c['category'] = boxes_category.to(torch.float32)
-        c['text'] = rearrange(batch['text'],'b n d -> (b n) d').unsqueeze(1).to(torch.float32)
+        text = np.zeros((len(batch['text'][0]),len(batch['text']),768))
+        for i in range(len(batch['text'][0])):
+            for j in range(len(batch['text'])):
+                text[i,j] = self.clip(batch['text'][j][i]).cpu().detach().numpy()
+        text = torch.tensor(text).to(self.device)
+        c['text'] = text.to(torch.float32)
         loss,loss_dict = self(x,c)
         return loss,loss_dict
 
@@ -1844,11 +1868,17 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
             # stitch crops together
             x_recon = fold(0) / normalization
         else:
-            hdmap = self.get_first_stage_encoding(self.hdmap_encoder.encode(cond['hdmap']))
+            cond['boxes'] = cond['boxes'].to(cond['hdmap'].device)
+            cond['category'] = cond['category'].to(cond['hdmap'].device)
+
             boxes_emb = self.box_encoder(cond['boxes'],cond['category'])
+            cond = {k:v.to(self.model.device) for k,v in cond.items()}
+            hdmap = cond['hdmap']
             text_emb = cond['text']
             z = torch.cat([x_noisy,hdmap],dim=1)
             #TODO:need reshape z
+            boxes_emb = boxes_emb.to(self.model.device)
+            text_emb = text_emb.to(self.model.device)
             x_recon = self.model(z,t,boxes_emb=boxes_emb,text_emb=text_emb)
         return x_recon
 
@@ -2240,7 +2270,7 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         if ddim:
             ddim_sampler = DDIMSampler(self)
             shape = (self.channels,) + tuple(self.image_size)
-            samples,intermediates = ddim_sampler.sample(ddim_steps,batch_size,
+            samples,intermediates = ddim_sampler.sample(ddim_steps,batch_size*self.movie_len,
                                                         shape,cond,verbose=False,**kwargs)
         else:
             samples,intermediates = self.sample(cond=cond,batch_size=batch_size,
@@ -2341,11 +2371,48 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
                     return {key:log[key] for key in return_keys}
             return log
 
+    def log_video(self,batch,N=8,n_row=4,sample=True,ddim_steps=200,ddim_eta=1.,return_keys=None,
+                   quantize_denoised=True,inpaint=True,plot_denoise_rows=False,plot_progressive_rows=True,
+                   plot_diffusion_rows=True,**kwargs):
+        use_ddim = ddim_steps is not None
+        log = dict()
+        x = batch['reference_image']
+        N = min(x.shape[0],N)
+        n_row = min(x.shape[0],n_row)
+        batch = {k:v[:N].to(self.first_stage_model.device) for k,v in batch.items()}
+        z,x,x_rec,c = self.get_input(batch,return_first_stage_outputs=True)
+
+        log['inputs'] = x.reshape((N,-1)+x.shape[1:])
+        log['reconstruction'] = x_rec.reshape((N,-1)+x_rec.shape[1:])
+        if sample:
+            with self.ema_scope("Plotting"):
+                batch = {k:v.to(self.model.device) for k,v in batch.items()}
+                samples,z_denoise_row = self.sample_log(cond=c,batch_size=N,ddim=use_ddim,
+                                                        ddim_steps=ddim_steps,eta=ddim_eta)
+                # samples, z_denoise_row = self.sample(cond=c, batch_size=N, return_intermediates=True)
+            samples = samples.to(self.first_stage_model.device)
+            x_samples = self.decode_first_stage(samples)
+            log["samples"] = x_samples.reshape((N,-1)+x_samples.shape[1:])
+        return log
+
+
+# class Mythread(threading.Thread):
+#     def __init__(self,name):
+#         super(Mythread).__init__()
+
+#     def run(self):
+#         global counter,counter_lock
+        
+
 class PipelineParallelAutoDM(AutoDM_PretrainedAutoEncoder):
     def __init__(self,devices,*args,**kwargs):
         devices.sort()
         self.devices_map = {i:devices[i] for i in range(len(devices))}
+        self.num_threads = len(self.devices_map) // 2
         super(PipelineParallelAutoDM,self).__init__(*args,**kwargs)
+        # global counter,self.counter_lock
+        # counter = 0
+        # counter_lock = threading.Lock()
     
     def convert_model_to_cuda(self,model,device):
         return model.to(f"cuda:{device}")
@@ -2372,44 +2439,53 @@ class PipelineParallelAutoDM(AutoDM_PretrainedAutoEncoder):
         self.lvlb_weights = self.convert_data_to_cuda(self.lvlb_weights,device)
         
     def shared_step(self,batch,**kwargs):
-        loss,loss_dict = self(batch)
+        # with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_threads) as executor:
+        #     now_device_map = []
+        #     if counter_lock.acquire():
+        #         now_device_map = self.devices_map[counter*2:counter*2+2]
+        #         counter = counter+1
+        #         counter_lock.release()
+            # loss,loss_dict = executor.map(self.forward,(batch,now_device_map))
+        loss,loss_dict = self(batch,self.devices_map)
+                
+        
         return loss,loss_dict
 
 
-    def forward(self,batch):
-        self.first_stage_model = self.convert_model_to_cuda(self.first_stage_model,self.devices_map[0])
-        self.hdmap_encoder = self.convert_model_to_cuda(self.hdmap_encoder,self.devices_map[0])
-        self.box_encoder = self.convert_model_to_cuda(self.box_encoder,self.devices_map[0])
-        batch['reference_image'] = self.convert_data_to_cuda(batch['reference_image'],self.devices_map[0])
+    def forward(self,batch,devices_map):
+        self.first_stage_model = self.convert_model_to_cuda(self.first_stage_model,devices_map[0])
+        self.hdmap_encoder = self.convert_model_to_cuda(self.hdmap_encoder,devices_map[0])
+        self.box_encoder = self.convert_model_to_cuda(self.box_encoder,devices_map[0])
+        batch['reference_image'] = self.convert_data_to_cuda(batch['reference_image'],devices_map[0])
+        batch['HDmap'] = self.convert_data_to_cuda(batch['HDmap'],devices_map[0])
 
         x_start,cond = self.get_input(batch)
-        cond = {k:v.to(f'cuda:{self.devices_map[0]}') for k,v in cond.items()}
+        cond = {k:v.to(f'cuda:{devices_map[0]}') for k,v in cond.items()}
 
-        hdmap = self.get_first_stage_encoding(self.hdmap_encoder.encode(cond['hdmap']))
         boxes_emb = self.box_encoder(cond['boxes'],cond['category'])
         text_emb = cond['text']
         t = torch.randint(0,self.num_timesteps,(x_start.shape[0],),device=x_start.device).long()
         noise = torch.randn_like(x_start).to(x_start.device)
-        self.make_schedule_to_cuda(self.devices_map[0])
+        self.make_schedule_to_cuda(devices_map[0])
         x_noisy = self.q_sample(x_start=x_start,t=t,noise=noise)
 
-        self.model = self.convert_model_to_cuda(self.model,self.devices_map[1])
+        self.model = self.convert_model_to_cuda(self.model,devices_map[1])
         
-        x_noisy = self.convert_data_to_cuda(x_noisy,device=self.devices_map[1])
-        t = self.convert_data_to_cuda(t,device=self.devices_map[1])
-        hdmap = self.convert_data_to_cuda(hdmap,device=self.devices_map[1])
-        boxes_emb = self.convert_data_to_cuda(boxes_emb,device=self.devices_map[1])
-        text_emb = self.convert_data_to_cuda(text_emb,device=self.devices_map[1])
-        self.make_schedule_to_cuda(self.devices_map[1])
+        x_noisy = self.convert_data_to_cuda(x_noisy,device=devices_map[1])
+        t = self.convert_data_to_cuda(t,device=devices_map[1])
+        hdmap = self.convert_data_to_cuda(cond['hdmap'],device=devices_map[1])
+        boxes_emb = self.convert_data_to_cuda(boxes_emb,device=devices_map[1])
+        text_emb = self.convert_data_to_cuda(text_emb,device=devices_map[1])
+        self.make_schedule_to_cuda(devices_map[1])
         z = torch.cat([x_noisy,hdmap],dim=1)
         model_output = self.model(z,t,boxes_emb=boxes_emb,text_emb=text_emb)
         loss_dict = {}
         prefix = 'train' if self.training else 'val'
 
         if self.parameterization == 'x0':
-            target = self.convert_data_to_cuda(x_start,self.devices_map[1])
+            target = self.convert_data_to_cuda(x_start,devices_map[1])
         elif self.parameterization == 'eps':
-            target = self.convert_data_to_cuda(noise,self.devices_map[1])
+            target = self.convert_data_to_cuda(noise,devices_map[1])
         else:
             raise NotImplementedError()
         
@@ -2460,9 +2536,8 @@ if __name__ == '__main__':
            'category':box_category,
            'reference_image':x,
            'HDmap':hdmap}
-    loss,loss_dict = network(out)
+    network.log_video(out)
     # network.configure_optimizers()
     # network.shared_step(out)
     # loss,loss_dict = network.validation_step(out,0)
-    loss.backward()
-    print(loss)
+    

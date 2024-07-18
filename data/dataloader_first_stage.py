@@ -25,6 +25,8 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from einops import repeat
 import omegaconf
 from PIL import Image
+from tqdm import tqdm
+
 
 def disabled_train(self,mode=True):
     """Overwrite model.train with this function to make sure train/eval mode
@@ -48,7 +50,7 @@ class dataloader(data.Dataset):
             'singapore-queenstown': NuScenesMap(dataroot='.', map_name='singapore-queenstown'),
         }
         #$self.instantiate_cond_stage(cond_stage_config)
-        self.clip = self.clip.to(self.device)
+        # self.clip = self.clip.to(self.device)
         self.load_data_infos()
 
     def load_data_infos(self):
@@ -98,23 +100,26 @@ class dataloader(data.Dataset):
         out['HDmap'] = hdmap[:,:,:3].unsqueeze(0)
         
         
-        out['text'] = self.clip(text).cpu().to(torch.float32)
-        out['text'] = repeat(out['text'],'n c -> (repeat n) c',repeat=out['reference_image'].shape[0])
+        out['text'] = [text]
         if boxes.shape[0] == 0:
             boxes = torch.from_numpy(np.zeros((self.num_boxes,16)))
-            category = torch.from_numpy(np.zeros((self.num_boxes,out['text'].shape[1])))
+            category = ["None" for i in range(self.num_boxes)]
+            # category = torch.from_numpy(np.zeros((self.num_boxes,out['text'].shape[1])))
         elif boxes.shape[0]<self.num_boxes:
-            boxes_zero = np.zeros((self.num_boxes - boxes.shape[0],16))
+            zero_len = self.num_boxes - boxes.shape[0]
+            boxes_zero = np.zeros((zero_len,16))
             boxes = torch.from_numpy(np.concatenate((boxes,boxes_zero),axis=0))
-            category_embed = self.clip(category).cpu()
-            category_zero = torch.zeros([self.num_boxes-category_embed.shape[0],category_embed.shape[1]])
-            category = torch.cat([category_embed,category_zero],dim=0)
+            # category_embed = self.clip(category).cpu()
+            # category_zero = torch.zeros([self.num_boxes-category_embed.shape[0],category_embed.shape[1]])
+            # category = torch.cat([category_embed,category_zero],dim=0)
+            category_none = ["None" for i in range(zero_len)]
+            category = category + category_none
         else:
             boxes = torch.from_numpy(boxes[:self.num_boxes])
-            category_embed = self.clip(category).cpu()
+            category_embed = category[:self.num_boxes]
             category = category_embed[:self.num_boxes]
         out['3Dbox'] = boxes.unsqueeze(0).to(torch.float32)
-        out['category'] = category.unsqueeze(0).to(torch.float32)
+        out['category'] = category
         return out
 
     def __getitem__(self,idx):
@@ -191,17 +196,24 @@ if __name__ == '__main__':
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
     cfg.data.params.train.params['device'] = 0
     data_loader = dataloader(**cfg.data.params.train.params)
-    network = instantiate_from_config(cfg['model'])
-    model_path = 'logs/2024-06-20T03-51-30_first_stage_step1_config_mini/checkpoints/last.ckpt'
-    network.init_from_ckpt(model_path)
-    network = network.eval().cuda()
-    save_path = 'all_pics/add_night_condition/'
-    for i in range(2000,4400,400):
-        input_data = data_loader.__getitem__(i)
-        input_data = {k:v.unsqueeze(0).cuda() for k,v in input_data.items()}
-        logs = network.log_images(input_data)
-        save_tensor_as_image(logs['inputs'],file_path=save_path+f'inputs_{i:02d}.jpg')
-        save_tensor_as_image(logs['samples'],file_path=save_path+f'samples{i:02d}.jpg')
+    data_loader = torch.utils.data.DataLoader(
+        data_loader,
+        batch_size  =   2,
+        num_workers =   8,
+    )
+    for batch in tqdm(enumerate(data_loader)):
+        pass
+    # network = instantiate_from_config(cfg['model'])
+    # model_path = 'logs/2024-06-20T03-51-30_first_stage_step1_config_mini/checkpoints/last.ckpt'
+    # network.init_from_ckpt(model_path)
+    # network = network.eval().cuda()
+    # save_path = 'all_pics/add_night_condition/'
+    # for i in range(2000,4400,400):
+    #     input_data = data_loader.__getitem__(i)
+    #     input_data = {k:v.unsqueeze(0).cuda() for k,v in input_data.items()}
+    #     logs = network.log_images(input_data)
+    #     save_tensor_as_image(logs['inputs'],file_path=save_path+f'inputs_{i:02d}.jpg')
+    #     save_tensor_as_image(logs['samples'],file_path=save_path+f'samples{i:02d}.jpg')
         
 
     

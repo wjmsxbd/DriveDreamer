@@ -22,6 +22,11 @@ from pytorch_lightning.utilities import rank_zero_info
 
 # from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config
+from einops import rearrange
+import imageio
+from typing import Any, BinaryIO, List, Optional, Tuple, Union
+import math
+from multiprocessing import set_start_method
 
 
 def get_parser(**parser_kwargs):
@@ -394,6 +399,130 @@ class ImageLogger(Callback):
             if (pl_module.calibrate_grad_norm and batch_idx % 25 == 0) and batch_idx > 0:
                 self.log_gradients(trainer, pl_module, batch_idx=batch_idx)
 
+class VideoLogger(Callback):
+    def __init__(self, batch_frequency, max_videos,fps, clamp=True, increase_log_steps=True,
+                 rescale=True, disabled=False, log_on_batch_idx=False, log_first_step=False,
+                 log_images_kwargs=None):
+        super().__init__()
+        self.rescale = rescale
+        self.batch_freq = batch_frequency
+        self.max_videos = max_videos
+        self.fps = fps
+        self.log_steps = [2 ** n for n in range(int(np.log2(self.batch_freq)) + 1)]
+        if not increase_log_steps:
+            self.log_steps = [self.batch_freq]
+        self.clamp = clamp
+        self.disabled = disabled
+        self.log_on_batch_idx = log_on_batch_idx
+        self.log_images_kwargs = log_images_kwargs if log_images_kwargs else {}
+        self.log_first_step = log_first_step
+
+    def make_grid(
+            self,
+            video: Union[torch.Tensor, List[torch.Tensor]],
+            nrow: int=8,
+            padding: int = 2,
+            normalize: bool=False,
+            value_range: Optional[Tuple[int,int]] = None,
+            scale_each: bool = False,
+            pad_value: float = 0.0,
+            **kwargs,
+            ) -> torch.Tensor:
+        nmaps = video.size(0)
+        xmaps = min(nrow,nmaps)
+        ymaps = int(math.ceil(float(nmaps)) / xmaps)
+        height,width = int(video.size(2) + padding),int(video.size(3) + padding)
+        num_channels = video.size(4)
+        movie_len = video.size(1)
+        grid = video.new_full((movie_len,height*ymaps+padding,width*xmaps+padding,num_channels),pad_value)
+        k=0
+        for y in range(ymaps):
+            for x in range(xmaps):
+                if k>=nmaps:
+                    break
+                grid.narrow(1,y*height+padding,height-padding).narrow(
+                    2,x*width+padding,width-padding
+                ).copy_(video[k])
+                k = k + 1
+        return grid
+
+
+    @rank_zero_only
+    def log_local(self, save_dir, split, videos,
+                  global_step, current_epoch, batch_idx):
+        root = os.path.join(save_dir, "images", split)
+        for k in videos.keys():
+            videos[k] = rearrange(videos[k],'b n c h w -> b n h w c')
+
+            grid =self.make_grid(videos[k], 4)
+            if self.rescale:
+                grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
+            # grid = grid.transpose(0, 1).transpose(1, 2).squeeze(-1)
+            grid = grid.numpy()
+            grid = (grid * 255).astype(np.uint8)
+            filename = "{}_gs-{:06}_e-{:06}_b-{:06}.png".format(
+                k,
+                global_step,
+                current_epoch,
+                batch_idx)
+            path = os.path.join(root, filename)
+            os.makedirs(os.path.split(path)[0], exist_ok=True)
+            writer = imageio.get_writer(path,fps=self.fps)
+            for img in grid:
+                writer.append_data(img)
+            writer.close()
+
+    def log_video(self, pl_module, batch, batch_idx, split="train"):
+        check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
+        if (self.check_frequency(check_idx) and  # batch_idx % self.batch_freq == 0
+                hasattr(pl_module, "log_video") and
+                callable(pl_module.log_video) and
+                self.max_videos > 0):
+            logger = type(pl_module.logger)
+
+            is_train = pl_module.training
+            if is_train:
+                pl_module.eval()
+
+            with torch.no_grad():
+                videos = pl_module.log_video(batch, split=split, **self.log_images_kwargs)
+
+            for k in videos:
+                N = min(videos[k].shape[0], self.max_videos)
+                videos[k] = videos[k][:N]
+                if isinstance(videos[k], torch.Tensor):
+                    videos[k] = videos[k].detach().cpu()
+                    if self.clamp:
+                        videos[k] = torch.clamp(videos[k], -1., 1.)
+
+            self.log_local(pl_module.logger.save_dir, split, videos,
+                           pl_module.global_step, pl_module.current_epoch, batch_idx)
+
+            if is_train:
+                pl_module.train()
+
+    def check_frequency(self, check_idx):
+        if ((check_idx % self.batch_freq) == 0 or (check_idx in self.log_steps)) and (
+                check_idx > 0 or self.log_first_step):
+            try:
+                self.log_steps.pop(0)
+            except IndexError as e:
+                print(e)
+                pass
+            return True
+        return False
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
+        if not self.disabled and (pl_module.global_step > 0 or self.log_first_step):
+            self.log_video(pl_module, batch, batch_idx, split="train")
+
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
+        if not self.disabled and pl_module.global_step > 0:
+            self.log_video(pl_module, batch, batch_idx, split="val")
+        if hasattr(pl_module, 'calibrate_grad_norm'):
+            if (pl_module.calibrate_grad_norm and batch_idx % 25 == 0) and batch_idx > 0:
+                self.log_gradients(trainer, pl_module, batch_idx=batch_idx)
+
 
 class CUDACallback(Callback):
     # see https://github.com/SeanNaren/minGPT/blob/master/mingpt/callback.py
@@ -461,7 +590,6 @@ if __name__ == "__main__":
     #               key: value
 
     now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-
     # add cwd for convenience and to make classes in this file available when
     # running as `python main.py`
     # (in particular `main.DataModuleFromConfig`)

@@ -1718,15 +1718,15 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         text = np.zeros((len(batch['text'][0]),len(batch['text']),768))
         for i in range(len(batch['text'][0])):
             for j in range(len(batch['text'])):
-                text[i,j,0] = self.clip(batch['text'][j][i]).cpu().detach().numpy()
+                text[i,j] = self.clip(batch['text'][j][i]).cpu().detach().numpy()
         text = torch.tensor(text).to(self.device)
-        text = text.unsqueeze(1)
         boxes = rearrange(boxes,'b n x c -> (b n) x c')
+        boxes = boxes.to(memory_format=torch.contiguous_format).float()
         boxes_category = np.zeros((len(batch['category'][0]),len(batch['category']),768))
         for i in range(len(batch['category'][0])):
             for j in range(len(batch['category'])):
                 boxes_category[i][j] = self.clip(batch['category'][j][i]).cpu().detach().numpy()
-        boxes_category = torch.tensor(box_category).to(self.device)
+        boxes_category = torch.tensor(boxes_category).to(self.device)
         x = ref_img
         z = self.first_stage_model.encode(x)
         z = self.get_first_stage_encoding(z)
@@ -1781,7 +1781,8 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         c = {}
         hdmap = self.get_first_stage_encoding(self.hdmap_encoder.encode(hdmap))
         c['hdmap'] = hdmap.to(torch.float32)
-        boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d')
+        boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d').contiguous()
+        boxes = boxes
         boxes_category = np.zeros((len(batch['category'][0]),len(batch['category']),768))
         for i in range(len(batch['category'][0])):
             for j in range(len(batch['category'])):
@@ -1795,6 +1796,12 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
                 text[i,j] = self.clip(batch['text'][j][i]).cpu().detach().numpy()
         text = torch.tensor(text).to(self.device)
         c['text'] = text.to(torch.float32)
+        ref_img = ref_img.contiguous()
+        assert(c['boxes'].is_contiguous())
+        assert(c['category'].is_contiguous())
+        assert(c['text'].is_contiguous())
+        assert(c['hdmap'].is_contiguous())
+        assert(ref_img.is_contiguous())
         loss,loss_dict = self(x,c)
         return loss,loss_dict
 
@@ -2515,7 +2522,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/video_first_stage_config.yaml',
+                        default='configs/first_stage_step1_config_mini.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
@@ -2536,7 +2543,7 @@ if __name__ == '__main__':
            'category':box_category,
            'reference_image':x,
            'HDmap':hdmap}
-    network.log_video(out)
+    network.log_images(out)
     # network.configure_optimizers()
     # network.shared_step(out)
     # loss,loss_dict = network.validation_step(out,0)

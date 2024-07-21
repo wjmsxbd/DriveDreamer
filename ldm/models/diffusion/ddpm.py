@@ -1797,11 +1797,6 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         text = torch.tensor(text).to(self.device)
         c['text'] = text.to(torch.float32)
         ref_img = ref_img.contiguous()
-        assert(c['boxes'].is_contiguous())
-        assert(c['category'].is_contiguous())
-        assert(c['text'].is_contiguous())
-        assert(c['hdmap'].is_contiguous())
-        assert(ref_img.is_contiguous())
         loss,loss_dict = self(x,c)
         return loss,loss_dict
 

@@ -308,7 +308,8 @@ class AutoencoderKL(pl.LightningModule):
                  colorize_nlabels=None,
                  monitor=None,
                  use_finetune=False,
-                 train_downsample=False):
+                 train_downsample=False,
+                 trainable=False,):
         super().__init__()
         self.image_key = image_key
         self.encoder = Encoder(**ddconfig)
@@ -319,6 +320,7 @@ class AutoencoderKL(pl.LightningModule):
         self.post_quant_conv = torch.nn.Conv2d(embed_dim, ddconfig["z_channels"], 1)
         self.embed_dim = embed_dim
         self.train_downsample=train_downsample
+        self.trainable = trainable
         if colorize_nlabels is not None:
             assert type(colorize_nlabels)==int
             self.register_buffer("colorize", torch.randn(3, colorize_nlabels, 1, 1))
@@ -358,6 +360,18 @@ class AutoencoderKL(pl.LightningModule):
             z = posterior.mode()
         dec = self.decode(z)
         return dec,posterior
+
+    def get_losses(self,batch,batch_idx,optimizer_idx):
+        reconstructions,posterior = self(batch)
+        if optimizer_idx == 0:
+            aeloss,log_dict_ae = self.loss(batch,reconstructions,posterior,optimizer_idx, self.global_step,
+                                           last_layer=self.get_last_layer(), split="train")
+            return aeloss,log_dict_ae
+        else:
+            discloss, log_dict_disc = self.loss(batch, reconstructions, posterior, optimizer_idx, self.global_step,
+                                                last_layer=self.get_last_layer(), split="train")
+            return discloss,log_dict_disc
+            
 
     #TODO:conver b h w c -> b c h w
     def get_input(self,batch,k):
@@ -564,6 +578,7 @@ class FrozenCLIPTextEmbedder(nn.Module):
 
     def forward(self,text):
         tokens = clip.tokenize(text).cuda()
+        # tokens = clip.tokenize(text)
         z = self.model.encode_text(tokens)
         if self.normalize:
             z = z / torch.linalg.norm(z,dim=1,keepdim=True)
@@ -587,7 +602,8 @@ class AutoencoderKL_Diffusion(pl.LightningModule):
                  image_key="reference_image",
                  colorize_nlabels=None,
                  monitor=None,
-                 use_finetune=False):
+                 use_finetune=False,
+                 trainable=False,):
         super().__init__()
         self.image_key = image_key
         self.encoder = Encoder_Diffusion(**ddconfig)
@@ -597,6 +613,7 @@ class AutoencoderKL_Diffusion(pl.LightningModule):
         self.quant_conv = torch.nn.Conv2d(2*ddconfig["z_channels"], 2*embed_dim, 1)
         self.post_quant_conv = torch.nn.Conv2d(embed_dim, ddconfig["z_channels"], 1)
         self.embed_dim = embed_dim
+        self.trainable = trainable
         if colorize_nlabels is not None:
             assert type(colorize_nlabels)==int
             self.register_buffer("colorize", torch.randn(3, colorize_nlabels, 1, 1))
@@ -710,26 +727,45 @@ class AutoencoderKL_Diffusion(pl.LightningModule):
     def get_last_layer(self):
         return self.decoder.conv_out.weight
     
-    @torch.no_grad()
-    def log_images(self,batch,only_inputs=False,**kwargs):
-        log = dict()
-        x = self.get_input(batch,self.image_key)
-        x = x.to(self.device)
-        if not only_inputs:
-            xrec,posterior = self(x)
-            if x.shape[1] > 3:
-                #colorize with random projection
-                assert xrec.shape[1]>3
-                x = self.to_rgb(x)
-                xrec = self.to_rgb(xrec)
-            log["samples"] = self.decode(torch.randn_like(posterior.sample()))
-            log["reconstructions"] = xrec
-        log["inputs"] = x
-        return log
-    def to_rgb(self,x):
-        assert self.image_key == "segmentation"
-        if not hasattr(self, "colorize"):
-            self.register_buffer("colorize", torch.randn(3, x.shape[1], 1, 1).to(x))
-        x = F.conv2d(x, weight=self.colorize)
-        x = 2.*(x-x.min())/(x.max()-x.min()) - 1.
-        return x
+    def get_losses(self,batch,batch_idx,optimizer_idx,target=None):
+        reconstructions,posterior = self(batch)
+        if optimizer_idx == 0:
+            if target is None:
+                aeloss,log_dict_ae = self.loss(batch,reconstructions,posterior,optimizer_idx, self.global_step,
+                                            last_layer=self.get_last_layer(), split="train")
+            else:
+                aeloss,log_dict_ae = self.loss(target,reconstructions,posterior,optimizer_idx, self.global_step,
+                                            last_layer=self.get_last_layer(), split="train")
+            return aeloss,log_dict_ae
+        else:
+            if target is None:
+                discloss, log_dict_disc = self.loss(batch, reconstructions, posterior, optimizer_idx, self.global_step,
+                                                    last_layer=self.get_last_layer(), split="train")
+            else:
+                discloss, log_dict_disc = self.loss(target, reconstructions, posterior, optimizer_idx, self.global_step,
+                                                last_layer=self.get_last_layer(), split="train")
+            return discloss,log_dict_disc
+
+    # @torch.no_grad()
+    # def log_images(self,batch,only_inputs=False,**kwargs):
+    #     log = dict()
+    #     x = self.get_input(batch,self.image_key)
+    #     x = x.to(self.device)
+    #     if not only_inputs:
+    #         xrec,posterior = self(x)
+    #         if x.shape[1] > 3:
+    #             #colorize with random projection
+    #             assert xrec.shape[1]>3
+    #             x = self.to_rgb(x)
+    #             xrec = self.to_rgb(xrec)
+    #         log["samples"] = self.decode(torch.randn_like(posterior.sample()))
+    #         log["reconstructions"] = xrec
+    #     log["inputs"] = x
+    #     return log
+    # def to_rgb(self,x):
+    #     assert self.image_key == "segmentation"
+    #     if not hasattr(self, "colorize"):
+    #         self.register_buffer("colorize", torch.randn(3, x.shape[1], 1, 1).to(x))
+    #     x = F.conv2d(x, weight=self.colorize)
+    #     x = 2.*(x-x.min())/(x.max()-x.min()) - 1.
+    #     return x

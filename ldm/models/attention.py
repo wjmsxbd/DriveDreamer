@@ -64,11 +64,11 @@ class CrossAttention(nn.Module):
         k = self.to_k(context)
         v = self.to_v(context)
 
-        q,k,v = map(lambda t:rearrange(t,'b n (h d) -> (b h) n d',h=h),(q,k,v))
+        q,k,v = map(lambda t:rearrange(t,'b n (h d) -> (b h) n d',h=h).contiguous(),(q,k,v))
         sim = einsum('b i d , b j d -> b i j',q,k) * self.scale
 
         if exists(mask):
-            mask = rearrange(mask,'b ... -> b (...)')
+            mask = rearrange(mask,'b ... -> b (...)').contiguous()
             max_neg_value = -torch.finfo(sim.dtype).max
             mask = repeat(mask,'b j -> (b h) () j',h=h)
             sim.masked_fill_(~mask,max_neg_value)
@@ -76,7 +76,7 @@ class CrossAttention(nn.Module):
         attn = sim.softmax(dim=-1)
 
         out = einsum('b i j , b j d -> b i d',attn,v)
-        out = rearrange(out,'(b h) n d -> b n (h d)',h=h)
+        out = rearrange(out,'(b h) n d -> b n (h d)',h=h).contiguous()
         return self.to_out(out)
 
 class PositionalEncoder(nn.Module):
@@ -139,10 +139,10 @@ class TemporalAttention(nn.Module):
         x = np.concatenate((ref_img,hdmap),axis=3)
         n,h,w,c = x.shape[0],x.shape[2],x.shape[3],x.shape[4]
 
-        x = rearrange(x,'b n h w c -> b c (n h w)')
+        x = rearrange(x,'b n h w c -> b c (n h w)').contiguous()
         x = self.positional_encoder(x)
         z,attn = self.attention_layer(x,x,x)
-        z = rearrange(z,"b (h w) (n c) -> b n c h w",n=n,h=h,w=w,c=c)
+        z = rearrange(z,"b (h w) (n c) -> b n c h w",n=n,h=h,w=w,c=c).contiguous()
 
         return z
 

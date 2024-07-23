@@ -663,8 +663,7 @@ if __name__ == "__main__":
         trainer.logdir = logdir  ###
         current_device = trainer.local_rank
         print(f"get local rank:{current_device}")
-        config.data['params']['train']['params']['device'] = current_device
-        config.data['params']['validation']['params']['device'] = current_device
+        # config.model['params']['device'] = current_device
         # data
         data = instantiate_from_config(config.data)
         # NOTE according to https://pytorch-lightning.readthedocs.io/en/latest/datamodules.html

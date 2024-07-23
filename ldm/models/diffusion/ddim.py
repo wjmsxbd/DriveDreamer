@@ -97,7 +97,7 @@ class DDIMSampler(object):
         size = (batch_size, C, H, W)
         print(f'Data shape for DDIM sampling is {size}, eta {eta}')
 
-        samples,sample_lidar, intermediates = self.ddim_sampling(conditioning, size,
+        samples, intermediates = self.ddim_sampling(conditioning, size,
                                                     callback=callback,
                                                     img_callback=img_callback,
                                                     quantize_denoised=quantize_x0,
@@ -112,7 +112,7 @@ class DDIMSampler(object):
                                                     unconditional_guidance_scale=unconditional_guidance_scale,
                                                     unconditional_conditioning=unconditional_conditioning,
                                                     )
-        return samples,sample_lidar, intermediates
+        return samples, intermediates
 
     @torch.no_grad()
     def ddim_sampling(self, cond, shape,
@@ -125,32 +125,30 @@ class DDIMSampler(object):
         b = shape[0]
         if x_T is None:
             img = torch.randn(shape, device=device)
-            lidar_img = torch.randn(shape,device=device)
         else:
             img = x_T
-
         if timesteps is None:
             timesteps = self.ddpm_num_timesteps if ddim_use_original_steps else self.ddim_timesteps
         elif timesteps is not None and not ddim_use_original_steps:
             subset_end = int(min(timesteps / self.ddim_timesteps.shape[0], 1) * self.ddim_timesteps.shape[0]) - 1
             timesteps = self.ddim_timesteps[:subset_end]
 
-        intermediates = {'x_inter': [img], 'pred_x0': [img],'lidar_inter':[lidar_img],'pred_lidar0':[img]}
+        intermediates = {'x_inter': [img], 'pred_x0': [img],'lidar_inter':[img],'pred_lidar0':[img]}
         time_range = reversed(range(0,timesteps)) if ddim_use_original_steps else np.flip(timesteps)
         total_steps = timesteps if ddim_use_original_steps else timesteps.shape[0]
         print(f"Running DDIM Sampling with {total_steps} timesteps")
 
         iterator = tqdm(time_range, desc='DDIM Sampler', total=total_steps)
-
+        img = torch.cat([img,img],dim=0)
         for i, step in enumerate(iterator):
             index = total_steps - i - 1
             ts = torch.full((b,), step, device=device, dtype=torch.long)
-
+            img,lidar_img = torch.chunk(img,2,dim=0)
             if mask is not None:
                 assert x0 is not None
                 img_orig = self.model.q_sample(x0, ts)  # TODO: deterministic forward pass?
                 img = img_orig * mask + (1. - mask) * img
-
+            
             outs = self.p_sample_ddim([img,lidar_img], cond, ts, index=index, use_original_steps=ddim_use_original_steps,
                                       quantize_denoised=quantize_denoised, temperature=temperature,
                                       noise_dropout=noise_dropout, score_corrector=score_corrector,
@@ -158,27 +156,26 @@ class DDIMSampler(object):
                                       unconditional_guidance_scale=unconditional_guidance_scale,
                                       unconditional_conditioning=unconditional_conditioning,
                                       )
-            img, pred_x0,img_lidar,pred_lidar_0 = outs
+            img, pred_x0= outs
             if callback: callback(i)
             if img_callback: img_callback(pred_x0, i)
 
             if index % log_every_t == 0 or index == total_steps - 1:
                 intermediates['x_inter'].append(img)
                 intermediates['pred_x0'].append(pred_x0)
-                intermediates['lidar_inter'].append(img_lidar)
-                intermediates['pred_lidar0'].append(pred_lidar_0)
 
-        return img,img_lidar, intermediates
+        return img, intermediates
 
     @torch.no_grad()
     def p_sample_ddim(self, x, c, t, index, repeat_noise=False, use_original_steps=False, quantize_denoised=False,
                       temperature=1., noise_dropout=0., score_corrector=None, corrector_kwargs=None,
                       unconditional_guidance_scale=1., unconditional_conditioning=None,):
         x,lidar_img = x
-        b, *_, device = *x.shape, x.device
+        
+        t = torch.cat([t,t],dim=0)
 
         if unconditional_conditioning is None or unconditional_guidance_scale == 1.:
-            e_t,e_lidar_t = self.model.apply_model(x, t, c, lidar_img,c['x_start'])
+            e_t = self.model.apply_model(x, t, c, lidar_img,c['x_start'])
         else:
             x_in = torch.cat([x] * 2)
             t_in = torch.cat([t] * 2)
@@ -189,7 +186,8 @@ class DDIMSampler(object):
         if score_corrector is not None:
             assert self.model.parameterization == "eps"
             e_t = score_corrector.modify_score(self.model, e_t, x, t, c, **corrector_kwargs)
-
+        x = torch.cat([x,lidar_img],dim=0)
+        b, *_, device = *x.shape, x.device
         alphas = self.model.alphas_cumprod if use_original_steps else self.ddim_alphas
         alphas_prev = self.model.alphas_cumprod_prev if use_original_steps else self.ddim_alphas_prev
         sqrt_one_minus_alphas = self.model.sqrt_one_minus_alphas_cumprod if use_original_steps else self.ddim_sqrt_one_minus_alphas
@@ -202,20 +200,16 @@ class DDIMSampler(object):
 
         # current prediction for x_0
         pred_x0 = (x - sqrt_one_minus_at * e_t) / a_t.sqrt()
-        pred_lidar_0 = (lidar_img - sqrt_one_minus_at * e_lidar_t) / a_t.sqrt()
         if quantize_denoised:
             pred_x0, _, *_ = self.model.first_stage_model.quantize(pred_x0)
-            pred_lidar_0,_,*_ = self.model.range_image_model.quantize(pred_lidar_0)
         # direction pointing to x_t
         dir_xt = (1. - a_prev - sigma_t**2).sqrt() * e_t
-        dir_lidar_t = (1. - a_prev - sigma_t**2).sqrt() * e_lidar_t
         noise = sigma_t * noise_like(x.shape, device, repeat_noise) * temperature
-        noise_lidar = sigma_t * noise_like(lidar_img.shape,device,repeat_noise) * temperature
+        # noise_lidar = sigma_t * noise_like(lidar_img.shape,device,repeat_noise) * temperature
         if noise_dropout > 0.:
             noise = torch.nn.functional.dropout(noise, p=noise_dropout)
         x_prev = a_prev.sqrt() * pred_x0 + dir_xt + noise
-        lidar_prev = a_prev.sqrt() * pred_lidar_0 + dir_lidar_t + noise_lidar
-        return x_prev, pred_x0,lidar_prev,pred_lidar_0
+        return x_prev, pred_x0
 
     @torch.no_grad()
     def stochastic_encode(self, x0, t, use_original_steps=False, noise=None):

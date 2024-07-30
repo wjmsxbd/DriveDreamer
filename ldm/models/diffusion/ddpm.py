@@ -1474,7 +1474,7 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         #                 params[param] = state_dict[param]
         for k in keys:
             for ik in ignore_keys:
-                if k.startswith(ik):
+                if k.startswith(ik) or ik in k:
                     print('Delete Key {} from state_dict'.format(k))
                     del(sd[k])
         #torch.save(my_model_state_dict,'./my_model_state_dict.pt')
@@ -1711,21 +1711,37 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
 
     @torch.no_grad()
     def get_input(self,batch,return_first_stage_outputs=False):
+        b = batch['reference_image'].shape[0]
         ref_img = super().get_input(batch,'reference_image')
         hdmap = super().get_input(batch,'HDmap')
         boxes = batch['3Dbox']
         boxes_category = batch['category']
-        text = np.zeros((len(batch['text'][0]),len(batch['text']),768))
-        for i in range(len(batch['text'][0])):
-            for j in range(len(batch['text'])):
-                text[i,j] = self.clip(batch['text'][j][i]).cpu().detach().numpy()
+        if b == 1:
+            text = np.zeros((len(batch['text']),len(batch['text'][0]),768))
+            for i in range(len(batch['text'])):
+                for j in range(len(batch['text'][0])):
+                    text[i,j] = self.clip(batch['text'][i][j]).cpu().detach().numpy()
+        else:
+            text = np.zeros((len(batch['text']),self.movie_len,768))
+            for k in range(self.movie_len):
+                for i in range(len(batch['text'])):
+                    text[i,k] = self.clip(batch['text'][k][i]).cpu().detach().numpy()
+            text = text.reshape(b*self.movie_len,1,768)
         text = torch.tensor(text).to(self.device)
         boxes = rearrange(boxes,'b n x c -> (b n) x c')
         boxes = boxes.to(memory_format=torch.contiguous_format).float()
-        boxes_category = np.zeros((len(batch['category'][0]),len(batch['category']),768))
-        for i in range(len(batch['category'][0])):
-            for j in range(len(batch['category'])):
-                boxes_category[i][j] = self.clip(batch['category'][j][i]).cpu().detach().numpy()
+        if b == 1:
+            boxes_category = np.zeros((len(batch['category']),len(batch['category'][0]),768))
+            for i in range(len(batch['category'])):
+                for j in range(len(batch['category'][0])):
+                    boxes_category[i][j] = self.clip(batch['category'][i][j]).cpu().detach().numpy()
+        else:
+            boxes_category = np.zeros((len(batch['category']),self.movie_len,len(batch['category'][0]),768))
+            for k in range(self.movie_len):
+                for i in range(len(batch['category'])):
+                    for j in range(len(batch['category'][0])):
+                        boxes_category[i][k][j] = self.clip(batch['category'][k][j][i]).cpu().detach().numpy()
+            boxes_category = boxes_category.reshape(b*self.movie_len,len(batch['category'][0]),768)
         boxes_category = torch.tensor(boxes_category).to(self.device)
         x = ref_img
         z = self.first_stage_model.encode(x)
@@ -1772,8 +1788,14 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         #     out.extend([ref_img,xrec])
         # return out
         
+    def print_length(self,x):
+        if isinstance(x,list) or isinstance(x,tuple):
+            print(len(x))
+            self.print_length(x[0])
+    
     # c = {'hdmap':...,"boxes":...,'category':...,"text":...}
     def shared_step(self,batch,**kwargs):
+        b = batch['reference_image'].shape[0]
         ref_img = super().get_input(batch,'reference_image') # (b n c h w)
         hdmap = super().get_input(batch,'HDmap') # (b n c h w)
         x = ref_img.to(torch.float32)
@@ -1783,17 +1805,34 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         c['hdmap'] = hdmap.to(torch.float32)
         boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d').contiguous()
         boxes = boxes
-        boxes_category = np.zeros((len(batch['category'][0]),len(batch['category']),768))
-        for i in range(len(batch['category'][0])):
-            for j in range(len(batch['category'])):
-                boxes_category[i][j] = self.clip(batch['category'][j][i]).cpu().detach().numpy()
+        self.print_length(batch['category'])
+        if b == 1:
+            boxes_category = np.zeros((len(batch['category']),len(batch['category'][0]),768))
+            for i in range(len(batch['category'])):
+                for j in range(len(batch['category'][0])):
+                    boxes_category[i][j] = self.clip(batch['category'][i][j]).cpu().detach().numpy()
+            
+        else:
+            boxes_category = np.zeros((len(batch['category']),self.movie_len,len(batch['category'][0]),768))
+            for k in range(self.movie_len):
+                for i in range(len(batch['category'])):
+                    for j in range(len(batch['category'][0])):
+                        boxes_category[i][k][j] = self.clip(batch['category'][k][j][i]).cpu().detach().numpy()
+            boxes_category = boxes_category.reshape(b*self.movie_len,len(batch['category'][0]),768)
         boxes_category = torch.tensor(boxes_category).to(self.device)
         c['boxes'] = boxes.to(torch.float32)
         c['category'] = boxes_category.to(torch.float32)
-        text = np.zeros((len(batch['text'][0]),len(batch['text']),768))
-        for i in range(len(batch['text'][0])):
-            for j in range(len(batch['text'])):
-                text[i,j] = self.clip(batch['text'][j][i]).cpu().detach().numpy()
+        if b == 1:
+            text = np.zeros((len(batch['text']),len(batch['text'][0]),768))
+            for i in range(len(batch['text'])):
+                for j in range(len(batch['text'][0])):
+                    text[i,j] = self.clip(batch['text'][i][j]).cpu().detach().numpy()
+        else:
+            text = np.zeros((len(batch['text']),self.movie_len,768))
+            for k in range(self.movie_len):
+                for i in range(len(batch['text'])):
+                    text[i,k] = self.clip(batch['text'][k][i]).cpu().detach().numpy()
+            text = text.reshape(b*self.movie_len,1,768)
         text = torch.tensor(text).to(self.device)
         c['text'] = text.to(torch.float32)
         ref_img = ref_img.contiguous()
@@ -2064,7 +2103,7 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
                 #     params.append(param)
                 # elif not 'transformer_blocks' in name:
                 #     param.requires_grad=False
-                if not 'temporal' in name and 'diffusion_model' in name:
+                if 'diffusion_model' in name:
                     print(f"model:add {name} into optimizers")
                     params.append(param)
                 
@@ -2272,6 +2311,18 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         if ddim:
             ddim_sampler = DDIMSampler(self)
             shape = (self.channels,) + tuple(self.image_size)
+            samples,intermediates = ddim_sampler.sample(ddim_steps,batch_size,
+                                                        shape,cond,verbose=False,**kwargs)
+        else:
+            samples,intermediates = self.sample(cond=cond,batch_size=batch_size,
+                                                return_intermediates=True,**kwargs)
+        return samples,intermediates
+
+    @torch.no_grad()
+    def sample_video_log(self,cond,batch_size,ddim,ddim_steps,**kwargs):
+        if ddim:
+            ddim_sampler = DDIMSampler(self)
+            shape = (self.channels,) + tuple(self.image_size)
             samples,intermediates = ddim_sampler.sample(ddim_steps,batch_size*self.movie_len,
                                                         shape,cond,verbose=False,**kwargs)
         else:
@@ -2381,15 +2432,15 @@ class AutoDM_PretrainedAutoEncoder(DDPM):
         x = batch['reference_image']
         N = min(x.shape[0],N)
         n_row = min(x.shape[0],n_row)
-        batch = {k:v[:N].to(self.first_stage_model.device) for k,v in batch.items()}
+        batch = {k:v[:N*self.movie_len].to(self.first_stage_model.device) if isinstance(v,torch.Tensor) else v[:N*self.movie_len] for k,v in batch.items()}
         z,x,x_rec,c = self.get_input(batch,return_first_stage_outputs=True)
 
         log['inputs'] = x.reshape((N,-1)+x.shape[1:])
         log['reconstruction'] = x_rec.reshape((N,-1)+x_rec.shape[1:])
         if sample:
             with self.ema_scope("Plotting"):
-                batch = {k:v.to(self.model.device) for k,v in batch.items()}
-                samples,z_denoise_row = self.sample_log(cond=c,batch_size=N,ddim=use_ddim,
+                # batch = {k:v.to(self.model.device) for k,v in batch.items()}
+                samples,z_denoise_row = self.sample_video_log(cond=c,batch_size=N,ddim=use_ddim,
                                                         ddim_steps=ddim_steps,eta=ddim_eta)
                 # samples, z_denoise_row = self.sample(cond=c, batch_size=N, return_intermediates=True)
             samples = samples.to(self.first_stage_model.device)
@@ -2517,28 +2568,30 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/first_stage_step1_config_mini.yaml',
+                        default='configs/video_first_stage_config.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
     network = instantiate_from_config(cfg['model'])#.to('cuda:7')
-    x = torch.randn((2,5,128,256,3))#.to('cuda:7')
+    x = torch.randn((1,5,128,256,3))#.to('cuda:7')
     # x.requires_grad_(True)
-    hdmap = torch.randn((2,5,128,256,3))#.to('cuda:7')
+    hdmap = torch.randn((1,5,128,256,3))#.to('cuda:7')
     # hdmap.requires_grad_(True)
     text = torch.randn((2,5,768))#.to('cuda:7')
+    text = [["None" for i in range(70)] for j in range(5)]
     # text.requires_grad_(True)
-    boxes = torch.randn((2,5,50,16))#.to('cuda:7')
+    boxes = torch.randn((1,5,70,16))#.to('cuda:7')
     # boxes.requires_grad_(True)
-    box_category = torch.randn(2,5,50,768)#.to('cuda:7')
+    box_category = [["None" for i in range(70)] for j in range(5)]
+    # box_category = torch.randn(1,5,70,768)#.to('cuda:7')
     # box_category.requires_grad_(True)
     out = {'text':text,
            '3Dbox':boxes,
            'category':box_category,
            'reference_image':x,
            'HDmap':hdmap}
-    network.log_images(out)
+    network.log_video(out)
     # network.configure_optimizers()
     # network.shared_step(out)
     # loss,loss_dict = network.validation_step(out,0)

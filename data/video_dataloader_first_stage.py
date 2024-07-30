@@ -38,17 +38,17 @@ class dataloader(data.Dataset):
         self.cfg = cfg
         self.nusc = NuScenes(version=cfg['version'],dataroot=cfg['dataroot'],verbose=True)
         self.movie_len = movie_len
-        if device is not None:
-            self.device = f'cuda:{device}'
+        # if device is not None:
+        #     self.device = f'cuda:{device}'
         self.num_boxes = num_boxes
-        self.instantiate_cond_stage(cond_stage_config)
+        # self.instantiate_cond_stage(cond_stage_config)
         self.nusc_maps = {
             'boston-seaport': NuScenesMap(dataroot='.', map_name='boston-seaport'),
             'singapore-hollandvillage': NuScenesMap(dataroot='.', map_name='singapore-hollandvillage'),
             'singapore-onenorth': NuScenesMap(dataroot='.', map_name='singapore-onenorth'),
             'singapore-queenstown': NuScenesMap(dataroot='.', map_name='singapore-queenstown'),
         }
-        self.clip = self.clip.to(self.device)
+        # self.clip = self.clip.to(self.device)
         self.load_data_infos()
 
     def load_data_infos(self):
@@ -125,30 +125,33 @@ class dataloader(data.Dataset):
                 out['HDmap'] = torch.cat([out['HDmap'],hdmap[:,:,:3].unsqueeze(0)],dim=0)
             
             if not 'text' in out.keys():
-                out['text'] = self.clip(text).cpu().to(torch.float32)
+                out['text'] = [text]
             else:
-                out['text'] = torch.cat([out['text'],self.clip(text).cpu().to(torch.float32)],dim=0)
+                out['text'] = out['text'] + [text]
             
             if boxes.shape[0] == 0:
                 boxes = torch.from_numpy(np.zeros((self.num_boxes,16)))
-                category = torch.from_numpy(np.zeros((self.num_boxes,out['text'].shape[1])))
+                category = ["None" for i in range(self.num_boxes)]
             elif boxes.shape[0] < self.num_boxes:
+                zero_len = self.num_boxes - boxes.shape[0]
                 boxes_zero = np.zeros((self.num_boxes - boxes.shape[0],16))
                 boxes = torch.from_numpy(np.concatenate((boxes,boxes_zero),axis=0))
-                category_embed = self.clip(category).cpu().to(torch.float32)
-                category_zero = torch.zeros([self.num_boxes-category_embed.shape[0],category_embed.shape[1]])
-                category = torch.cat([category_embed,category_zero],dim=0)
+                # category_embed = self.clip(category).cpu().to(torch.float32)
+                # category_zero = torch.zeros([self.num_boxes-category_embed.shape[0],category_embed.shape[1]])
+                # category = torch.cat([category_embed,category_zero],dim=0)
+                category_none = ["None" for i in range(zero_len)]
+                category = category + category_none
             else:
                 boxes = torch.from_numpy(boxes[:self.num_boxes])
-                category_embed = self.clip(category).cpu().to(torch.float32)
+                category_embed = category[:self.num_boxes]
                 category = category_embed[:self.num_boxes]
             
             if not '3Dbox' in out.keys():
                 out['3Dbox'] = boxes.unsqueeze(0).to(torch.float32)
-                out['category'] = category.unsqueeze(0).to(torch.float32)
+                out['category'] = [category]
             else:
                 out['3Dbox'] = torch.cat([out['3Dbox'],boxes.unsqueeze(0)],dim=0)
-                out['category'] = torch.cat((out['category'],category.unsqueeze(0).to(torch.float32)),dim=0)
+                out['category'] = out['category'] + [category]
         return out
     def __getitem__(self,idx):
         return self.get_data_info(idx)
@@ -158,7 +161,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/first_stage_step1_config_video.yaml',
+                        default='configs/video_first_stage_config.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()

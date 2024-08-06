@@ -26,6 +26,8 @@ from typing import Tuple, List, Iterable
 from ip_basic.ip_basic.depth_map_utils import fill_in_fast,fill_in_multiscale
 # import open3d as o3d
 from einops import rearrange
+import matplotlib
+import gc
 
 LOGGER_DEFAULT_FORMAT = ('<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> |'
                   ' <level>{level: <8}</level> |'
@@ -77,7 +79,10 @@ def get_3dbox(sample_data_token:str,nusc:NuScenes,imsize:tuple,out_path=None):
         c = np.array([1.0,0.0,0.0])
         # box.render(ax, view=camera_intrinsic, normalize=True, colors=(c, c, c))
         box_category.append(box.name)
-        box_list.append(get_box_in_image(box,camera_intrinsic))
+        box_xy = get_box_in_image(box,camera_intrinsic)
+        box_xy[0] = box_xy[0] / imsize[0]
+        box_xy[1] = box_xy[1] / imsize[1]
+        box_list.append(box_xy)
 
 
     # ax.axis('off')
@@ -276,6 +281,7 @@ def get_this_scene_info(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_to
     
 
 def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448)):
+    # matplotlib.use("Agg")
     sample_record = nusc.get('sample',sample_token)
     cam_front_token = sample_record['data']['CAM_FRONT']
     cam_front_path = nusc.get('sample_data',cam_front_token)['filename']
@@ -289,7 +295,7 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
     # mpimg.imsave(f'./temp/depth_camera_front/{sample_token}.png',depth_cam_front_img)
     cam_front_img = mpimg.imread(cam_front_path)
     # mpimg.imsave(f'all_pics/cam.png',cam_front_img)
-    #mpimg.imsave(f'./temp/camera_front/{count:02d}.jpg',cam_front_img)
+    # mpimg.imsave(f'./temp/camera_front/{count:02d}.jpg',cam_front_img)
     imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
     cam_front_img = Image.fromarray(cam_front_img)
     cam_front_img = np.array(cam_front_img.resize(img_size))
@@ -297,32 +303,124 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
     #print(depth_cam_front_img.min(),depth_cam_front_img.max())
     depth_cam_front_img = Image.fromarray(depth_cam_front_img)
     depth_cam_front_img = np.array(depth_cam_front_img.resize(img_size))
-
-    
-
+    # project_to_image(nusc,sample_token,out_path="004.png")
     box_list,box_category = get_3dbox(cam_front_token,nusc,imsize)#out_path=f'./temp/3dbox/{count:02d}.jpg'
-    hdmap_fig,hdmap_ax,yaw,translation = get_hdmap(cam_front_token,nusc,nusc_map)#,outpath=f'./temp/hdmap/{count:02d}.jpg'
-    range_image_fig,range_image_ax = render_pointcloud_in_image(nusc,sample_token)#out_path='000.jpg'
-    range_image = convert_fig_to_numpy(range_image_fig,imsize)
-    dense_range_image = range_image[:,:,0]
-    
-    dense_range_image = np.float32(dense_range_image)
-    dense_range_image,_ = fill_in_multiscale(dense_range_image,max_depth=120)
-    # dense_range_image = np.repeat(dense_range_image[:,:,np.newaxis],3,axis=-1).astype(np.uint8)
-    dense_range_image = Image.fromarray(dense_range_image)
-    dense_range_image = np.array(dense_range_image.resize(img_size))
-    range_image = Image.fromarray(range_image)
-    range_image = np.array(range_image.resize(img_size))
+    # nusc.render_pointcloud_in_image(sample_token,out_path="002.png")
 
+    range_image = project_to_image(nusc,sample_token)
+    dense_range_image,_ = fill_in_multiscale(range_image,max_depth=100)
+    range_image = np.repeat(range_image[:,:,np.newaxis],3,axis=-1)
+
+    # range_image_fig,range_image_ax = render_pointcloud_in_image(nusc,sample_token)#out_path='000.jpg'
+    # range_image = convert_fig_to_numpy(range_image_fig,imsize)
+    # dense_range_image = range_image[:,:,0]
+    
+    # dense_range_image = np.float32(dense_range_image)
+    # dense_range_image,_ = fill_in_multiscale(dense_range_image,max_depth=100)
+    # dense_range_image = Image.fromarray(dense_range_image)
+    # dense_range_image = np.array(dense_range_image.resize(img_size))
+    # range_image = Image.fromarray(range_image)
+    # range_image = np.array(range_image.resize(img_size))
+    
+    # plt.close(range_image_fig)
+    hdmap_fig,hdmap_ax,yaw,translation = get_hdmap(cam_front_token,nusc,nusc_map)#,outpath=f'./temp/hdmap/{count:02d}.jpg'
     now_hdmap = convert_fig_to_numpy(hdmap_fig,imsize)
+    plt.close(hdmap_fig)
     now_hdmap = Image.fromarray(now_hdmap)
     now_hdmap = np.array(now_hdmap.resize(img_size))
 
     box_list = np.array(box_list)
-    plt.close(hdmap_fig)
-    plt.close(range_image_fig)
     # return cam_front_img,box_list,now_hdmap,box_category,depth_cam_front_img,range_image,dense_range_image
     return cam_front_img,box_list,now_hdmap,box_category,depth_cam_front_img,range_image,dense_range_image
+
+def project_to_image(nusc: NuScenes,sample_token:str,pointsensor_channel: str='LIDAR_TOP',camera_channel:str='CAM_FRONT',out_path:str=None,
+                     img_size=(128,256)):
+    sample_record = nusc.get('sample',sample_token)
+    pointsensor_token = sample_record['data'][pointsensor_channel]
+    camera_token = sample_record['data'][camera_channel]
+    cam = nusc.get('sample_data',camera_token)
+    pointsensor = nusc.get('sample_data',pointsensor_token)
+    pcl_path = osp.join(nusc.dataroot,pointsensor['filename'])
+    pc = LidarPointCloud.from_file(pcl_path)
+    points = pc.points
+    r = np.sqrt(points[0]**2 + points[1]**2 + points[2]**2)
+    phi = np.arctan2(points[0],points[1])
+    theta = np.arcsin(points[2] / r)
+    mask = np.logical_and(phi > -np.pi/6,phi < np.pi/6)
+    points = points[:,mask]
+    phi = phi[mask]
+    r = r[mask]
+    theta = theta[mask]
+
+    h = img_size[0]
+    w = img_size[1]
+    theta_down = -np.pi / 6
+    theta_up = np.pi / 12
+    theta = np.clip(theta,theta_down,theta_up)
+    r = r.astype(np.uint8)
+    row_indices = (theta_up - theta) / (theta_up - theta_down) * h - 1
+    col_indices = w * (1 + phi / (np.pi / 6)) / 2 - 1
+    row_indices = row_indices.astype(np.int16)
+    col_indices = col_indices.astype(np.int16)
+    range_image = np.zeros((h,w)).astype(np.uint8)
+    for i in range(len(row_indices)):
+        
+        range_image[row_indices[i],col_indices[i]] = max(range_image[row_indices[i],col_indices[i]],r[i])
+    # range_image = np.array(range_image * 255.).astype(np.uint8)
+    if out_path is not None:
+        image = Image.fromarray(range_image)
+        image.save(out_path)
+    return range_image
+
+def project_to_camera(range_image,point_sensor_record,cam_sensor_record,ego_pose_record,img_size=(128,256),min_dist=1.0,out_path=None):
+    indices = np.nonzero(range_image)
+    points = np.zeros(len(indices),3)
+    theta_up = np.pi / 12
+    theta_down = -np.pi / 6
+    theta_res = (theta_up - theta_down) / img_size[0]
+    phi_res = (np.pi / 3) / img_size[1]
+    for idx in range(len(indices)):
+        vi,ui = indices[idx]
+        phi = ((1+ui)/img_size[1] - 1) * torch.pi / 6
+        theta = theta_up - (theta_up - theta_down) * ((vi+1) - 1./2) / img_size[0]
+        r = range_image[vi,ui]
+        point_x = r * torch.cos(theta) * torch.sin(phi)
+        point_y = r * torch.cos(theta) * torch.cos(phi)
+        point_z = r * torch.sin(theta)
+        points[idx] = np.array([point_x,point_y,point_z])
+    points = np.ascontiguousarray(points.transpose(1,0))
+    pc = LidarPointCloud(points=points)
+    pc.rotate(Quaternion(point_sensor_record['rotation']).rotation_matrix)
+    pc.translate(np.array(point_sensor_record['translation']))
+    
+    
+    pc.rotate(Quaternion(ego_pose_record['rotation']).rotation_matrix)
+    pc.translate(np.array(ego_pose_record['translation']))
+    
+    pc.translate(-np.array(ego_pose_record['translation']))
+    pc.rotate(Quaternion(ego_pose_record['rotation']).rotation_matrix.T)
+    
+    pc.translate(-np.array(cam_sensor_record['translation']))
+    pc.rotate(Quaternion(cam_sensor_record['rotation']).rotation_matrix.T)
+    # Take the actual picture (matrix multiplication with camera-matrix + renormalization).
+    points = view_points(pc.points[:3, :], np.array(cam_sensor_record['camera_intrinsic']), normalize=True)
+    mask = np.ones(points[2,:].shape[0], dtype=bool)
+    mask = np.logical_and(mask, points[2,:] > min_dist)
+    mask = np.logical_and(mask, points[0, :] > 1)
+    mask = np.logical_and(mask, points[0, :] < 1600 - 1)
+    mask = np.logical_and(mask, points[1, :] > 1)
+    mask = np.logical_and(mask, points[1, :] < 900 - 1)
+    points = points[:, mask]
+    cam_range_image = np.zeros((900,1600,3))
+    
+    for point in points:
+        cam_range_image[point[1],point[0]] = point[2]
+    cam_range_image = Image.fromarray(cam_range_image)
+    if out_path is not None:
+        cam_range_image.save(out_path)
+    cam_range_image = np.array(cam_range_image.resize(img_size+(3,)))
+    return cam_range_image
+
 
 def render_pointcloud_in_image(nusc: NuScenes,sample_token:str,dot_size:int = 1,pointsensor_channel: str='LIDAR_TOP',
                                camera_channel:str='CAM_FRONT',out_path:str=None,

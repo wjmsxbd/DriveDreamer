@@ -924,6 +924,7 @@ class UNetModel(nn.Module):
         flip_sin_to_cos=True,
         freq_shift=0,
         class_embed_dim = 4,
+        modify_keys=None,
     ):
         super().__init__()
         if use_spatial_transformer:

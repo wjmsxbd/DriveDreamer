@@ -18,7 +18,7 @@ from nuscenes.map_expansion.map_api import NuScenesMap,NuScenesMapExplorer
 from pyquaternion import Quaternion
 from nuscenes.nuscenes import NuScenes
 from torch.utils import data
-from utils.tools import get_this_scene_info_with_lidar
+from utils.tools import get_this_scene_info_with_lidar,project_to_image
 from ldm.util import instantiate_from_config
 import matplotlib.image as mpimg
 from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -97,38 +97,18 @@ class dataloader(data.Dataset):
         imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
         cam_front_img = Image.fromarray(cam_front_img)
         if self.cfg['img_size'] is not None:
-            ref_img,boxes,hdmap,category,depth_cam_front_img,range_image,dense_range_image = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']))
+            range_image = project_to_image(self.nusc,sample_token)
         else:
-            ref_img,boxes,hdmap,category,depth_cam_front_img,range_image,dense_range_image = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token)
+            range_image = project_to_image(self.nusc,sample_token,self.cfg['img_size'])
+        dense_range_image,_ = fill_in_multiscale(range_image,max_depth=120)
+        dense_range_image = np.repeat(dense_range_image[:,:,np.newaxis],3,axis=-1)
+        range_image = np.repeat(range_image[:,:,np.newaxis],3,axis=-1)
+        range_image = torch.from_numpy((range_image / 255. * 2 - 1.0))
+        dense_range_image = torch.from_numpy((dense_range_image / 255. * 2 - 1.0))
         out = {}
-        boxes = np.array(boxes).astype(np.float32)
-        ref_img = torch.from_numpy(ref_img / 255. * 2 - 1.0).to(torch.float32)
-        hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.0).to(torch.float32)
+        out['range_image'] = range_image
+        out['dense_range_image'] = dense_range_image
 
-        depth_cam_front_img = torch.from_numpy(depth_cam_front_img / 255. * 2 - 1.0).to(torch.float32)
-        range_image = torch.from_numpy(range_image / 255. * 2 - 1.0).to(torch.float32)
-        dense_range_image = repeat(dense_range_image,'h w -> h w c', c=3)
-        out['dense_range_image'] = torch.from_numpy(dense_range_image / 255. * 2 - 1.0).unsqueeze(0)
-        out['range_image'] = range_image[:,:,:3].unsqueeze(0)
-        out['depth_cam_front_img'] = depth_cam_front_img.unsqueeze(0)
-        out['reference_image'] = ref_img.unsqueeze(0)
-        out['HDmap'] = hdmap[:,:,:3].unsqueeze(0)
-        out['text'] = [text]
-        if boxes.shape[0] == 0:
-            boxes = torch.from_numpy(np.zeros((self.num_boxes,16)))
-            category = ["None" for i in range(self.num_boxes)]
-        elif boxes.shape[0]<self.num_boxes:
-            zero_len = self.num_boxes - boxes.shape[0]
-            boxes_zero = np.zeros((zero_len,16))
-            boxes = torch.from_numpy(np.concatenate((boxes,boxes_zero),axis=0))
-            category_none = ["None" for i in range(zero_len)]
-            category = category + category_none
-        else:
-            boxes = torch.from_numpy(boxes[:self.num_boxes])
-            category_embed = category[:self.num_boxes]
-            category = category_embed[:self.num_boxes]
-        out['3Dbox'] = boxes.unsqueeze(0).to(torch.float32)
-        out['category'] = category
         return out
 
     def __getitem__(self,idx):
@@ -198,7 +178,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/global_condition.yaml',
+                        default='configs/autoencoder.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
@@ -206,11 +186,23 @@ if __name__ == '__main__':
 
     data_loader = dataloader(**cfg.data.params.train.params)
     # 35
-    out = data_loader.__getitem__(35)
-    range_image = out['dense_range_image']
-    file_path = "001.png"
-    range_image = rearrange(range_image,'b h w c -> b c h w')
-    save_tensor_as_image(range_image,file_path='./001.png')
+    # out = data_loader.__getitem__(35)
+    network = instantiate_from_config(cfg['model'])
+    # model_path = 'logs/2024-07-31T03-42-34_autoencoder/checkpoints/last.ckpt'
+    # network.init_from_ckpt(model_path)
+    network = network.eval()
+    save_path = 'lidar_image/'
+    # save_path = 'sd_images/'
+    for i in range(30,40,1):
+        input_data = data_loader.__getitem__(i)
+        input_data = {k:v.unsqueeze(0) for k,v in input_data.items()}
+        logs = network.log_images(input_data)
+        save_tensor_as_image(logs['inputs'],file_path=save_path+f'inputs_{i:02d}.jpg')
+        save_tensor_as_image(logs['reconstructions'],file_path=save_path+f'reconstructions{i:02d}.jpg')
+        # logs['hdmap'] = logs['hdmap'][:,:3]
+        # print(logs['hdmap'].shape)
+        # save_tensor_as_image(logs['hdmap'],file_path=save_path+f'hdmap{i:02d}.jpg')
+    
     # image = Image.fromarray(range_image)
 
     # image.save(file_path)

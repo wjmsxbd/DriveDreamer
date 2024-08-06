@@ -176,15 +176,24 @@ stable_diffusion
 ```
 
 #### 
-
+#### clone ip_basic
+在当前目录中clone ip_basic
+```
+git clone git@github.com:kujason/ip_basic.git
+cd ip_basic
+pip3 install -r requirements.txt
+```
 ### Training
 
-#### 在训练的时候对图片进行分块
-
+#### training lidar model
+修改configs/autoencoder_lidar.yaml中的数据集的version和path
 `
-python main.py --base configs/first_stage_step1_config_split_on_train.yaml --train True
+python main.py --base configs/autoencoder_lidar.yaml --train True
 `
-#### 在预处理的时候对图片进行分块
+#### training diffusion model
+修改global_condition.yaml中的数据集的version和path
+其中如果要加载纯视觉训练的模型需要设置init_from_video_model=True且修改unet_config.params.ckpt_path，保留ignore_keys和modify_keys
+如果要加载纯视觉训练+range image的模型需要设置init_from_video_model=False且更改unet_config.params.ckpt_path和ignore_keys
 `
-python main.py --base configs/first_stage_step1_config_split_pre_train.yaml --train True
+python main.py --base configs/global_condition.yaml --train True
 `

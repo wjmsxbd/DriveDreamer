@@ -2778,7 +2778,7 @@ class AutoDM_GlobalCondition(DDPM):
         hdmap = super().get_input(batch,'HDmap') # (b n c h w)
         range_image = super().get_input(batch,'range_image') # (b n c h w)
         dense_range_image = super().get_input(batch,'dense_range_image') # (b n c h w)
-        depth_cam_front_img = super().get_input(batch,'depth_cam_front_img') # (b n c h w)
+        # depth_cam_front_img = super().get_input(batch,'depth_cam_front_img') # (b n c h w)
         boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d').contiguous()
         boxes_category = np.zeros((len(batch['category']),self.movie_len,len(batch['category'][0][0]),768))
         for i in range(len(batch['category'])):
@@ -2799,7 +2799,7 @@ class AutoDM_GlobalCondition(DDPM):
         batch['category'] = boxes_category
         batch['text'] = text
         batch['range_image'] = range_image
-        batch['depth_cam_front_img'] = depth_cam_front_img
+        # batch['depth_cam_front_img'] = depth_cam_front_img
         batch['dense_range_image'] = dense_range_image
         batch = {k:v.to(torch.float32) for k,v in batch.items()}
 
@@ -2828,7 +2828,7 @@ class AutoDM_GlobalCondition(DDPM):
         hdmap = super().get_input(batch,'HDmap') # (b n c h w)
         range_image = super().get_input(batch,'range_image') # (b n c h w)
         dense_range_image = super().get_input(batch,'dense_range_image') # (b n c h w)
-        depth_cam_front_img = super().get_input(batch,'depth_cam_front_img') # (b n c h w)
+        # depth_cam_front_img = super().get_input(batch,'depth_cam_front_img') # (b n c h w)
         boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d').contiguous()
 
         boxes_category = np.zeros((len(batch['category']),self.movie_len,len(batch['category'][0][0]),768))
@@ -2851,7 +2851,7 @@ class AutoDM_GlobalCondition(DDPM):
         batch['category'] = boxes_category
         batch['text'] = text
         batch['range_image'] = range_image
-        batch['depth_cam_front_img'] = depth_cam_front_img
+        # batch['depth_cam_front_img'] = depth_cam_front_img
         batch['dense_range_image'] = dense_range_image
         batch = {k:v.to(torch.float32) for k,v in batch.items()}
 

@@ -285,13 +285,13 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
     sample_record = nusc.get('sample',sample_token)
     cam_front_token = sample_record['data']['CAM_FRONT']
     cam_front_path = nusc.get('sample_data',cam_front_token)['filename']
-    depth_cam_front_path = cam_front_path.split('/')
-    depth_cam_front_path[0] = depth_cam_front_path[0] + '_depth'
-    depth_cam_front_path[-1] = depth_cam_front_path[-1].split('.')[0] + '_depth.png'
+    # depth_cam_front_path = cam_front_path.split('/')
+    # depth_cam_front_path[0] = depth_cam_front_path[0] + '_depth'
+    # depth_cam_front_path[-1] = depth_cam_front_path[-1].split('.')[0] + '_depth.png'
     cam_front_path = os.path.join(dataset_dir,cam_front_path)
-    depth_cam_front_path = os.path.join(dataset_dir,*depth_cam_front_path)
+    # depth_cam_front_path = os.path.join(dataset_dir,*depth_cam_front_path)
 
-    depth_cam_front_img = mpimg.imread(depth_cam_front_path).astype(np.float32)
+    # depth_cam_front_img = mpimg.imread(depth_cam_front_path).astype(np.float32)
     # mpimg.imsave(f'./temp/depth_camera_front/{sample_token}.png',depth_cam_front_img)
     cam_front_img = mpimg.imread(cam_front_path)
     # mpimg.imsave(f'all_pics/cam.png',cam_front_img)
@@ -299,10 +299,10 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
     imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
     cam_front_img = Image.fromarray(cam_front_img)
     cam_front_img = np.array(cam_front_img.resize(img_size))
-    depth_cam_front_img = (depth_cam_front_img * 255.).astype(np.uint8)
+    # depth_cam_front_img = (depth_cam_front_img * 255.).astype(np.uint8)
     #print(depth_cam_front_img.min(),depth_cam_front_img.max())
-    depth_cam_front_img = Image.fromarray(depth_cam_front_img)
-    depth_cam_front_img = np.array(depth_cam_front_img.resize(img_size))
+    # depth_cam_front_img = Image.fromarray(depth_cam_front_img)
+    # depth_cam_front_img = np.array(depth_cam_front_img.resize(img_size))
     # project_to_image(nusc,sample_token,out_path="004.png")
     box_list,box_category = get_3dbox(cam_front_token,nusc,imsize)#out_path=f'./temp/3dbox/{count:02d}.jpg'
     # nusc.render_pointcloud_in_image(sample_token,out_path="002.png")
@@ -331,7 +331,7 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
 
     box_list = np.array(box_list)
     # return cam_front_img,box_list,now_hdmap,box_category,depth_cam_front_img,range_image,dense_range_image
-    return cam_front_img,box_list,now_hdmap,box_category,depth_cam_front_img,range_image,dense_range_image
+    return cam_front_img,box_list,now_hdmap,box_category,range_image,dense_range_image
 
 def project_to_image(nusc: NuScenes,sample_token:str,pointsensor_channel: str='LIDAR_TOP',camera_channel:str='CAM_FRONT',out_path:str=None,
                      img_size=(128,256)):

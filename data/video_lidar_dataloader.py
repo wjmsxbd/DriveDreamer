@@ -83,9 +83,9 @@ class dataloader(data.Dataset):
             nusc_map = self.nusc_maps[log['location']]
             # cam_front_img,box_list,now_hdmap,box_category,depth_cam_front_img,range_image,dense_range_image
             if self.cfg['img_size'] is not None:
-                ref_img,boxes,hdmap,category,depth_cam_front_img,range_image,dense_range_image = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']))
+                ref_img,boxes,hdmap,category,range_image,dense_range_image = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']))
             else:
-                ref_img,boxes,hdmap,category,depth_cam_front_img,range_image,dense_range_image = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token)
+                ref_img,boxes,hdmap,category,range_image,dense_range_image = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token)
             dense_range_image = np.repeat(dense_range_image[...,np.newaxis],3,axis=-1)
 
             boxes = np.array(boxes).astype(np.float32)
@@ -93,7 +93,7 @@ class dataloader(data.Dataset):
             hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
             range_image = torch.from_numpy(range_image / 255. * 2 - 1.).to(torch.float32)
             dense_range_image = torch.from_numpy(dense_range_image / 255. * 2 - 1.).to(torch.float32)
-            depth_cam_front_img = torch.from_numpy(depth_cam_front_img / 255. * 2 - 1.).to(torch.float32)
+            # depth_cam_front_img = torch.from_numpy(depth_cam_front_img / 255. * 2 - 1.).to(torch.float32)
 
             if not 'reference_image' in out.keys():
                 out['reference_image'] = ref_img.unsqueeze(0)
@@ -115,10 +115,10 @@ class dataloader(data.Dataset):
             else:
                 out['dense_range_image'] = torch.cat([out['dense_range_image'],dense_range_image.unsqueeze(0)],dim=0)
 
-            if not 'depth_cam_front_img' in out.keys():
-                out['depth_cam_front_img'] = depth_cam_front_img.unsqueeze(0)
-            else:
-                out['depth_cam_front_img'] = torch.cat([out['depth_cam_front_img'],depth_cam_front_img.unsqueeze(0)],dim=0)
+            # if not 'depth_cam_front_img' in out.keys():
+            #     out['depth_cam_front_img'] = depth_cam_front_img.unsqueeze(0)
+            # else:
+            #     out['depth_cam_front_img'] = torch.cat([out['depth_cam_front_img'],depth_cam_front_img.unsqueeze(0)],dim=0)
 
             if not 'text' in out.keys():
                 out['text'] = [text]

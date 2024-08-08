@@ -3094,7 +3094,7 @@ class AutoDM_GlobalCondition(DDPM):
                 #     params.append(param)
                 # elif not 'transformer_blocks' in name:
                 #     param.requires_grad=False
-                if not 'temporal' in name and 'diffusion_model' in name:
+                if 'diffusion_model' in name:
                     print(f"model:add {name} into optimizers")
                     params.append(param)
                 

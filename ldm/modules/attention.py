@@ -99,7 +99,7 @@ class TemporalAttention(nn.Module):
         self.positional_encoder = PositionalEncoder(channels,movie_len)
         self.norm = nn.LayerNorm(channels)
     
-    def forward(self,x):
+    def forward(self,x,_=None):
         bn = x.shape[0]
         batch_size = bn // self.movie_len
         x = rearrange(x,'(b n) c h w -> (b h w) n c',b=batch_size,n=self.movie_len).contiguous()
@@ -157,6 +157,53 @@ class SpatialSelfAttention(nn.Module):
         h_ = self.proj_out(h_)
         return x+h_
     
+class Lidar_Image_CrossAttention(nn.Module):
+    def __init__(self,query_dim,context_dim,heads=8,dim_head=64,dropout=0.):
+        super().__init__()
+        inner_dim = dim_head * heads
+        context_dim = default(context_dim,query_dim)
+
+        self.scale = dim_head ** -0.5
+        self.heads = heads
+        self.dim_head = dim_head
+        self.to_q = nn.Linear(query_dim,inner_dim,bias=False)
+        self.to_k = nn.Linear(context_dim,inner_dim,bias=False)
+        self.to_v = nn.Linear(context_dim,inner_dim,bias=False)
+
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim,query_dim),
+            nn.dropout(dropout)
+        )
+
+    def forward(self,x,context=None,mask=None):
+        h = self.heads
+        b = x.shape[0]
+        q = self.to_q(x)
+        context = default(context,x)
+        k = self.to_k(x)
+        v = self.to_v(x)
+
+        key_0,key_1 = torch.chunk(k,chunks=2,dim=0)
+        value_0,value_1 = torch.chunk(v,chunks=2,dim=0)
+        key_L,key_I = torch.cat([key_1,key_0],dim=1),torch.cat([key_0,key_1],dim=1)
+        value_L,value_I = torch.cat([value_1,value_0],dim=1),torch.cat([value_0,value_1],dim=1)
+        k = torch.cat([key_I,key_L],dim=0)
+        v = torch.cat([value_I,value_L],dim=0)
+        q,k,v = map(lambda t: rearrange(t,'b n (h d) -> (b h) n d',b=b,h=h,d=self.dim_head,n=t.shape[1]).contiguous(),(q,k,v))
+        sim = einsum('b i d, b j d -> b i j',q,k) * self.scale
+        if exists(mask):
+            mask = rearrange(mask,'b ... -> b (...)').contiguous()
+            max_neg_value = -torch.finfo(sim.dtype).max
+            mask = repeat(mask, 'b j -> (b h) () j', h=h)
+            sim.masked_fill_(~mask, max_neg_value)
+        
+        attn = sim.softmax(dim=-1)
+        out = einsum('b i j, b j d -> b i d',attn,v)
+        out = rearrange(out, '(b h) n d -> b n (h d)', h=h).contiguous()
+        return self.to_out(out)
+
+
+
 class CrossAttention(nn.Module):
     def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.):
         super().__init__()

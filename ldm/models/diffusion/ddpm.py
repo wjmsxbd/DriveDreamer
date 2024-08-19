@@ -2500,8 +2500,10 @@ class AutoDM_GlobalCondition(DDPM):
                  unet_trainable=True,
                  split_input_params=None,
                  movie_len = 1,
+                 predict=False,
                  downsample_img_size = None,
                  init_from_video_model=False,
+                 actionformer_config=None,
                  *args,**kwargs):
         self.num_timesteps_cond = default(num_timesteps_cond,1)
         self.scale_by_std = scale_by_std
@@ -2520,6 +2522,8 @@ class AutoDM_GlobalCondition(DDPM):
         self.unet_trainable = unet_trainable
         global_condition_config['params']['learning_rate'] = self.learning_rate
         self.global_condition = instantiate_from_config(global_condition_config)
+        if predict:
+            self.action_former = instantiate_from_config(actionformer_config)
         self.instantiate_cond_stage(cond_stage_config)
         if not scale_by_std:
             self.scale_factor = scale_factor
@@ -2534,7 +2538,7 @@ class AutoDM_GlobalCondition(DDPM):
         self.movie_len = movie_len
         self.downsample_image_size = downsample_img_size
         self.init_from_video_model = init_from_video_model
-        # self._automatic_optimization = False
+        self.predict = predict
         if unet_config['params']['ckpt_path'] is not None:
             # self.model.from_pretrained_model(unet_config['params']['ckpt_path'])
             if self.init_from_video_model:
@@ -2778,7 +2782,6 @@ class AutoDM_GlobalCondition(DDPM):
         hdmap = super().get_input(batch,'HDmap') # (b n c h w)
         range_image = super().get_input(batch,'range_image') # (b n c h w)
         dense_range_image = super().get_input(batch,'dense_range_image') # (b n c h w)
-        depth_cam_front_img = super().get_input(batch,'depth_cam_front_img') # (b n c h w)
         boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d').contiguous()
         boxes_category = np.zeros((len(batch['category']),self.movie_len,len(batch['category'][0][0]),768))
         for i in range(len(batch['category'])):
@@ -2799,8 +2802,9 @@ class AutoDM_GlobalCondition(DDPM):
         batch['category'] = boxes_category
         batch['text'] = text
         batch['range_image'] = range_image
-        batch['depth_cam_front_img'] = depth_cam_front_img
         batch['dense_range_image'] = dense_range_image
+        if self.predict:
+            batch['actions'] = batch['actions']
         batch = {k:v.to(torch.float32) for k,v in batch.items()}
 
         condition_out = self.global_condition.get_conditions(batch,return_encoder_posterior=True)
@@ -2812,8 +2816,9 @@ class AutoDM_GlobalCondition(DDPM):
         c['hdmap'] = condition_out['hdmap'].to(torch.float32)
         c['boxes_emb'] = condition_out['boxes_emb'].to(torch.float32)
         c['text_emb'] = condition_out['text_emb'].to(torch.float32)
-        # c['depth_cam_front_img'] = condition_out['depth_cam_front_img'].to(torch.float32)
         c['dense_range_image'] = condition_out['dense_range_image']
+        if self.predict:
+            c['actions'] = condition_out['actions']
         if return_first_stage_outputs:
             x_rec = self.global_condition.decode_first_stage_interface("reference_image",z)
             lidar_rec = self.global_condition.decode_first_stage_interface('lidar',lidar_z)
@@ -2828,7 +2833,6 @@ class AutoDM_GlobalCondition(DDPM):
         hdmap = super().get_input(batch,'HDmap') # (b n c h w)
         range_image = super().get_input(batch,'range_image') # (b n c h w)
         dense_range_image = super().get_input(batch,'dense_range_image') # (b n c h w)
-        depth_cam_front_img = super().get_input(batch,'depth_cam_front_img') # (b n c h w)
         boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d').contiguous()
 
         boxes_category = np.zeros((len(batch['category']),self.movie_len,len(batch['category'][0][0]),768))
@@ -2837,7 +2841,6 @@ class AutoDM_GlobalCondition(DDPM):
                 for k in range(len(batch['category'][0][0])):
                     boxes_category[i][j][k] = self.clip(batch['category'][i][j][k]).cpu().detach().numpy()
         boxes_category = boxes_category.reshape(b*self.movie_len,len(batch['category'][0][0]),768)
-        boxes_category = torch.tensor(boxes_category).to(self.device)
         boxes_category = torch.tensor(boxes_category).to(self.device)
         text = np.zeros((len(batch['text']),self.movie_len,768))
         for i in range(len(batch['text'])):
@@ -2851,8 +2854,9 @@ class AutoDM_GlobalCondition(DDPM):
         batch['category'] = boxes_category
         batch['text'] = text
         batch['range_image'] = range_image
-        batch['depth_cam_front_img'] = depth_cam_front_img
         batch['dense_range_image'] = dense_range_image
+        if self.predict:
+            batch['actions'] = batch['actions']
         batch = {k:v.to(torch.float32) for k,v in batch.items()}
 
         out = self.global_condition.get_conditions(batch)
@@ -2864,6 +2868,8 @@ class AutoDM_GlobalCondition(DDPM):
         c['text_emb'] = out['text_emb'].to(torch.float32)
         c['dense_range_image'] = out['dense_range_image']
         c['origin_range_image'] = range_image
+        if self.predict:
+            c['actions'] = out['actions']
         loss,loss_dict = self(x,range_image,c)
         return loss,loss_dict
 
@@ -2982,25 +2988,66 @@ class AutoDM_GlobalCondition(DDPM):
                 return x_recon,range_recon
             return x_recon
         else:
-            # hdmap = self.get_first_stage_encoding(self.encode_first_stage(cond['hdmap'],self.hdmap_encoder))
-            boxes_emb = cond['boxes_emb']
-            text_emb = cond['text_emb']
-            dense_range_image = cond['dense_range_image']
-            classes = torch.tensor([[1.,0.],[0.,1.]],device=self.device,dtype=self.dtype)
-            classes_emb = torch.cat([torch.sin(classes),torch.cos(classes)],dim=-1)
-            z = torch.cat([x_noisy,cond['hdmap']],dim=1)
-            lidar_z = torch.cat([range_image_noisy,dense_range_image],dim=1)
-            z = torch.cat([z,lidar_z],dim=0)
-            class_label = torch.zeros((z.shape[0],4),device=self.device)
-            boxes_emb = torch.cat([boxes_emb,boxes_emb],dim=0)
-            text_emb = torch.cat([text_emb,text_emb],dim=0)
-            for i in range(z.shape[0]):
-                if i < z.shape[0] // 2:
-                    class_label[i] = classes_emb[0]
-                else:
-                    class_label[i] = classes_emb[1]
-            #TODO:need reshape z
-            x_recon = self.model(z,t,y=class_label,boxes_emb=boxes_emb,text_emb=text_emb)
+            if not self.predict:
+                boxes_emb = cond['boxes_emb']
+                text_emb = cond['text_emb']
+                dense_range_image = cond['dense_range_image']
+                classes = torch.tensor([[1.,0.],[0.,1.]],device=self.device,dtype=self.dtype)
+                classes_emb = torch.cat([torch.sin(classes),torch.cos(classes)],dim=-1)
+                z = torch.cat([x_noisy,cond['hdmap']],dim=1)
+                lidar_z = torch.cat([range_image_noisy,dense_range_image],dim=1)
+                z = torch.cat([z,lidar_z],dim=0)
+                class_label = torch.zeros((z.shape[0],4),device=self.device)
+                boxes_emb = torch.cat([boxes_emb,boxes_emb],dim=0)
+                text_emb = torch.cat([text_emb,text_emb],dim=0)
+                for i in range(z.shape[0]):
+                    if i < z.shape[0] // 2:
+                        class_label[i] = classes_emb[0]
+                    else:
+                        class_label[i] = classes_emb[1]
+                #TODO:need reshape z
+                x_recon = self.model(z,t,y=class_label,boxes_emb=boxes_emb,text_emb=text_emb)
+            else:
+                boxes_emb = cond['boxes_emb']
+                text_emb = cond['text_emb']
+                dense_range_image = cond['dense_range_image']
+                b = boxes_emb.shape[0] // self.movie_len
+                boxes_emb = boxes_emb.reshape((b,self.movie_len)+boxes_emb.shape[1:])
+                boxes_emb = boxes_emb[:,0]
+                hdmap = cond['hdmap'].reshape((b,self.movie_len)+cond['hdmap'].shape[1:])[:,0]
+                actions = cond['actions']
+                dense_range_image = dense_range_image.reshape((b,self.movie_len)+dense_range_image.shape[1:])[:,0]
+                # x_noisy = x_noisy.reshape((b,self.movie_len)+x_noisy.shape[1:]) [:,0:1]
+                # range_image_noisy = range_image_noisy.reshape((b,self.movie_len)+range_image_noisy.shape[1:])[:,0:1]
+
+                h = self.action_former(hdmap,boxes_emb,actions,dense_range_image)
+                latent_hdmap = torch.stack([h[id][0] for id in range(len(h))]).reshape(cond['hdmap'].shape)
+                latent_boxes = torch.stack([h[id][1] for id in range(len(h))]).reshape(cond['boxes_emb'].shape)
+                latent_dense_range_image = torch.stack([h[id][2] for id in range(len(h))]).reshape(cond['dense_range_image'].shape)
+
+                # x_noisy = repeat(x_noisy,'b n c h w -> b (repeat n) c h w',repeat=self.movie_len)
+                # range_image_noisy = repeat(range_image_noisy,'b n c h w -> b (repeat n) c h w',repeat=self.movie_len)
+                # x_noisy = rearrange(x_noisy,'b n c h w -> (b n) c h w').contiguous()
+                # range_image_noisy = rearrange(range_image_noisy,'b n c h w -> (b n) c h w').contiguous()
+                classes = torch.tensor([[1.,0.],[0.,1.]],device=self.device,dtype=self.dtype)
+                classes_emb = torch.cat([torch.sin(classes),torch.cos(classes)],dim=-1)
+                z = torch.cat([x_noisy,latent_hdmap],dim=1)
+                lidar_z = torch.cat([range_image_noisy,latent_dense_range_image],dim=1)
+
+                z = torch.cat([z,lidar_z],dim=0)
+                class_label = torch.zeros((z.shape[0],4),device=self.device)
+                latent_boxes = torch.cat([latent_boxes,latent_boxes],dim=0)
+                text_emb = torch.cat([text_emb,text_emb],dim=0)
+                for i in range(z.shape[0]):
+                    if i < z.shape[0] // 2:
+                        class_label[i] = classes_emb[0]
+                    else:
+                        class_label[i] = classes_emb[1]
+                #TODO:need reshape z
+                x_recon = self.model(z,t,y=class_label,boxes_emb=latent_boxes,text_emb=text_emb)
+
+
+
         return x_recon
 
 
@@ -3008,7 +3055,9 @@ class AutoDM_GlobalCondition(DDPM):
     def p_losses(self,x_start,range_image_start,cond,t,noise=None):
         noise = default(noise,lambda:torch.randn_like(x_start)).to(x_start.device)        
         x_noisy = self.q_sample(x_start=x_start,t=t,noise=noise)
+        x_noisy[::self.movie_len] = x_start[::self.movie_len]
         range_image_noisy = self.q_sample(x_start=range_image_start,t=t,noise=noise)
+        range_image_noisy[::self.movie_len] = range_image_start[::self.movie_len]
         t = torch.cat([t,t],dim=0)
         x_recon = self.apply_model(x_noisy,t,cond,range_image_noisy,x_start)
         loss_dict = {}
@@ -3077,24 +3126,7 @@ class AutoDM_GlobalCondition(DDPM):
         if self.unet_trainable:
             print("add unet model parameters into optimizers")
             for name,param in self.model.named_parameters():
-                # if 'temporal' in param or 'gated' in param:
-                #     print(f"model:add {param} into optimizers")
-                #     params.append(param)
-                # if 'gated' in name or 'diffusion_model.input_blocks.0.0' in name or 'diffusion_model.out.2' in name:
-                #     print(f"model:add {name} into optimizers")
-                #     params.append(param)
-                # elif 'transoformer'
-                # elif not 'temporal' in name:
-                #     param.requires_grad = False
-                # else:
-                #     # assert param.requires_grad == True
-                #     param.requires_grad = False
-                # if 'gated' in name or 'diffusion_model.input_blocks.0.0' in name or 'diffusion_model.out.2' in name:
-                #     print(f"model:add {name} into optimizers")
-                #     params.append(param)
-                # elif not 'transformer_blocks' in name:
-                #     param.requires_grad=False
-                if not 'temporal' in name and 'diffusion_model' in name:
+                if 'diffusion_model' in name:
                     print(f"model:add {name} into optimizers")
                     params.append(param)
                 
@@ -3106,6 +3138,9 @@ class AutoDM_GlobalCondition(DDPM):
             #         print(f"add:{name}")
             #         params.append(param)
             params = params + self.global_condition.get_parameters()
+        if self.predict:
+            print("add action former parameters")
+            params = params + list(self.action_former.parameters())
         if self.learn_logvar:
             print("Diffusion model optimizing logvar")
             params.append(self.logvar)
@@ -3376,7 +3411,6 @@ class AutoDM_GlobalCondition(DDPM):
             c['hdmap'] = c['hdmap'][:N]
             c['boxes_emb'] = c['boxes_emb'][:N]
             c['text_emb'] = c['text_emb'][:N]
-            # c['depth_cam_frodepth_camnt_img'] = c['depth_cam_front_img'][:N]
             c['dense_range_image'] = c['dense_range_image'][:N]
             c['x_start'] = z[:N]
             with self.ema_scope("Plotting"):
@@ -3459,7 +3493,6 @@ class AutoDM_GlobalCondition(DDPM):
             c['hdmap'] = c['hdmap'][:N*self.movie_len]
             c['boxes_emb'] = c['boxes_emb'][:N*self.movie_len]
             c['text_emb'] = c['text_emb'][:N*self.movie_len]
-            # c['depth_cam_frodepth_camnt_img'] = c['depth_cam_front_img'][:N]
             c['dense_range_image'] = c['dense_range_image'][:N*self.movie_len]
             c['x_start'] = z[:N*self.movie_len]
             with self.ema_scope("Plotting"):
@@ -3477,29 +3510,94 @@ class AutoDM_GlobalCondition(DDPM):
             log['lidar_samples'] = lidar_sample.reshape((N,-1)+lidar_sample.shape[1:])
         return log
 
+    def get_infer_cond(self,batch):
+        b = batch['reference_image'].shape[0]
+        ref_img = super().get_input(batch,'reference_image')[:,0] # (b c h w)
+        hdmap = super().get_input(batch,'HDmap')[:,0 ]# (b c h w)
+        range_image = super().get_input(batch,'range_image')[:,0] # (b c h w)
+        dense_range_image = super().get_input(batch,'dense_range_image')[:,0] # (b c h w)
+        boxes = batch['3Dbox'][:,0]
+        boxes_category = np.zeros((len(batch['category']),len(batch['category'][0][0]),768))
+        for i in range(len(batch['category'])):
+            for k in range(len(batch['category'][0][0])):
+                boxes_category[i][k] = self.clip(batch['category'][i][0][k]).cpu().detach().numpy()
+        boxes_category = torch.tensor(boxes_category).to(self.device)
+        text = np.zeros((len(batch['text']),1,768))
+        for i in range(len(batch['text'])):
+            text[i] = self.clip(batch['text'][i][0]).cpu().detach().numpy()
+        text = text.reshape(b*self.movie_len,1,768)
+        text = torch.tensor(text).to(self.device)
+        batch['reference_image'] = ref_img
+        batch['HDmap'] = hdmap
+        batch['3Dbox'] = boxes
+        batch['category'] = boxes_category
+        batch['text'] = text
+        batch['range_image'] = range_image
+        batch['dense_range_image'] = dense_range_image
+        if self.predict:
+            batch['actions'] = batch['actions']
+        batch = {k:v.to(torch.float32) for k,v in batch.items()}
+
+        condition_out = self.global_condition.get_conditions(batch,return_encoder_posterior=True)
+        z = condition_out['ref_image']
+        lidar_z = condition_out['range_image']
+        
+        out = [z,lidar_z]
+        c = {}
+        c['hdmap'] = condition_out['hdmap'].to(torch.float32)
+        c['boxes_emb'] = condition_out['boxes_emb'].to(torch.float32)
+        c['text_emb'] = condition_out['text_emb'].to(torch.float32)
+        c['dense_range_image'] = condition_out['dense_range_image']
+        if self.predict:
+            c['actions'] = condition_out['actions']
+        out.extend([batch['reference_image'],batch['range_image']])
+        out.append(c)
+        return out
+
+    def single_infer(self,batch,ddim_steps=200,ddim_eta=1.):
+        use_ddim = ddim_steps is not None
+        z,lidar_z,x_start,range_image_start,c = self.get_infer_cond(batch)
+        log = {}
+        log['inputs'] = x_start
+        log['lidar_inputs'] = range_image_start
+        c['x_start'] = z
+        samples_list = None
+        samples_lidar_list = None
+        for timestamp in range(c['actions'].shape[1]):
+            samples,_ = self.sample_video_log(cond=c,batch_size=1,ddim=use_ddim,ddim_steps=ddim_steps,eta=ddim_eta)
+            samples,sample_lidar = torch.chunk(samples,2,dim=0)
+            x_samples = self.global_condition.decode_first_stage_interface('reference_image',samples)
+            lidar_sample = self.global_condition.decode_first_stage_interface('lidar',sample_lidar)
+            
+            log["samples"] = x_samples.reshape((N,-1)+x_samples.shape[1:])
+            log['lidar_samples'] = lidar_sample.reshape((N,-1)+lidar_sample.shape[1:])
+        return log
+
+
+
         
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/global_condition.yaml',
+                        default='configs/prediction.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
     network = instantiate_from_config(cfg['model'])#.to('cuda:7')
     
-    x = torch.randn((2,5,128,256,3))
+    x = torch.randn((2,2,128,256,3))
     # x.requires_grad_(True)
-    hdmap = torch.randn((2,5,128,256,3))
+    hdmap = torch.randn((2,2,128,256,3))
     # hdmap.requires_grad_(True)
     # text.requires_grad_(True)
-    boxes = torch.randn((2,5,70,16))
+    boxes = torch.randn((2,2,70,16))
     # boxes.requires_grad_(True)
     # box_category.requires_grad_(True)
-    text = [("None" for k in range(2)) for j in range(5)]
-    box_category = [[("None" for k in range(2)) for i in range(70)] for j in range(5)]
-    depth_cam_front_img = torch.randn((2,5,128,256,3))
+    text = [["None" for k in range(2)] for j in range(2)]
+    box_category = [[["None" for k in range(70)] for i in range(2)] for j in range(2)]
+    depth_cam_front_img = torch.randn((2,2,128,256,3))
     import matplotlib.image as mpimg
     from PIL import Image
     # range_image = mpimg.imread('000.jpg')
@@ -3508,9 +3606,10 @@ if __name__ == '__main__':
     # range_image = torch.tensor(range_image,dtype=torch.float32)
     # range_image = range_image.unsqueeze(0)
     # range_image = range_image.unsqueeze(0)
-    range_image = torch.randn((2,5,128,256,3))
-    dense_range_image = torch.randn((2,5,128,256,3))
-    depth_cam_front_img = torch.randn((2,5,128,256,3))
+    range_image = torch.randn((2,2,128,256,3))
+    dense_range_image = torch.randn((2,2,128,256,3))
+    depth_cam_front_img = torch.randn((2,2,128,256,3))
+    actions = torch.randn((2,2,7))
     out = {'text':text,
            '3Dbox':boxes,
            'category':box_category,
@@ -3518,8 +3617,9 @@ if __name__ == '__main__':
            'HDmap':hdmap,
            "range_image":range_image,
            "depth_cam_front_img":depth_cam_front_img,
-           'dense_range_image': dense_range_image}
-    network.log_video(out)
+           'dense_range_image': dense_range_image,
+           'actions':actions}
+    loss,loss_dict = network.shared_step(out)
     # loss,loss_dict = network.shared_step(out)
     # print(loss)
     # loss.backward()
@@ -3527,6 +3627,10 @@ if __name__ == '__main__':
     # network.configure_optimizers()
     # network.shared_step(out)
     # loss,loss_dict = network.validation_step(out,0)
-    # loss.backward()
+    loss.backward()
+    opt = network.configure_optimizers()
+    opt.step()
+    pass
+
 
 

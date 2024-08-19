@@ -1,0 +1,77 @@
+model:
+  base_learning_rate: 4.5e-6
+  target: ldm.models.autoencoder.AutoencoderKL_Temporal
+  params:
+    monitor: "val/rec_loss"
+    ckpt_path: stable_diffusion/kl-f8.ckpt
+    embed_dim: 4
+    ignore_keys: []
+    use_finetune: True
+    lossconfig:
+      target: ldm.modules.losses.LPIPSWithDiscriminator
+      params:
+        disc_start: 50001
+        kl_weight: 1.0e-06
+        disc_weight: 0.5
+      
+    ddconfig:
+      double_z: True
+      z_channels: 4
+      resolution: 256
+      in_channels: 3
+      out_ch: 3
+      label_out_ch: 2
+      img_out_ch: 1
+      ch: 128
+      ch_mult: [1,2,4,4] #num_down=len(ch_mult)-1
+      num_res_blocks: 2
+      attn_resolutions: [16]
+      dropout: 0.0
+      num_groups: 32
+      movie_len: 5
+    
+
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 1
+    wrap: False
+    num_workers: 0
+    train:
+      target: data.dataloader_onlyvideo.dataloader
+      params:
+        cfg:
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
+          img_size: [256,128]
+          capture_frequency: 3
+        num_boxes: 70
+        movie_len: 5
+        split_name: train
+  
+    validation:
+      target: data.dataloader_onlyvideo.dataloader
+      params:
+        cfg:
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
+          img_size: [256,128]
+          capture_frequency: 3
+        num_boxes: 70
+        movie_len: 5
+        split_name: val
+
+
+lightning:
+  callbacks:
+    image_logger:
+      target: main.VideoLogger
+      params:
+        batch_frequency: 1000
+        max_videos: 8
+        fps: 5
+        increase_log_steps: False
+
+  trainer:
+    benchmark: True
+    gpus: 0,1,2,3

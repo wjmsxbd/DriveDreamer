@@ -25,6 +25,7 @@ from ldm.modules.diffusionmodules.util import (
     timestep_embedding,
 )
 from ldm.modules.attention import SpatialTransformer,CrossAttention
+from typing import Optional
 
 #dummy replace
 def convert_module_to_f16(x):
@@ -162,7 +163,146 @@ class Downsample(nn.Module):
     def forward(self,x):
         assert x.shape[1] == self.channels
         return self.op(x)
-    
+
+class VResBlock(TimestepBlock):
+    """
+    A residual block that can optionally change the number of channels.
+
+    :param channels: the number of input channels.
+    :param emb_channels: the number of timestep embedding channels.
+    :param dropout: the rate of dropout.
+    :param out_channels: if specified, the number of out channels.
+    :param use_conv: if True and out_channels is specified, use a spatial
+        convolution instead of a smaller 1x1 convolution to change the
+        channels in the skip connection.
+    :param dims: determines if the signal is 1D, 2D, or 3D.
+    :param use_checkpoint: if True, use gradient checkpointing on this module.
+    :param up: if True, use this block for upsampling.
+    :param down: if True, use this block for downsampling.
+    """
+
+    def __init__(
+            self,
+            channels: int,
+            emb_channels: int,
+            dropout: float,
+            out_channels: Optional[int] = None,
+            use_conv: bool = False,
+            use_scale_shift_norm: bool = False,
+            dims: int = 2,
+            use_checkpoint: bool = False,
+            up: bool = False,
+            down: bool = False,
+            kernel_size: int = 3,
+            exchange_temb_dims: bool = False,
+            skip_t_emb: bool = False,
+    ):
+        super().__init__()
+        self.channels = channels
+        self.emb_channels = emb_channels
+        self.dropout = dropout
+        self.out_channels = out_channels or channels
+        self.use_conv = use_conv
+        self.use_checkpoint = use_checkpoint
+        self.use_scale_shift_norm = use_scale_shift_norm
+        self.exchange_temb_dims = exchange_temb_dims
+
+        if isinstance(kernel_size, Iterable):
+            padding = [k // 2 for k in kernel_size]
+        else:
+            padding = kernel_size // 2
+
+        self.in_layers = nn.Sequential(
+            normalization(channels),
+            nn.SiLU(),
+            conv_nd(dims, channels, self.out_channels, kernel_size, padding=padding)
+        )
+
+        self.updown = up or down
+
+        if up:
+            self.h_upd = Upsample(channels, False, dims)
+            self.x_upd = Upsample(channels, False, dims)
+        elif down:
+            self.h_upd = Downsample(channels, False, dims)
+            self.x_upd = Downsample(channels, False, dims)
+        else:
+            self.h_upd = self.x_upd = nn.Identity()
+
+        self.skip_t_emb = skip_t_emb
+        self.emb_out_channels = (
+            2 * self.out_channels if use_scale_shift_norm else self.out_channels
+        )
+        if self.skip_t_emb:
+            print(f"Skipping timestep embedding in {self.__class__.__name__}")
+            assert not self.use_scale_shift_norm
+            self.emb_layers = None
+            self.exchange_temb_dims = False
+        else:
+            self.emb_layers = nn.Sequential(
+                nn.SiLU(),
+                linear(emb_channels, self.emb_out_channels)
+            )
+
+        self.out_layers = nn.Sequential(
+            normalization(self.out_channels),
+            nn.SiLU(),
+            nn.Dropout(p=dropout),
+            zero_module(
+                conv_nd(dims, self.out_channels, self.out_channels, kernel_size, padding=padding)
+            )
+        )
+
+        if self.out_channels == channels:
+            self.skip_connection = nn.Identity()
+        elif use_conv:
+            self.skip_connection = conv_nd(dims, channels, self.out_channels, kernel_size, padding=padding)
+        else:
+            self.skip_connection = conv_nd(dims, channels, self.out_channels, 1)
+
+    def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
+        """
+        Apply the block to a Tensor, conditioned on a timestep embedding.
+
+        :param x: an [N x C x ...] Tensor of features.
+        :param emb: an [N x emb_channels] Tensor of timestep embeddings.
+
+        :return: an [N x C x ...] Tensor of outputs.
+        """
+
+        if self.use_checkpoint:
+            return checkpoint(self._forward, x, emb)
+        else:
+            return self._forward(x, emb)
+
+    def _forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
+        if self.updown:
+            in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
+            h = in_rest(x)
+            h = self.h_upd(h)
+            x = self.x_upd(x)
+            h = in_conv(h)
+        else:
+            h = self.in_layers(x)
+
+        if self.skip_t_emb:
+            emb_out = torch.zeros_like(h)
+        else:
+            emb_out = self.emb_layers(emb).type(h.dtype)
+        while len(emb_out.shape) < len(h.shape):
+            emb_out = emb_out[..., None]
+        if self.use_scale_shift_norm:
+            out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
+            scale, shift = torch.chunk(emb_out, 2, dim=1)
+            h = out_norm(h) * (1 + scale) + shift
+            h = out_rest(h)
+        else:
+            if self.exchange_temb_dims:
+                emb_out = rearrange(emb_out, "b t c ... -> b c t ...")
+            h = h + emb_out
+            h = self.out_layers(h)
+        return self.skip_connection(x) + h
+
 class ResBlock(TimestepBlock):
     """
     A residual block that can optionally change the number of channels.

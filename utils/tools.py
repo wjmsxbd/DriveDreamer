@@ -64,7 +64,7 @@ def makepath(desired_path,isfile=True):
 #TODO: box not in image also save
 def get_box_in_image(box:Box,intrinsic:np.ndarray):
     corners_3d = box.corners()
-    corners_img = view_points(corners_3d, intrinsic, normalize=True)[:2, :].flatten()
+    corners_img = view_points(corners_3d, intrinsic, normalize=True)[:2, :]
     return corners_img
 
 def get_3dbox(sample_data_token:str,nusc:NuScenes,imsize:tuple,out_path=None):
@@ -82,8 +82,8 @@ def get_3dbox(sample_data_token:str,nusc:NuScenes,imsize:tuple,out_path=None):
         box_xy = get_box_in_image(box,camera_intrinsic)
         box_xy[0] = box_xy[0] / imsize[0]
         box_xy[1] = box_xy[1] / imsize[1]
+        box_xy = box_xy.flatten()
         box_list.append(box_xy)
-
 
     # ax.axis('off')
     # ax.set_aspect('equal')
@@ -280,18 +280,18 @@ def get_this_scene_info(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_to
     return cam_front_img,box_list,now_hdmap,box_category,yaw,translation
     
 
-def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448)):
+def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448),return_camera_info=False):
     # matplotlib.use("Agg")
     sample_record = nusc.get('sample',sample_token)
     cam_front_token = sample_record['data']['CAM_FRONT']
-    cam_front_path = nusc.get('sample_data',cam_front_token)['filename']
-    depth_cam_front_path = cam_front_path.split('/')
-    depth_cam_front_path[0] = depth_cam_front_path[0] + '_depth'
-    depth_cam_front_path[-1] = depth_cam_front_path[-1].split('.')[0] + '_depth.png'
-    cam_front_path = os.path.join(dataset_dir,cam_front_path)
-    depth_cam_front_path = os.path.join(dataset_dir,*depth_cam_front_path)
+    cam_front_calibrated_sensor_token = nusc.get('sample_data',cam_front_token)['calibrated_sensor_token']
+    cs_record = nusc.get('calibrated_sensor',cam_front_calibrated_sensor_token)
+    cam_front_translation = torch.tensor(cs_record['translation'])
+    cam_front_rotation = torch.tensor(cs_record['rotation'])
 
-    depth_cam_front_img = mpimg.imread(depth_cam_front_path).astype(np.float32)
+    cam_front_path = nusc.get('sample_data',cam_front_token)['filename']
+    cam_front_path = os.path.join(dataset_dir,cam_front_path)
+
     # mpimg.imsave(f'./temp/depth_camera_front/{sample_token}.png',depth_cam_front_img)
     cam_front_img = mpimg.imread(cam_front_path)
     # mpimg.imsave(f'all_pics/cam.png',cam_front_img)
@@ -299,10 +299,6 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
     imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
     cam_front_img = Image.fromarray(cam_front_img)
     cam_front_img = np.array(cam_front_img.resize(img_size))
-    depth_cam_front_img = (depth_cam_front_img * 255.).astype(np.uint8)
-    #print(depth_cam_front_img.min(),depth_cam_front_img.max())
-    depth_cam_front_img = Image.fromarray(depth_cam_front_img)
-    depth_cam_front_img = np.array(depth_cam_front_img.resize(img_size))
     # project_to_image(nusc,sample_token,out_path="004.png")
     box_list,box_category = get_3dbox(cam_front_token,nusc,imsize)#out_path=f'./temp/3dbox/{count:02d}.jpg'
     # nusc.render_pointcloud_in_image(sample_token,out_path="002.png")
@@ -331,7 +327,10 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
 
     box_list = np.array(box_list)
     # return cam_front_img,box_list,now_hdmap,box_category,depth_cam_front_img,range_image,dense_range_image
-    return cam_front_img,box_list,now_hdmap,box_category,depth_cam_front_img,range_image,dense_range_image
+    if return_camera_info == False:
+        return cam_front_img,box_list,now_hdmap,box_category,range_image,dense_range_image
+    else:
+        return cam_front_img,box_list,now_hdmap,box_category,range_image,dense_range_image,cam_front_translation,cam_front_rotation
 
 def project_to_image(nusc: NuScenes,sample_token:str,pointsensor_channel: str='LIDAR_TOP',camera_channel:str='CAM_FRONT',out_path:str=None,
                      img_size=(128,256)):

@@ -13,13 +13,13 @@ model:
     channels: 4
     cond_stage_trainable: True
     scale_by_std: True
-    monitor: 'train/loss_simple'
+    monitor: 'val/loss_simple'
     unet_trainable: True
     learn_logvar: True
     downsample_img_size: [16,32]
     init_from_video_model: False
     movie_len: 5
-    predict: False
+    predict: True
     cond_stage_config: 
       target: ldm.models.autoencoder.FrozenCLIPTextEmbedder
     scheduler_config: #10000 warmup steps
@@ -57,11 +57,41 @@ model:
         outpadding: [[0,0],[0,0],[0,0]]
         # ignore_keys: ['first_stage_model','hdmap_encoder']
         # modify_keys: ['box_encoder']
-        ignore_keys: []
+        # ignore_keys: ['model.diffusion_model.input_blocks.1.1.temporal_blocks.0.positional_encoder','model.diffusion_model.input_blocks.2.1.temporal_blocks.0.positional_encoder','model.diffusion_model.input_blocks.4.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.input_blocks.5.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.input_blocks.7.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.input_blocks.8.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.middle_block.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.3.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.4.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.5.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.6.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.7.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.8.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.9.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.10.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.11.1.temporal_blocks.0.positional_encoder.pe']
+        ignore_keys: ['global_condition.image_model']
         # modify_keys: []
         # ignore_keys: ['model.diffusion_model.input_blocks.0.0']
 
-      
+    actionformer_config:
+      target: ldm.models.actionformer.ActionFormer4
+      params:
+        latent_range_image_dims: 4
+        latent_hdmap_dims: 4
+        latent_boxes_dims: 768
+        latent_dims: 4
+        heads: 8
+        dim_head: 64
+        embed_dims: 2048
+        action_dims: 128
+            
+        decoder_config:
+          target: ldm.models.actionformer.ActionDecoder4
+          params:
+            in_channels: 2176
+            ch: [512,1024,2048]
+            num_boxes: 70
+            out_latent_hdmap_channel: 2048
+            out_latent_boxes_channel: 768
+            num_heads: 8
+            dim_head: 64
+            height: 16
+            width: 32
+        gru_blocks_config:
+          target: ldm.models.actionformer.GRU_Blocks
+          params:
+            hidden_state_channels: 2048
+            in_channels: 2048
+
     global_condition_config:
       target: ldm.models.condition.GlobalCondition
       params:
@@ -84,7 +114,7 @@ model:
               attn_resolutions: []
               dropout: 0.0
               num_groups: 32
-              movie_len: 5
+              # movie_len: 5
             lossconfig:
               target: torch.nn.Identity
 
@@ -123,42 +153,42 @@ model:
             ch: [256,512,768]
             context_dims: 768
             sigma: 1
+            trainable: False
+        action_encoder_config:
+          target: ldm.models.actionformer.ActionEncoder
+          params:
+            in_channels: 14
+            ch: [32,128]
             trainable: True
-        # action_encoder_config:
-        #   target: ldm.models.actionformer.ActionEncoder
-        #   params:
-        #     in_channels: 7
-        #     ch: [32,128]
-        #     trainable: True
 
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 1
+    batch_size: 2
     wrap: False
-    num_workers: 2
+    num_workers: 4
     train:
-      target: data.video_lidar_dataloader.dataloader
+      target: data.dataloader_predict_video.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini/
           img_size: [256,128]
           nusc_canbus_frequency: 50
-          camera_frequency: 12
+          camera_frequency: 2
         num_boxes: 70
         movie_len: 5
         split_name: train
   
     validation:
-      target: data.video_lidar_dataloader.dataloader
+      target: data.dataloader_predict_video.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini/
           img_size: [256,128]
           nusc_canbus_frequency: 50
-          camera_frequency: 12
+          camera_frequency: 2
         num_boxes: 70
         movie_len: 5
         split_name: val
@@ -169,14 +199,14 @@ lightning:
     video_logger:
       target: main.VideoLogger
       params:
-        batch_frequency: 2000
+        batch_frequency: 1000
         max_videos: 8
         fps: 5
         increase_log_steps: False
 
   trainer:
     benchmark: True
-    gpus: 0,1,2,3
+    gpus: 0,
     
 
     

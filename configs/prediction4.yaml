@@ -100,7 +100,7 @@ model:
           params:
             embed_dim: 4
             monitor: "val/rec_loss"
-            ckpt_path: stable_diffusion/kl-f8.ckpt
+            ckpt_path: logs/2024-08-18T20-33-08_video_decoder/checkpoints/last.ckpt
             trainable: False
             ddconfig:
               double_z: True
@@ -114,7 +114,7 @@ model:
               attn_resolutions: []
               dropout: 0.0
               num_groups: 32
-              # movie_len: 5
+              movie_len: 5
             lossconfig:
               target: torch.nn.Identity
 
@@ -199,7 +199,7 @@ lightning:
     video_logger:
       target: main.VideoLogger
       params:
-        batch_frequency: 1000
+        batch_frequency: 500
         max_videos: 8
         fps: 5
         increase_log_steps: False

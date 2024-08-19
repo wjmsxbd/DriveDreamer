@@ -178,7 +178,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/autoencoder.yaml',
+                        default='configs/autoencoder_lidar.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
@@ -187,18 +187,18 @@ if __name__ == '__main__':
     data_loader = dataloader(**cfg.data.params.train.params)
     # 35
     # out = data_loader.__getitem__(35)
-    network = instantiate_from_config(cfg['model'])
-    # model_path = 'logs/2024-07-31T03-42-34_autoencoder/checkpoints/last.ckpt'
-    # network.init_from_ckpt(model_path)
-    network = network.eval()
-    save_path = 'lidar_image/'
-    # save_path = 'sd_images/'
-    for i in range(30,40,1):
-        input_data = data_loader.__getitem__(i)
-        input_data = {k:v.unsqueeze(0) for k,v in input_data.items()}
-        logs = network.log_images(input_data)
-        save_tensor_as_image(logs['inputs'],file_path=save_path+f'inputs_{i:02d}.jpg')
-        save_tensor_as_image(logs['reconstructions'],file_path=save_path+f'reconstructions{i:02d}.jpg')
+    # network = instantiate_from_config(cfg['model'])
+    # # model_path = 'logs/2024-07-31T03-42-34_autoencoder/checkpoints/last.ckpt'
+    # # network.init_from_ckpt(model_path)
+    # network = network.eval()
+    # save_path = 'lidar_image/'
+    # # save_path = 'sd_images/'
+    # for i in range(30,40,1):
+    #     input_data = data_loader.__getitem__(i)
+    #     input_data = {k:v.unsqueeze(0) for k,v in input_data.items()}
+    #     logs = network.log_images(input_data)
+    #     save_tensor_as_image(logs['inputs'],file_path=save_path+f'inputs_{i:02d}.jpg')
+    #     save_tensor_as_image(logs['reconstructions'],file_path=save_path+f'reconstructions{i:02d}.jpg')
         # logs['hdmap'] = logs['hdmap'][:,:3]
         # print(logs['hdmap'].shape)
         # save_tensor_as_image(logs['hdmap'],file_path=save_path+f'hdmap{i:02d}.jpg')

@@ -805,7 +805,8 @@ class AutoencoderKL_Temporal(pl.LightningModule):
                  monitor=None,
                  use_finetune=False,
                  movie_len=None,
-                 trainable=False,):
+                 trainable=False,
+                 use_ema=False,):
         super().__init__()
         self.image_key = image_key
         self.encoder = Encoder_Diffusion(**ddconfig)
@@ -817,6 +818,7 @@ class AutoencoderKL_Temporal(pl.LightningModule):
         self.embed_dim = embed_dim
         self.trainable = trainable
         self.movie_len = movie_len
+        self.use_ema = use_ema
         if colorize_nlabels is not None:
             assert type(colorize_nlabels)==int
             self.register_buffer("colorize", torch.randn(3, colorize_nlabels, 1, 1))
@@ -849,6 +851,7 @@ class AutoencoderKL_Temporal(pl.LightningModule):
         self.load_state_dict(sd, strict=False)
         print(f"Restored from {path}")
     
+
     def encode(self,x):
         h = self.encoder(x)
         moments = self.quant_conv(h)

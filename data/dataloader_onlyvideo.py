@@ -28,6 +28,8 @@ from PIL import Image
 import time
 from tqdm import tqdm
 from einops import rearrange
+# from memory_profiler import profile
+# import tracemalloc
 
 class dataloader(data.Dataset):
     def __init__(self,cfg,num_boxes,movie_len,split_name='train'):
@@ -176,13 +178,13 @@ if __name__ == "__main__":
     data_loader_ = torch.utils.data.DataLoader(
         data_loader,
         batch_size  =   1,
-        num_workers =   2,
+        num_workers =   0,
         collate_fn=collate_fn
     )
     network = instantiate_from_config(cfg['model'])
     model_path = 'logs/2024-08-18T03-12-28_video_decoder/checkpoints/last.ckpt'
     network.init_from_ckpt(model_path)
-    network = network.eval().cuda()
+    network = network.eval()
     save_path = 'all_pics/'
 
     # samples = torch.randint(0,len(data_loader),(5,)).long()
@@ -195,11 +197,15 @@ if __name__ == "__main__":
     #     save_tensor_as_image(logs['inputs'],file_path=save_path+f'inputs_{sample:02d}.jpg')
     #     save_tensor_as_image(logs['samples'],file_path=save_path+f'samples{sample:02d}.jpg')
     #     save_tensor_as_image(logs['reconstructions'],file_path=save_path+f'reconstructions{sample:02d}.jpg')
-    for _,batch in tqdm(enumerate(data_loader_)):
-        input = network.get_input(batch,'reference_image').cuda()
-        dec,_ = network(input)
-        tmp = batch['reference_image']
-        tmp = rearrange(tmp,'b n h w c -> b n c h w')
-        save_tensor_as_video(tmp,file_path=save_path+f'inputs_{_:02d}.png')
-        save_tensor_as_video(dec,file_path=save_path+f'samples{_:02d}.png')
+    import objgraph
+    for _,batch in enumerate(data_loader_):
+        # objgraph.show_backrefs(objgraph.by_type('SplitResult')[0], max_depth = 10, filename = 'obj.dot')
+        # objgraph.show_growth()
+        # input = network.get_input(batch,'reference_image').cuda()
+        # dec,_ = network(input)
+        # tmp = batch['reference_image']
+        # tmp = rearrange(tmp,'b n h w c -> b n c h w')
+        # save_tensor_as_video(tmp,file_path=save_path+f'inputs_{_:02d}.png')
+        # save_tensor_as_video(dec,file_path=save_path+f'samples{_:02d}.png')
+        # objgraph.show_growth()
         pass

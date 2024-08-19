@@ -28,6 +28,9 @@ from ip_basic.ip_basic.depth_map_utils import fill_in_fast,fill_in_multiscale
 from einops import rearrange
 import matplotlib
 import gc
+# from memory_profiler import profile
+# import objgraph
+# from pympler import tracker,summary,muppy
 
 LOGGER_DEFAULT_FORMAT = ('<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> |'
                   ' <level>{level: <8}</level> |'
@@ -94,6 +97,7 @@ def get_3dbox(sample_data_token:str,nusc:NuScenes,imsize:tuple,out_path=None):
     # return fig,ax,box_category
     return box_list,box_category
 
+# @profile(precision=4,stream=open('log.txt',"w+",encoding="utf-8"))
 def get_hdmap(sample_data_token:str,
               nusc:NuScenes,
               nusc_map:NuScenesMap,
@@ -239,6 +243,7 @@ def get_image_info(sample_data_token:str,
 
     return data_path,cs_record,pose_record,cam_intrinsic,imsize,yaw,translation
 
+# @profile(precision=4,stream=open('log.txt',"w+",encoding="utf-8"))
 def convert_fig_to_numpy(fig,imsize):
     canvas = FigureCanvasAgg(fig)    
     canvas.draw()
@@ -278,7 +283,6 @@ def get_this_scene_info(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_to
     box_list = np.array(box_list)
     plt.close(hdmap_fig)
     return cam_front_img,box_list,now_hdmap,box_category,yaw,translation
-    
 
 def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448),return_camera_info=False):
     # matplotlib.use("Agg")
@@ -321,17 +325,24 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
     # plt.close(range_image_fig)
     hdmap_fig,hdmap_ax,yaw,translation = get_hdmap(cam_front_token,nusc,nusc_map)#,outpath=f'./temp/hdmap/{count:02d}.jpg'
     now_hdmap = convert_fig_to_numpy(hdmap_fig,imsize)
+
+    hdmap_ax.cla()
+    del hdmap_ax,yaw,translation
     plt.close(hdmap_fig)
+    del hdmap_fig
+
     now_hdmap = Image.fromarray(now_hdmap)
-    now_hdmap = np.array(now_hdmap.resize(img_size))
+    now_hdmap = np.array(now_hdmap.resize(img_size),dtype=np.uint8)
 
     box_list = np.array(box_list)
     # return cam_front_img,box_list,now_hdmap,box_category,depth_cam_front_img,range_image,dense_range_image
+    
+    # gc.collect()
     if return_camera_info == False:
         return cam_front_img,box_list,now_hdmap,box_category,range_image,dense_range_image
     else:
         return cam_front_img,box_list,now_hdmap,box_category,range_image,dense_range_image,cam_front_translation,cam_front_rotation
-
+    
 def project_to_image(nusc: NuScenes,sample_token:str,pointsensor_channel: str='LIDAR_TOP',camera_channel:str='CAM_FRONT',out_path:str=None,
                      img_size=(128,256)):
     sample_record = nusc.get('sample',sample_token)

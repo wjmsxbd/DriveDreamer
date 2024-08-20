@@ -205,7 +205,7 @@ python main.py --base configs/global_condition.yaml --train True
 `
 
 #### training predict model
-修改configs/prediction.yaml和configs/prediction4.yaml中的数据集的version和path
+修改configs/prediction.yaml和configs/prediction4.yaml中的数据集的version和path 将camera_frequency改为12
 `
 python main.py --base configs/prediction.yaml --train True
 `

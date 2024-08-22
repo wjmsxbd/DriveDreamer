@@ -29,7 +29,6 @@ from ip_basic.ip_basic.depth_map_utils import fill_in_fast,fill_in_multiscale
 from einops import rearrange
 import matplotlib
 import gc
-from memory_profiler import profile
 # import objgraph
 # from pympler import tracker,summary,muppy
 
@@ -285,7 +284,6 @@ def get_this_scene_info(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_to
     plt.close(hdmap_fig)
     return cam_front_img,box_list,now_hdmap,box_category,yaw,translation
 
-@profile
 def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448),return_camera_info=False):
     matplotlib.use("Agg")
     sample_record = nusc.get('sample',sample_token)

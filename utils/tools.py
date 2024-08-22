@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import os.path as osp
 from PIL import Image
+import matplotlib.figure as mpfigure
 import matplotlib.pyplot as plt
 from nuscenes.utils.splits import create_splits_scenes
 from nuscenes.utils.data_classes import LidarPointCloud, Box
@@ -28,7 +29,7 @@ from ip_basic.ip_basic.depth_map_utils import fill_in_fast,fill_in_multiscale
 from einops import rearrange
 import matplotlib
 import gc
-# from memory_profiler import profile
+from memory_profiler import profile
 # import objgraph
 # from pympler import tracker,summary,muppy
 
@@ -222,7 +223,7 @@ def get_hdmap(sample_data_token:str,
         ax.invert_yaxis()
         ax.set_aspect('equal')
         if outpath is not None:
-            plt.savefig(outpath,bbox_inches='tight',pad_inches=0)
+            fig.savefig(outpath,bbox_inches='tight',pad_inches=0)
         return fig,ax,yaw,translation
 
 def get_image_info(sample_data_token:str,
@@ -284,8 +285,9 @@ def get_this_scene_info(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_to
     plt.close(hdmap_fig)
     return cam_front_img,box_list,now_hdmap,box_category,yaw,translation
 
+@profile
 def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448),return_camera_info=False):
-    # matplotlib.use("Agg")
+    matplotlib.use("Agg")
     sample_record = nusc.get('sample',sample_token)
     cam_front_token = sample_record['data']['CAM_FRONT']
     cam_front_calibrated_sensor_token = nusc.get('sample_data',cam_front_token)['calibrated_sensor_token']
@@ -327,9 +329,8 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
     now_hdmap = convert_fig_to_numpy(hdmap_fig,imsize)
 
     hdmap_ax.cla()
-    del hdmap_ax,yaw,translation
+    hdmap_fig.clf()
     plt.close(hdmap_fig)
-    del hdmap_fig
 
     now_hdmap = Image.fromarray(now_hdmap)
     now_hdmap = np.array(now_hdmap.resize(img_size),dtype=np.uint8)

@@ -28,6 +28,14 @@ from nuscenes.can_bus.can_bus_api import NuScenesCanBus
 import time
 import math
 
+try:
+    import moxing as mox
+
+    mox.file.shift('os', 'mox')
+except:
+    pass
+
+
 class dataloader(data.Dataset):
     def __init__(self,cfg,num_boxes,movie_len,split_name='train'):
         self.split_name = split_name
@@ -41,12 +49,12 @@ class dataloader(data.Dataset):
         self.nusc_canbus_frequecy = nusc_canbus_frequency // ailgn_frequency
         self.camera_frequency = camera_frequency // ailgn_frequency
         self.nusc_maps = {
-            'boston-seaport': NuScenesMap(dataroot='.', map_name='boston-seaport'),
-            'singapore-hollandvillage': NuScenesMap(dataroot='.', map_name='singapore-hollandvillage'),
-            'singapore-onenorth': NuScenesMap(dataroot='.', map_name='singapore-onenorth'),
-            'singapore-queenstown': NuScenesMap(dataroot='.', map_name='singapore-queenstown'),
+            'boston-seaport': NuScenesMap(dataroot=cfg['dataroot'], map_name='boston-seaport'),
+            'singapore-hollandvillage': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-hollandvillage'),
+            'singapore-onenorth': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-onenorth'),
+            'singapore-queenstown': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-queenstown'),
         }
-        self.nusc_can = NuScenesCanBus(dataroot='/storage/group/4dvlab/datasets/nuScenes')
+        self.nusc_can = NuScenesCanBus(dataroot=cfg['dataroot'])
         self.load_data_infos()
 
     def load_data_infos(self):

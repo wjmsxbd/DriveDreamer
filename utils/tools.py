@@ -1,3 +1,5 @@
+import io
+
 import torch
 import cv2
 import numpy as np
@@ -6,7 +8,7 @@ from PIL import Image
 import matplotlib.figure as mpfigure
 import matplotlib.pyplot as plt
 from nuscenes.utils.splits import create_splits_scenes
-from nuscenes.utils.data_classes import LidarPointCloud, Box
+from nuscenes.utils.data_classes import PointCloud, Box
 from nuscenes.utils.geometry_utils import view_points, box_in_image, BoxVisibility, transform_matrix
 #from tools.analysis_tools.visualize.utils import color_mapping, AgentPredictionData
 #from tools.analysis_tools.visualize.render.base_render import BaseRender
@@ -31,6 +33,42 @@ import matplotlib
 import gc
 # import objgraph
 # from pympler import tracker,summary,muppy
+
+try:
+    import moxing as mox
+
+    mox.file.shift('os', 'mox')
+except:
+    pass
+
+class LidarPointCloud(PointCloud):
+
+    @staticmethod
+    def nbr_dims() -> int:
+        """
+        Returns the number of dimensions.
+        :return: Number of dimensions.
+        """
+        return 4
+
+    @classmethod
+    def from_file(cls, file_name: str) -> 'LidarPointCloud':
+        """
+        Loads LIDAR data from binary numpy format. Data is stored as (x, y, z, intensity, ring index).
+        :param file_name: Path of the pointcloud file on disk.
+        :return: LidarPointCloud instance (x, y, z, intensity).
+        """
+
+        assert file_name.endswith('.bin'), 'Unsupported filetype {}'.format(file_name)
+        if file_name.startswith('obs'):
+            with mox.file.File(file_name, 'rb') as f:
+                file_data = f.read()
+            scan = np.frombuffer(file_data, dtype=np.float32)
+        else:
+            scan = np.fromfile(file_name, dtype=np.float32)
+        points = scan.reshape((-1, 5))[:, :cls.nbr_dims()]
+        return cls(points.T)
+
 
 LOGGER_DEFAULT_FORMAT = ('<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> |'
                   ' <level>{level: <8}</level> |'
@@ -267,12 +305,19 @@ def get_this_scene_info(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_to
     cam_front_token = sample_record['data']['CAM_FRONT']
     cam_front_path = nusc.get('sample_data',cam_front_token)['filename']
     cam_front_path = os.path.join(dataset_dir,cam_front_path)
-    cam_front_img = mpimg.imread(cam_front_path)
-    #mpimg.imsave(f'./temp/camera_front/{count:02d}.jpg',cam_front_img)
-    imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
-    print(imsize)
-    cam_front_img = Image.fromarray(cam_front_img)
-    cam_front_img = np.array(cam_front_img.resize(img_size))
+    if cam_front_path.startswith('obs'):
+        with mox.file.File(cam_front_path, 'rb') as f:
+            img_data = f.read()
+        cam_front_img = Image.open(io.BytesIO(img_data))
+        imsize = cam_front_img.size
+        cam_front_img = np.array(cam_front_img.resize(img_size))
+    else:
+        cam_front_img = mpimg.imread(cam_front_path)
+        #mpimg.imsave(f'./temp/camera_front/{count:02d}.jpg',cam_front_img)
+        imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
+        print(imsize)
+        cam_front_img = Image.fromarray(cam_front_img)
+        cam_front_img = np.array(cam_front_img.resize(img_size))
 
     box_list,box_category = get_3dbox(cam_front_token,nusc,imsize)#out_path=f'./temp/3dbox/{count:02d}.jpg'
     hdmap_fig,hdmap_ax,yaw,translation = get_hdmap(cam_front_token,nusc,nusc_map)#,outpath=f'./temp/hdmap/{count:02d}.jpg'
@@ -296,13 +341,20 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
     cam_front_path = nusc.get('sample_data',cam_front_token)['filename']
     cam_front_path = os.path.join(dataset_dir,cam_front_path)
 
-    # mpimg.imsave(f'./temp/depth_camera_front/{sample_token}.png',depth_cam_front_img)
-    cam_front_img = mpimg.imread(cam_front_path)
-    # mpimg.imsave(f'all_pics/cam.png',cam_front_img)
-    # mpimg.imsave(f'./temp/camera_front/{count:02d}.jpg',cam_front_img)
-    imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
-    cam_front_img = Image.fromarray(cam_front_img)
-    cam_front_img = np.array(cam_front_img.resize(img_size))
+    if cam_front_path.startswith('obs'):
+        with mox.file.File(cam_front_path, 'rb') as f:
+            img_data = f.read()
+        cam_front_img = Image.open(io.BytesIO(img_data))
+        imsize = cam_front_img.size
+        cam_front_img = np.array(cam_front_img.resize(img_size))
+    else:
+        # mpimg.imsave(f'./temp/depth_camera_front/{sample_token}.png',depth_cam_front_img)
+        cam_front_img = mpimg.imread(cam_front_path)
+        # mpimg.imsave(f'all_pics/cam.png',cam_front_img)
+        # mpimg.imsave(f'./temp/camera_front/{count:02d}.jpg',cam_front_img)
+        imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
+        cam_front_img = Image.fromarray(cam_front_img)
+        cam_front_img = np.array(cam_front_img.resize(img_size))
     # project_to_image(nusc,sample_token,out_path="004.png")
     box_list,box_category = get_3dbox(cam_front_token,nusc,imsize)#out_path=f'./temp/3dbox/{count:02d}.jpg'
     # nusc.render_pointcloud_in_image(sample_token,out_path="002.png")

@@ -1,0 +1,11 @@
+train:
+  version: advanced_12Hz_trainval
+  dataroot: /storage/group/4dvlab/datasets/nuScenes/
+  split_name: train
+  num_workers: 4
+
+val:
+  version: advanced_12Hz_trainval
+  dataroot: /storage/group/4dvlab/datasets/nuScenes/
+  split_name: val
+  num_workers: 4

@@ -18,7 +18,7 @@ from nuscenes.map_expansion.map_api import NuScenesMap,NuScenesMapExplorer
 from pyquaternion import Quaternion
 from nuscenes.nuscenes import NuScenes
 from torch.utils import data
-from utils.tools import get_this_scene_info,get_this_scene_info_with_lidar
+from utils.tools import get_this_scene_info,get_this_scene_info_with_lidar,get_this_scene_info_with_lidar_figax
 from ldm.util import instantiate_from_config
 import matplotlib.image as mpimg
 from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -26,6 +26,12 @@ from einops import repeat
 import omegaconf
 from PIL import Image
 import time
+from tqdm import tqdm
+from einops import rearrange
+from memory_profiler import profile
+import gc
+import copy
+import matplotlib.pyplot as plt
 
 try:
     import moxing as mox
@@ -78,9 +84,16 @@ class dataloader(data.Dataset):
     
     def __len__(self):
         return len(self.video_infos)
+    # @profile(precision=4,stream=open('log.txt',"w+",encoding="utf-8"))
     def get_data_info(self,idx):
         video_info = self.video_infos[idx]
         out = {}
+        out['reference_image'] = torch.zeros((self.movie_len,self.cfg['img_size'][1],self.cfg['img_size'][0],3))
+        out['HDmap'] = torch.zeros((self.movie_len,self.cfg['img_size'][1],self.cfg['img_size'][0],3))
+        out['range_image'] = torch.zeros((self.movie_len,self.cfg['img_size'][1],self.cfg['img_size'][0],3))
+        out['dense_range_image'] = torch.zeros((self.movie_len,self.cfg['img_size'][1],self.cfg['img_size'][0],3))
+        out['3Dbox'] = torch.zeros((self.movie_len,self.num_boxes,16))
+        out['category'] = [None for i in range(self.movie_len)]
         for i in range(self.movie_len):
             sample_token = video_info[i]['token']
             scene_token = self.nusc.get('sample',sample_token)['scene_token']
@@ -93,46 +106,15 @@ class dataloader(data.Dataset):
             if self.cfg['img_size'] is not None:
                 ref_img,boxes,hdmap,category,range_image,dense_range_image = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']))
             else:
-                ref_img,boxes,hdmap,category,range_image,dense_range_image = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token)
+                ref_img,boxes,hdmap,category,range_image,dense_range_image = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,fig=self.fig,ax=self.ax)
             dense_range_image = np.repeat(dense_range_image[...,np.newaxis],3,axis=-1)
 
             boxes = np.array(boxes).astype(np.float32)
             ref_img = torch.from_numpy(ref_img / 255. * 2 - 1.).to(torch.float32)
+            hdmap = hdmap[:,:,:3].copy()
             hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
             range_image = torch.from_numpy(range_image / 255. * 2 - 1.).to(torch.float32)
             dense_range_image = torch.from_numpy(dense_range_image / 255. * 2 - 1.).to(torch.float32)
-            # depth_cam_front_img = torch.from_numpy(depth_cam_front_img / 255. * 2 - 1.).to(torch.float32)
-
-            if not 'reference_image' in out.keys():
-                out['reference_image'] = ref_img.unsqueeze(0)
-            else:
-                out['reference_image'] = torch.cat([out['reference_image'],ref_img.unsqueeze(0)],dim=0)
-
-            if not "HDmap" in out.keys():
-                out['HDmap'] = hdmap[:,:,:3].unsqueeze(0)
-            else:
-                out['HDmap'] = torch.cat([out['HDmap'],hdmap[:,:,:3].unsqueeze(0)],dim=0)
-
-            if not "range_image" in out.keys():
-                out['range_image'] = range_image.unsqueeze(0)
-            else:
-                out['range_image'] = torch.cat([out['range_image'],range_image.unsqueeze(0)],dim=0)
-
-            if not "dense_range_image" in out.keys():
-                out['dense_range_image'] = dense_range_image.unsqueeze(0)
-            else:
-                out['dense_range_image'] = torch.cat([out['dense_range_image'],dense_range_image.unsqueeze(0)],dim=0)
-
-            # if not 'depth_cam_front_img' in out.keys():
-            #     out['depth_cam_front_img'] = depth_cam_front_img.unsqueeze(0)
-            # else:
-            #     out['depth_cam_front_img'] = torch.cat([out['depth_cam_front_img'],depth_cam_front_img.unsqueeze(0)],dim=0)
-
-            if not 'text' in out.keys():
-                out['text'] = [text]
-            else:
-                out['text'] = out['text'] + [text]
-
             if boxes.shape[0] == 0:
                 boxes = torch.from_numpy(np.zeros((self.num_boxes,16)))
                 category = ["None" for i in range(self.num_boxes)]
@@ -143,20 +125,79 @@ class dataloader(data.Dataset):
                 category_none = ["None" for i in range(zero_len)]
                 category = category + category_none
             else:
-                boxes = torch.from_numpy(boxes[:self.num_boxes])
-                category_embed = category[:self.num_boxes]
-                category = category_embed[:self.num_boxes]
+                boxes = torch.from_numpy(copy.deepcopy(boxes[:self.num_boxes]))
+                category_embed = copy.deepcopy(category[:self.num_boxes])
+                category = copy.deepcopy(category_embed[:self.num_boxes])
+            out['reference_image'][i] = ref_img
+            out['HDmap'][i] = hdmap
+            out['range_image'][i] = range_image
+            out['dense_range_image'][i] = dense_range_image
+            out['3Dbox'][i] = boxes
+            out['category'][i] = category
 
-            if not '3Dbox' in out.keys():
-                out['3Dbox'] = boxes.unsqueeze(0).to(torch.float32)
-                out['category'] = [category]
-            else:
-                out['3Dbox'] = torch.cat([out['3Dbox'],boxes.unsqueeze(0)],dim=0)
-                out['category'] = out['category'] + [category]
         return out
     def __getitem__(self,idx):
         return self.get_data_info(idx)
-    
+
+def collate_fn(batch):
+    out = {}
+    for i in range(len(batch)):
+        for key,value in batch[i].items():
+            if isinstance(value,torch.Tensor):
+                if not key in out.keys():
+                    out[key] = value.unsqueeze(0)
+                else:
+                    out[key] = torch.concat([out[key],value.unsqueeze(0)],dim=0)
+            elif isinstance(value,list):
+                if not key in out.keys():
+                    out[key] = []
+                    out[key].append(value)
+                else:
+                    out[key].append(value)
+            else:
+                raise NotImplementedError
+    return out
+
+def save_tensor_as_image(tensor, file_path):
+    if tensor.is_cuda:
+        tensor = tensor.cpu()
+
+    if len(tensor.shape) == 4:
+        tensor = tensor.squeeze(0)
+
+    # mean = torch.tensor([0.485, 0.456, 0.406])
+    # std = torch.tensor([0.229, 0.224, 0.225])
+    # tensor = tensor * std[:, None, None] + mean[:, None, None]
+
+    tensor = tensor.clamp(-1, 1)  # 确保值在[0, 1]之间
+    tensor = (tensor + 1.0) / 2.0
+    tensor = tensor * 255.0
+
+    tensor = tensor.byte()
+
+
+    tensor = tensor.permute(1, 2, 0)
+
+
+    numpy_array = tensor.numpy()
+
+    image = Image.fromarray(numpy_array)
+
+    image.save(file_path)
+
+def save_tensor_as_video(tensor,file_path):
+    import imageio
+    tensor = tensor.detach().cpu()
+    tensor = torch.clamp(tensor,-1.,1.)
+    filename = file_path
+    tensor = rearrange(tensor,'b n c h w -> b n h w c')
+    tensor = tensor.numpy()
+    tensor = (tensor + 1.0) / 2.0
+    tensor = (tensor * 255).astype(np.uint8)
+    writer = imageio.get_writer(filename,fps=5)
+    for i in range(tensor.shape[1]):
+        writer.append_data(tensor[:,i])
+    writer.close()
 
 if __name__ == "__main__":
     import argparse
@@ -170,4 +211,36 @@ if __name__ == "__main__":
 
     data_loader = dataloader(**cfg.data.params.train.params)
     # 35
-    out = data_loader.__getitem__(35)
+    data_loader_ = torch.utils.data.DataLoader(
+        data_loader,
+        batch_size  =   1,
+        num_workers =   0,
+        collate_fn=collate_fn
+    )
+    # network = instantiate_from_config(cfg['model'])
+    # model_path = 'logs/2024-08-06T07-11-46_global_condition/checkpoints/epoch=000093.ckpt'
+    # network.init_from_ckpt(model_path)
+    # network = network.eval().cuda()
+    # save_path = 'all_pics/'
+
+    # samples = torch.randint(0,len(data_loader),(5,)).long()
+    # for sample in samples:
+    #     input_data = data_loader.__getitem__(0)
+    #     # input_data = {k:v.unsqueeze(0).cuda() for k,v in input_data.items()}
+    #     batch = {}
+    #     batch['range_image'] = input_data['range_image']
+    #     logs = network.log_images(batch)
+    #     save_tensor_as_image(logs['inputs'],file_path=save_path+f'inputs_{sample:02d}.jpg')
+    #     save_tensor_as_image(logs['samples'],file_path=save_path+f'samples{sample:02d}.jpg')
+    #     save_tensor_as_image(logs['reconstructions'],file_path=save_path+f'reconstructions{sample:02d}.jpg')
+    # for _ in range(len(data_loader)):
+    #     data_loader.__getitem__(_)
+    for _,batch in tqdm(enumerate(data_loader_)):
+        # batch['reference_image'] = batch['reference_image'][:,0:1]
+        # batch['reference_image'] = repeat(batch['reference_image'],'b n h w c -> b (repeat n) h w c',repeat=5)
+        # logs = network.log_video(batch)
+        # save_tensor_as_video(logs['inputs'],file_path=save_path+f'inputs_{_:02d}.png')
+        # save_tensor_as_video(logs['samples'],file_path=save_path+f'samples{_:02d}.png')
+        # save_tensor_as_video(logs['lidar_samples'],file_path=save_path+f'lidar_samples{_:02d}.png')
+        # save_tensor_as_video(logs['lidar_inputs'],file_path=save_path+f'lidar_inputs{_:02d}.png')
+        pass

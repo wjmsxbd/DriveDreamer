@@ -33,14 +33,6 @@ import gc
 import copy
 import matplotlib.pyplot as plt
 
-try:
-    import moxing as mox
-
-    mox.file.shift('os', 'mox')
-except:
-    pass
-
-
 class dataloader(data.Dataset):
     def __init__(self,cfg,num_boxes,movie_len,split_name='train'):
         self.split_name = split_name
@@ -49,10 +41,10 @@ class dataloader(data.Dataset):
         self.movie_len = movie_len
         self.num_boxes = num_boxes
         self.nusc_maps = {
-            'boston-seaport': NuScenesMap(dataroot=cfg['dataroot'], map_name='boston-seaport'),
-            'singapore-hollandvillage': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-hollandvillage'),
-            'singapore-onenorth': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-onenorth'),
-            'singapore-queenstown': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-queenstown'),
+            'boston-seaport': NuScenesMap(dataroot='.', map_name='boston-seaport'),
+            'singapore-hollandvillage': NuScenesMap(dataroot='.', map_name='singapore-hollandvillage'),
+            'singapore-onenorth': NuScenesMap(dataroot='.', map_name='singapore-onenorth'),
+            'singapore-queenstown': NuScenesMap(dataroot='.', map_name='singapore-queenstown'),
         }
         self.load_data_infos()
 
@@ -94,6 +86,7 @@ class dataloader(data.Dataset):
         out['dense_range_image'] = torch.zeros((self.movie_len,self.cfg['img_size'][1],self.cfg['img_size'][0],3))
         out['3Dbox'] = torch.zeros((self.movie_len,self.num_boxes,16))
         out['category'] = [None for i in range(self.movie_len)]
+        out['text'] = [None for i in range(self.movie_len)]
         for i in range(self.movie_len):
             sample_token = video_info[i]['token']
             scene_token = self.nusc.get('sample',sample_token)['scene_token']
@@ -134,6 +127,7 @@ class dataloader(data.Dataset):
             out['dense_range_image'][i] = dense_range_image
             out['3Dbox'][i] = boxes
             out['category'][i] = category
+            out['text'][i] = text
 
         return out
     def __getitem__(self,idx):

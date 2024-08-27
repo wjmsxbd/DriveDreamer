@@ -175,6 +175,12 @@ stable_diffusion
 ├── epoch=000001.ckpt
 ```
 
+#### create hdmap data
+修改configs/hdmap_generation.yaml里的数据路径
+```
+python data/hdmap_generation.py
+```
+
 #### 
 #### clone ip_basic
 在当前目录中clone ip_basic

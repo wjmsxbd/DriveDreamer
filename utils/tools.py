@@ -496,29 +496,18 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
     hdmap_path[-1] = hdmap_path[-1][:-4] + '.png'
     hdmap_path = os.path.join(dataset_dir,hdmap_path[0],hdmap_path[1],hdmap_path[2])
 
-    # mpimg.imsave(f'./temp/depth_camera_front/{sample_token}.png',depth_cam_front_img)
     cam_front_img = imageio.v2.imread(cam_front_path)
     now_hdmap = imageio.v2.imread(hdmap_path)
-    # mpimg.imsave(f'all_pics/cam.png',cam_front_img)
-    # mpimg.imsave(f'./temp/camera_front/{count:02d}.jpg',cam_front_img)
     imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
     cam_front_img = Image.fromarray(cam_front_img)
     cam_front_img = np.array(cam_front_img.resize(img_size))
 
-    project_to_image(nusc,sample_token,out_path="004.png")
     box_list,box_category = get_3dbox(cam_front_token,nusc,imsize)#out_path=f'./temp/3dbox/{count:02d}.jpg'
     box_list = np.array(box_list)
-    # box_list = np.random.randn(70,16)
-    # box_category = ["None" for i in range(70)]
-    
-    # nusc.render_pointcloud_in_image(sample_token,out_path="002.png")
 
     range_image = project_to_image(nusc,sample_token)
     dense_range_image,_ = fill_in_multiscale(range_image,max_depth=100)
     range_image = np.repeat(range_image[:,:,np.newaxis],3,axis=-1)
-    # range_image = np.random.randn(128,256,3)
-    # dense_range_image = np.random.randn(128,256)
-    # now_hdmap = get_hdmap(cam_front_token,nusc,nusc_map)#,outpath=f'./temp/hdmap/{count:02d}.jpg'
 
     now_hdmap = Image.fromarray(now_hdmap)
     now_hdmap = np.array(now_hdmap.resize(img_size),dtype=np.uint8)

@@ -28,10 +28,16 @@ from PIL import Image
 import time
 from tqdm import tqdm
 from einops import rearrange
-from memory_profiler import profile
-import gc
-import copy
-import matplotlib.pyplot as plt
+# from memory_profiler import profile
+# import gc
+# import copy
+# import matplotlib.pyplot as plt
+try:
+    import moxing as mox
+
+    mox.file.shift('os', 'mox')
+except:
+    pass
 
 class dataloader(data.Dataset):
     def __init__(self,cfg,num_boxes,movie_len,split_name='train'):
@@ -41,10 +47,10 @@ class dataloader(data.Dataset):
         self.movie_len = movie_len
         self.num_boxes = num_boxes
         self.nusc_maps = {
-            'boston-seaport': NuScenesMap(dataroot='.', map_name='boston-seaport'),
-            'singapore-hollandvillage': NuScenesMap(dataroot='.', map_name='singapore-hollandvillage'),
-            'singapore-onenorth': NuScenesMap(dataroot='.', map_name='singapore-onenorth'),
-            'singapore-queenstown': NuScenesMap(dataroot='.', map_name='singapore-queenstown'),
+            'boston-seaport': NuScenesMap(dataroot=cfg['dataroot'], map_name='boston-seaport'),
+            'singapore-hollandvillage': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-hollandvillage'),
+            'singapore-onenorth': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-onenorth'),
+            'singapore-queenstown': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-queenstown'),
         }
         self.load_data_infos()
 

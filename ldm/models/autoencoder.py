@@ -11,7 +11,7 @@ from contextlib import contextmanager
 
 from taming.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
 
-from ldm.modules.diffusionmodules.model import Encoder, Decoder,Encoder_Diffusion,Decoder_Diffusion,Decoder_Lidar,Decoder_Temporal
+from ldm.modules.diffusionmodules.model import Encoder, Decoder,Encoder_Diffusion,Decoder_Diffusion,Decoder_Lidar,Decoder_Temporal,Encoder_Temporal
 from ldm.models.ema import LitEma
 # from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
 # from taming.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
@@ -806,7 +806,8 @@ class AutoencoderKL_Temporal(pl.LightningModule):
                  use_finetune=False,
                  movie_len=None,
                  trainable=False,
-                 use_ema=False,):
+                 use_ema=False,
+                 safetensor_path=None):
         super().__init__()
         self.image_key = image_key
         self.encoder = Encoder_Diffusion(**ddconfig)
@@ -827,6 +828,8 @@ class AutoencoderKL_Temporal(pl.LightningModule):
         self.use_finetune=use_finetune
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+        if safetensor_path is not None:
+            self.init_from_safetensor(safetensor_path)
         
 
     def init_from_ckpt(self,path,ignore_keys=list()):
@@ -851,6 +854,21 @@ class AutoencoderKL_Temporal(pl.LightningModule):
         self.load_state_dict(sd, strict=False)
         print(f"Restored from {path}")
     
+    def init_from_safetensor(self,safetensor_path):
+        from safetensors import safe_open
+        sd = dict()
+        with safe_open(safetensor_path,framework='pt',device='cpu') as f:
+            for key in f.keys():
+                if key.startswith('first_stage_model.decoder'):
+                    sd[key[len("first_stage_model")+1:]] = f.get_tensor(key)
+                # if key.startswith('conditioner.embedders.3.encoder.encoder'):
+                #     if key.startswith('conditioner.embedders.3.encoder.encoder.quant_conv'):
+                #         sd[key[len('conditioner.embedders.3.encoder.encoder')+1:]] =  f.get_tensor(key)
+                #     else:
+                #         sd[key[len('conditioner.embedders.3.encoder')+1:]] = f.get_tensor(key)
+
+        missing,unexpected = self.load_state_dict(sd,strict=False)
+        print(f"missing:{missing},unexpected:{unexpected}")
 
     def encode(self,x):
         h = self.encoder(x)
@@ -858,8 +876,11 @@ class AutoencoderKL_Temporal(pl.LightningModule):
         posterior = DiagonalGuassianDistribution(moments)
         return posterior
     
-    def decode(self,z):
-        z = self.post_quant_conv(z)
+    def decode(self,z,return_temp_output=False):
+        # z = self.post_quant_conv(z)
+        if return_temp_output:
+            dec,_ = self.decoder(z,return_temp_output)
+            return dec,_
         dec = self.decoder(z)
         return dec
     
@@ -1181,8 +1202,11 @@ class Autoencoder_Lidar2(pl.LightningModule):
         posterior = DiagonalGuassianDistribution(moments)
         return posterior
     
-    def decode(self,z):
+    def decode(self,z,return_temp_output=False):
         z = self.post_quant_conv(z)
+        if return_temp_output == True:
+            dec,_ = self.decoder(z,return_temp_output)
+            return dec,_
         dec = self.decoder(z)
         return dec
     

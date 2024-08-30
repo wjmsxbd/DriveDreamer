@@ -1065,6 +1065,8 @@ class UNetModel(nn.Module):
         freq_shift=0,
         class_embed_dim = 4,
         modify_keys=None,
+        use_cond_mask=False,
+        use_attn_additional=False,
     ):
         super().__init__()
         if use_spatial_transformer:
@@ -1120,6 +1122,14 @@ class UNetModel(nn.Module):
                 linear(time_embed_dim,time_embed_dim)
             )
             # self.label_emb = nn.Embedding(num_classes, time_embed_dim)
+        
+        if use_cond_mask:
+            self.cond_time_stack_embed = nn.Sequential(
+                linear(model_channels, time_embed_dim),
+                nn.SiLU(),
+                linear(time_embed_dim, time_embed_dim),
+            )
+
 
         self.input_blocks = nn.ModuleList(
             [
@@ -1165,7 +1175,7 @@ class UNetModel(nn.Module):
                             use_new_attention_order=use_new_attention_order,
                         ) if not use_spatial_transformer else SpatialTransformer(
                             ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,movie_len=self.movie_len,
-                            height=self.height,width=self.width,obj_dims=obj_dims
+                            height=self.height,width=self.width,obj_dims=obj_dims,use_attn_additional=use_attn_additional,
                         )
                     )
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
@@ -1223,7 +1233,7 @@ class UNetModel(nn.Module):
                 use_new_attention_order=use_new_attention_order,
             ) if not use_spatial_transformer else SpatialTransformer(
                             ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,movie_len=self.movie_len,
-                            height=self.height,width=self.width,obj_dims=obj_dims
+                            height=self.height,width=self.width,obj_dims=obj_dims,use_attn_additional=use_attn_additional,
                         ),
             ResBlock(
                 ch,
@@ -1270,7 +1280,7 @@ class UNetModel(nn.Module):
                             use_new_attention_order=use_new_attention_order,
                         ) if not use_spatial_transformer else SpatialTransformer(
                             ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,movie_len=self.movie_len,
-                            height=self.height,width=self.width,obj_dims=obj_dims
+                            height=self.height,width=self.width,obj_dims=obj_dims,use_attn_additional=use_attn_additional,
                         )
                     )
                 if level and i == num_res_blocks:
@@ -1336,7 +1346,7 @@ class UNetModel(nn.Module):
         #torch.save(my_model_state_dict,'./my_model_state_dict.pt')
         self.load_state_dict(state_dict,strict=False)
 
-    def forward(self, x, timesteps=None, y=None,boxes_emb=None,text_emb=None):
+    def forward(self, x, timesteps=None, y=None,boxes_emb=None,text_emb=None,cond_mask=None):
         """
         Apply the model to an input batch.
         :param x: an [N x C x ...] Tensor of inputs.
@@ -1350,7 +1360,11 @@ class UNetModel(nn.Module):
         ), "must specify y if and only if the model is class-conditional"
         hs = []
         t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False)
-        emb = self.time_embed(t_emb)
+        if cond_mask is not None and cond_mask.any():
+            cond_mask = cond_mask[:,None].float()
+            emb = self.cond_time_stack_embed(t_emb) * cond_mask + self.time_embed(t_emb) * (1 - cond_mask)
+        else:
+            emb = self.time_embed(t_emb)
         if self.num_classes is not None:
             # assert y.shape == (x.shape[0],)
             # if len(y.shape) == 1:

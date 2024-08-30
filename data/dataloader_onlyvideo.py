@@ -181,11 +181,13 @@ if __name__ == "__main__":
         num_workers =   0,
         collate_fn=collate_fn
     )
-    network = instantiate_from_config(cfg['model'])
-    model_path = 'logs/2024-08-18T03-12-28_video_decoder/checkpoints/last.ckpt'
-    network.init_from_ckpt(model_path)
-    network = network.eval()
-    save_path = 'all_pics/'
+    # network = instantiate_from_config(cfg['model'])
+    # model_path = 'stable_diffusion/vista.safetensors'
+    # ckpt_path = 'stable_diffusion/kl-f8.ckpt'
+    # network.init_from_ckpt(ckpt_path)
+    # network.init_from_safetensor(model_path)
+    # network = network.eval().cuda()
+    # save_path = 'all_pics/'
 
     # samples = torch.randint(0,len(data_loader),(5,)).long()
     # for sample in samples:
@@ -198,14 +200,16 @@ if __name__ == "__main__":
     #     save_tensor_as_image(logs['samples'],file_path=save_path+f'samples{sample:02d}.jpg')
     #     save_tensor_as_image(logs['reconstructions'],file_path=save_path+f'reconstructions{sample:02d}.jpg')
     import objgraph
-    for _,batch in enumerate(data_loader_):
+    for id,batch in tqdm(enumerate(data_loader_)):
         # objgraph.show_backrefs(objgraph.by_type('SplitResult')[0], max_depth = 10, filename = 'obj.dot')
         # objgraph.show_growth()
+        # tmp = batch['reference_image'].clone()
+        # b = tmp.shape[0]
+        # tmp = rearrange(tmp,'b n h w c -> b n c h w')
         # input = network.get_input(batch,'reference_image').cuda()
         # dec,_ = network(input)
-        # tmp = batch['reference_image']
-        # tmp = rearrange(tmp,'b n h w c -> b n c h w')
-        # save_tensor_as_video(tmp,file_path=save_path+f'inputs_{_:02d}.png')
-        # save_tensor_as_video(dec,file_path=save_path+f'samples{_:02d}.png')
+        # save_tensor_as_video(tmp,file_path=save_path+'inputs_{}.png'.format(id))
+        # dec = dec.reshape((b,-1)+dec.shape[1:])
+        # save_tensor_as_video(dec,file_path=save_path+'samples_{}.png'.format(id))
         # objgraph.show_growth()
         pass

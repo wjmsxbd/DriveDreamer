@@ -172,7 +172,7 @@ class Lidar_Image_CrossAttention(nn.Module):
 
         self.to_out = nn.Sequential(
             nn.Linear(inner_dim,query_dim),
-            nn.dropout(dropout)
+            nn.Dropout(dropout)
         )
 
     def forward(self,x,context=None,mask=None):
@@ -180,15 +180,15 @@ class Lidar_Image_CrossAttention(nn.Module):
         b = x.shape[0]
         q = self.to_q(x)
         context = default(context,x)
-        k = self.to_k(x)
-        v = self.to_v(x)
 
-        key_0,key_1 = torch.chunk(k,chunks=2,dim=0)
-        value_0,value_1 = torch.chunk(v,chunks=2,dim=0)
-        key_L,key_I = torch.cat([key_1,key_0],dim=1),torch.cat([key_0,key_1],dim=1)
-        value_L,value_I = torch.cat([value_1,value_0],dim=1),torch.cat([value_0,value_1],dim=1)
+        key_0,key_1 = torch.chunk(x,chunks=2,dim=0)
+        value_0,value_1 = torch.chunk(x,chunks=2,dim=0)
+        key_L,key_I = torch.cat([key_1,key_0],dim=-1),torch.cat([key_0,key_1],dim=-1)
+        value_L,value_I = torch.cat([value_1,value_0],dim=-1),torch.cat([value_0,value_1],dim=-1)
         k = torch.cat([key_I,key_L],dim=0)
         v = torch.cat([value_I,value_L],dim=0)
+        k = self.to_k(k)
+        v = self.to_v(v)
         q,k,v = map(lambda t: rearrange(t,'b n (h d) -> (b h) n d',b=b,h=h,d=self.dim_head,n=t.shape[1]).contiguous(),(q,k,v))
         sim = einsum('b i d, b j d -> b i j',q,k) * self.scale
         if exists(mask):
@@ -284,12 +284,16 @@ class GatedSelfAttention(nn.Module):
         return x 
 
 class BasicTransformerBlock(nn.Module):
-    def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, gated_ff=True, checkpoint=True,movie_len=None,height=None,width=None,obj_dims=None):
+    def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, gated_ff=True, checkpoint=True,movie_len=None,height=None,width=None,obj_dims=None,use_additional_attn=False):
         super().__init__()
         self.attn1 = GatedSelfAttention(query_dim=dim,context_dim=obj_dims, n_heads=n_heads, d_head=d_head)  # is a self-attention
         self.ff = FeedForward(dim, dropout=dropout, glu=gated_ff)
         self.attn2 = CrossAttention(query_dim=dim, context_dim=context_dim,
                                     heads=n_heads, dim_head=d_head, dropout=dropout)  # is self-attn if context is none
+        self.use_additional_attn = use_additional_attn
+        if self.use_additional_attn:
+            self.attn3 = Lidar_Image_CrossAttention(query_dim=dim,context_dim=2*dim,heads=n_heads,dim_head=d_head)
+            self.norm4 = nn.LayerNorm(dim)
         self.norm1 = nn.LayerNorm(dim)
         self.norm2 = nn.LayerNorm(dim)
         self.norm3 = nn.LayerNorm(dim)
@@ -312,8 +316,12 @@ class BasicTransformerBlock(nn.Module):
             x = self.attn1(self.norm1(x),objs) + x
         
         x = self.attn2(self.norm2(x), context=context) + x
-        x = self.ff(self.norm3(x)) + x
+        
+        if self.use_additional_attn:
+            x = self.attn3(self.norm4(x)) + x
 
+        x = self.ff(self.norm3(x)) + x
+        
         # without temporal blocks
         # bn = x.shape[0]
         # batch_size = bn / self.movie_len
@@ -332,7 +340,7 @@ class SpatialTransformer(nn.Module):
     Finally, reshape to image
     """
     def __init__(self,in_channels,n_heads,d_head,
-                 depth=1,dropout=0.,context_dim=None,movie_len=None,height=None,width=None,obj_dims=None):
+                 depth=1,dropout=0.,context_dim=None,movie_len=None,height=None,width=None,obj_dims=None,use_attn_additional=False):
         super().__init__()
         self.in_channels = in_channels
         inner_dim = n_heads * d_head
@@ -351,7 +359,7 @@ class SpatialTransformer(nn.Module):
         #     self.temporal_blocks.append(TemporalAttention(inner_dim,n_heads,d_head,movie_len=movie_len))
         #     self.transformer_blocks.append(BasicTransformerBlock(inner_dim,n_heads,d_head,dropout=dropout,context_dim=context_dim,obj_dims=obj_dims,batch_size=batch_size,movie_len=movie_len,height=height,width=width))    
         self.transformer_blocks = nn.ModuleList(
-            BasicTransformerBlock(inner_dim,n_heads,d_head,dropout=dropout,context_dim=context_dim,obj_dims=obj_dims,movie_len=movie_len,height=height,width=width) for d in range(depth)
+            BasicTransformerBlock(inner_dim,n_heads,d_head,dropout=dropout,context_dim=context_dim,obj_dims=obj_dims,movie_len=movie_len,height=height,width=width,use_additional_attn=use_attn_additional) for d in range(depth)
         )
         self.temporal_blocks = nn.ModuleList(
             TemporalAttention(inner_dim,n_heads,d_head,movie_len=movie_len) for d in range(depth)

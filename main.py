@@ -226,7 +226,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
         return DataLoader(self.datasets["train"], batch_size=self.batch_size,
                           num_workers=self.num_workers, shuffle=False if is_iterable_dataset else True,
                           worker_init_fn=init_fn,
-                          collate_fn=self.collate_fn,
+                          collate_fn=self.collate_fn
                           )
 
     def _val_dataloader(self, shuffle=False):
@@ -239,7 +239,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
                           num_workers=self.num_workers,
                           worker_init_fn=init_fn,
                           shuffle=shuffle,
-                          collate_fn=self.collate_fn,
+                          collate_fn=self.collate_fn
                           )
 
     def _test_dataloader(self, shuffle=False):

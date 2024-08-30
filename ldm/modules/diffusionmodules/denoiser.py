@@ -1,0 +1,112 @@
+from typing import Dict, Union
+
+import torch
+import torch.nn as nn
+
+from ...util import append_dims, instantiate_from_config
+from .denoiser_scaling import DenoiserScaling
+from .discretizer import Discretization
+
+
+class Denoiser(nn.Module):
+    def __init__(self, scaling_config: Dict,movie_len:int = 5):
+        super().__init__()
+
+        self.scaling: DenoiserScaling = instantiate_from_config(scaling_config)
+        self.movie_len = movie_len
+
+    def possibly_quantize_sigma(self, sigma: torch.Tensor) -> torch.Tensor:
+        return sigma
+
+    def possibly_quantize_c_noise(self, c_noise: torch.Tensor) -> torch.Tensor:
+        return c_noise
+
+    def forward(
+        self,
+        network: nn.Module,
+        x:torch.Tensor,
+        range_image:torch.Tensor,
+        sigma: torch.Tensor,
+        cond: Dict,
+        movie_len:int,
+        action_former:nn.Module,
+        cond_mask:torch.Tensor
+    ) -> torch.Tensor:
+        sigma = self.possibly_quantize_sigma(sigma)
+        sigma_shape = sigma.shape
+        sigma = append_dims(sigma, x.ndim)
+        c_skip, c_out, c_in, c_noise = self.scaling(sigma)
+        
+        c_noise = self.possibly_quantize_c_noise(c_noise.reshape(sigma_shape))
+        c_skip = torch.cat([c_skip,c_skip],dim=0)
+        c_out = torch.cat([c_out,c_out],dim=0)
+        c_in = torch.cat([c_in,c_in],dim=0)
+        c_noise = torch.cat([c_noise,c_noise],dim=0)
+        boxes_emb = cond['boxes_emb']
+        text_emb = cond['text_emb']
+        dense_range_image = cond['dense_range_image']
+        b = boxes_emb.shape[0] // movie_len
+        boxes_emb = boxes_emb.reshape((b,movie_len)+boxes_emb.shape[1:])
+        boxes_emb = boxes_emb[:,0]
+        hdmap = cond['hdmap'].reshape((b,movie_len) + cond['hdmap'].shape[1:])[:,0]
+        actions = cond['actions']
+        dense_range_image = dense_range_image.reshape((b,movie_len)+dense_range_image.shape[1:])[:,0]
+        h = action_former(hdmap,boxes_emb,actions,dense_range_image)
+        latent_hdmap = torch.stack([h[id][0] for id in range(len(h))]).reshape(cond['hdmap'].shape)
+        latent_boxes = torch.stack([h[id][1] for id in range(len(h))]).reshape(cond['boxes_emb'].shape)
+        latent_dense_range_image = torch.stack([h[id][2] for id in range(len(h))]).reshape(cond['dense_range_image'].shape)
+        classes = torch.tensor([[1.,0.],[0.,1.]],device=x.device,dtype=x.dtype)
+        classes_emb = torch.cat([torch.sin(classes),torch.cos(classes)],dim=-1)
+        z = torch.cat([x,latent_hdmap],dim=1)
+        lidar_z = torch.cat([range_image,latent_dense_range_image],dim=1)
+        input = torch.cat([z,lidar_z])
+        class_label = torch.zeros((input.shape[0],4),device=x.device)
+        latent_boxes = torch.cat([latent_boxes,latent_boxes],dim=0)
+        text_emb = torch.cat([text_emb,text_emb],dim=0)
+        for i in range(input.shape[0]):
+            if i < input.shape[0] // 2:
+                class_label[i] = classes_emb[0]
+            else:
+                class_label[i] = classes_emb[1]
+        cond_mask = torch.cat([cond_mask,cond_mask],dim=0)
+        real_input = torch.cat([x,range_image],dim=0)
+        return (
+            network(input*c_in,c_noise,y=class_label,boxes_emb=latent_boxes,text_emb=text_emb,cond_mask=cond_mask) * c_out
+            + real_input * c_skip
+        )
+
+
+class DiscreteDenoiser(Denoiser):
+    def __init__(
+        self,
+        scaling_config: Dict,
+        num_idx: int,
+        discretization_config: Dict,
+        do_append_zero: bool = False,
+        quantize_c_noise: bool = True,
+        flip: bool = True,
+    ):
+        super().__init__(scaling_config)
+        self.discretization: Discretization = instantiate_from_config(
+            discretization_config
+        )
+        sigmas = self.discretization(num_idx, do_append_zero=do_append_zero, flip=flip)
+        self.register_buffer("sigmas", sigmas)
+        self.quantize_c_noise = quantize_c_noise
+        self.num_idx = num_idx
+
+    def sigma_to_idx(self, sigma: torch.Tensor) -> torch.Tensor:
+        dists = sigma - self.sigmas[:, None]
+        return dists.abs().argmin(dim=0).view(sigma.shape)
+
+    def idx_to_sigma(self, idx: Union[torch.Tensor, int]) -> torch.Tensor:
+        return self.sigmas[idx]
+
+    def possibly_quantize_sigma(self, sigma: torch.Tensor) -> torch.Tensor:
+        return self.idx_to_sigma(self.sigma_to_idx(sigma))
+
+    def possibly_quantize_c_noise(self, c_noise: torch.Tensor) -> torch.Tensor:
+        if self.quantize_c_noise:
+            return self.sigma_to_idx(c_noise)
+        else:
+            return c_noise

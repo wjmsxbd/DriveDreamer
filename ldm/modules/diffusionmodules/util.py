@@ -5,7 +5,63 @@ import numpy as np
 from einops import repeat
 from ldm.util import instantiate_from_config
 import math
+import torch.fft as fft  # differentiable
+from einops import rearrange,repeat
 
+def fourier_filter(x, scale, d_s=0.25):
+    dtype = x.dtype
+    x = x.type(torch.float32)
+    # FFT
+    x_freq = fft.fftn(x, dim=(-2, -1))
+    x_freq = fft.fftshift(x_freq, dim=(-2, -1))
+
+    B, C, H, W = x_freq.shape
+    mask = torch.ones((B, C, H, W)).cuda()
+
+    for h in range(H):
+        for w in range(W):
+            d_square = (2 * h / H - 1) ** 2 + (2 * w / W - 1) ** 2
+            if d_square <= 2 * d_s:
+                mask[..., h, w] = scale
+
+    x_freq = x_freq * mask
+
+    # IFFT
+    x_freq = fft.ifftshift(x_freq, dim=(-2, -1))
+    x_filtered = fft.ifftn(x_freq, dim=(-2, -1)).real
+
+    x_filtered = x_filtered.type(dtype)
+    return x_filtered
+
+
+def fourier_filter_3d(x, scale, num_frames, d_s=0.25, d_t=0.25):
+    dtype = x.dtype
+    x = x.type(torch.float32)
+    x_ = rearrange(x, "(b t) c h w -> b c t h w", t=num_frames)
+
+    # FFT
+    x_freq = fft.fftn(x_, dim=(-3, -2, -1))
+    x_freq = fft.fftshift(x_freq, dim=(-3, -2, -1))
+
+    B, C, T, H, W = x_freq.shape
+    mask = torch.ones((B, C, T, H, W)).cuda()
+
+    for t in range(T):
+        for h in range(H):
+            for w in range(W):
+                d_square = (d_s / d_t * (2 * t / T - 1)) ** 2 + (2 * h / H - 1) ** 2 + (2 * w / W - 1) ** 2
+                if d_square <= 2 * d_s:
+                    mask[..., t, h, w] = scale
+
+    x_freq = x_freq * mask
+
+    # IFFT
+    x_freq = fft.ifftshift(x_freq, dim=(-3, -2, -1))
+    x_filtered = fft.ifftn(x_freq, dim=(-3, -2, -1)).real
+
+    x_filtered = rearrange(x_filtered, "b c t h w -> (b t) c h w")
+    x_filtered = x_filtered.type(dtype)
+    return x_filtered
 
 def make_beta_schedule(schedule, n_timestep, linear_start=1e-4, linear_end=2e-2, cosine_s=8e-3):
     if schedule == "linear":

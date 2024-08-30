@@ -10,9 +10,9 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "args":[
-                "--base","configs/autoencoder_finetune.yaml",//"configs/first_stage_step1_config_online2.yaml"
-                "--train","True"
+            "args": [
+                // "--base","configs/video_decoder.yaml",
+                // "--train","True"
             ]
         }
     ]

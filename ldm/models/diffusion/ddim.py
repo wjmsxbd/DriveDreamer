@@ -58,6 +58,63 @@ class DDIMSampler(object):
         self.register_buffer('ddim_sigmas_for_original_num_steps', sigmas_for_original_sampling_steps)
 
     @torch.no_grad()
+    def sample_video(self,
+               S,
+               batch_size,
+               shape,
+               conditioning=None,
+               callback=None,
+               normals_sequence=None,
+               img_callback=None,
+               quantize_x0=False,
+               eta=0.,
+               mask=None,
+               x0=None,
+               temperature=1.,
+               noise_dropout=0.,
+               score_corrector=None,
+               corrector_kwargs=None,
+               verbose=True,
+               x_T=None,
+               log_every_t=100,
+               unconditional_guidance_scale=1.,
+               unconditional_conditioning=None,
+               # this has to come in the same format as the conditioning, # e.g. as encoded tokens, ...
+               movie_len=None,
+               **kwargs
+                ):
+        assert movie_len is not None
+        if conditioning is not None:
+            if isinstance(conditioning,dict):
+                cbs = conditioning[list(conditioning.keys())[0]].shape[0]
+                print(f"cbs:{cbs},batch_size:{batch_size},movie_len:{movie_len}")
+                if cbs != batch_size * movie_len:
+                    print(f"Warning: Got {cbs} conditionings but batch-size is {batch_size*movie_len}")
+            else:
+                if conditioning.shape[0] != batch_size * movie_len:
+                    print(f"Warning: Got {conditioning.shape[0]} conditionings but batch-size is {batch_size*movie_len}")
+        
+        self.make_schedule(ddim_num_steps=S, ddim_eta=eta, verbose=verbose)
+        C,H,W = shape
+        size = (batch_size*movie_len,C,H,W)
+        print(f'Data shape for DDIM sampling is {size}, eta {eta}')
+        samples = self.ddim_sampling_video(conditioning, size,
+                                            callback=callback,
+                                            img_callback=img_callback,
+                                            quantize_denoised=quantize_x0,
+                                            mask=mask, x0=x0,
+                                            ddim_use_original_steps=False,
+                                            noise_dropout=noise_dropout,
+                                            temperature=temperature,
+                                            score_corrector=score_corrector,
+                                            corrector_kwargs=corrector_kwargs,
+                                            x_T=x_T,
+                                            log_every_t=log_every_t,
+                                            unconditional_guidance_scale=unconditional_guidance_scale,
+                                            unconditional_conditioning=unconditional_conditioning,movie_len=movie_len)
+        return samples
+
+    @torch.no_grad()
     def sample(self,
                S,
                batch_size,
@@ -113,6 +170,57 @@ class DDIMSampler(object):
                                                     unconditional_conditioning=unconditional_conditioning,
                                                     )
         return samples, intermediates
+
+    @torch.no_grad()
+    def ddim_sampling_video(self, cond, shape,
+                      x_T=None, ddim_use_original_steps=False,
+                      callback=None, timesteps=None, quantize_denoised=False,
+                      mask=None, x0=None, img_callback=None, log_every_t=100,
+                      temperature=1., noise_dropout=0., score_corrector=None, corrector_kwargs=None,
+                      unconditional_guidance_scale=1., unconditional_conditioning=None,movie_len=None):
+        device = self.model.betas.device
+        b = shape[0]
+        if x_T is None:
+            img = torch.randn(shape, device=device)
+            lidar_img = img
+            # img[::movie_len] = cond['x_start'][::movie_len]
+            # lidar_img[::movie_len] = cond['lidar_start'][::movie_len]
+        else:
+            raise NotImplementedError
+
+        if timesteps is None:
+            timesteps = self.ddpm_num_timesteps if ddim_use_original_steps else self.ddim_timesteps
+        elif timesteps is not None and not ddim_use_original_steps:
+            subset_end = int(min(timesteps / self.ddim_timesteps.shape[0], 1) * self.ddim_timesteps.shape[0]) - 1
+            timesteps = self.ddim_timesteps[:subset_end]
+
+        time_range = reversed(range(0,timesteps)) if ddim_use_original_steps else np.flip(timesteps)
+        total_steps = timesteps if ddim_use_original_steps else timesteps.shape[0]
+        print(f"Running DDIM Sampling with {total_steps} timesteps")
+
+        iterator = tqdm(time_range, desc='DDIM Sampler', total=total_steps)
+        img = torch.cat([img,lidar_img],dim=0)
+        for i, step in enumerate(iterator):
+            index = total_steps - i - 1
+            ts = torch.full((b,), step, device=device, dtype=torch.long)
+            img,lidar_img = torch.chunk(img,2,dim=0)
+            if mask is not None:
+                assert x0 is not None
+                img_orig = self.model.q_sample(x0, ts)  # TODO: deterministic forward pass?
+                img = img_orig * mask + (1. - mask) * img
+            
+            outs = self.p_sample_ddim([img,lidar_img], cond, ts, index=index, use_original_steps=ddim_use_original_steps,
+                                      quantize_denoised=quantize_denoised, temperature=temperature,
+                                      noise_dropout=noise_dropout, score_corrector=score_corrector,
+                                      corrector_kwargs=corrector_kwargs,
+                                      unconditional_guidance_scale=unconditional_guidance_scale,
+                                      unconditional_conditioning=unconditional_conditioning,
+                                      )
+            img, pred_x0= outs
+            if callback: callback(i)
+            if img_callback: img_callback(pred_x0, i)
+
+        return img
 
     @torch.no_grad()
     def ddim_sampling(self, cond, shape,

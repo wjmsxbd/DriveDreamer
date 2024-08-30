@@ -34,15 +34,15 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 1
+    batch_size: 2
     wrap: False
     num_workers: 2
     train:
       target: data.dataloader_onlyvideo.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
           img_size: [256,128]
           capture_frequency: 12
         num_boxes: 70
@@ -74,4 +74,4 @@ lightning:
 
   trainer:
     benchmark: True
-    gpus: 0,1,
+    gpus: 0,1,2,3,

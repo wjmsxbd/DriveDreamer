@@ -96,11 +96,12 @@ model:
       target: ldm.models.condition.GlobalCondition
       params:
         image_config:
-          target: ldm.models.autoencoder.AutoencoderKL_Diffusion
+          target: ldm.models.autoencoder.AutoencoderKL_Temporal
           params:
             embed_dim: 4
             monitor: "val/rec_loss"
-            ckpt_path: logs/2024-08-18T20-33-08_video_decoder/checkpoints/last.ckpt
+            ckpt_path: stable_diffusion/kl-f8.ckpt
+            safetensor_path: stable_diffusion/vista.safetensors
             trainable: False
             ddconfig:
               double_z: True
@@ -166,7 +167,7 @@ data:
   params:
     batch_size: 2
     wrap: False
-    num_workers: 4
+    num_workers: 2
     train:
       target: data.dataloader_predict_video.dataloader
       params:

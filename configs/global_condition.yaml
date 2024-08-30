@@ -134,7 +134,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 1
+    batch_size: 2
     wrap: False
     num_workers: 2
     train:
@@ -145,7 +145,7 @@ data:
           dataroot: /storage/group/4dvlab/datasets/nuScenes/
           img_size: [256,128]
           nusc_canbus_frequency: 50
-          camera_frequency: 12
+          camera_frequency: 3
         num_boxes: 70
         movie_len: 5
         split_name: train
@@ -158,7 +158,7 @@ data:
           dataroot: /storage/group/4dvlab/datasets/nuScenes/
           img_size: [256,128]
           nusc_canbus_frequency: 50
-          camera_frequency: 12
+          camera_frequency: 3
         num_boxes: 70
         movie_len: 5
         split_name: val
@@ -177,6 +177,7 @@ lightning:
   trainer:
     benchmark: True
     gpus: 0,1,2,3
+    num_nodes: 1
     
 
     

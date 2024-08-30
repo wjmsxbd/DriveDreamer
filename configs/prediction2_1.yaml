@@ -1,6 +1,6 @@
 model:
   base_learning_rate: 5e-6
-  target: ldm.models.diffusion.ddpm.AutoDM_GlobalCondition
+  target: ldm.models.diffusion.ddpm.AutoDM_GlobalCondition2
   params:
     base_learning_rate: 5e-6
     linear_start: 0.0015
@@ -13,13 +13,60 @@ model:
     channels: 4
     cond_stage_trainable: True
     scale_by_std: True
-    monitor: 'val/loss_simple'
+    monitor: 'val/loss'
     unet_trainable: True
     learn_logvar: True
     downsample_img_size: [16,32]
     init_from_video_model: False
     movie_len: 5
     predict: True
+    use_additional_loss: True
+    replace_cond_frames: True
+    fixed_cond_frames: [0]
+    sampler_config:
+      target: ldm.modules.diffusionmodules.sampling.EulerEDMSampler
+      params:
+        num_steps: 15
+
+        discretization_config:
+          target: ldm.modules.diffusionmodules.discretizer.EDMDiscretization
+          params:
+            sigma_max: 700.0
+
+        guider_config:
+          target: ldm.modules.diffusionmodules.guiders.IdentityGuider
+    denoiser_config:
+      target: ldm.modules.diffusionmodules.denoiser.Denoiser
+      params:
+        movie_len: 5
+
+        scaling_config:
+          target: ldm.modules.diffusionmodules.denoiser_scaling.VScalingWithEDMcNoise
+
+    loss_fn_config:
+      target: ldm.modules.diffusionmodules.loss.StandardDiffusionLoss
+      params:
+        use_additional_loss: True
+        offset_noise_level: 0.02
+        additional_loss_weight: 0.1
+        movie_len: 5
+        replace_cond_frames: true
+        cond_frames_choices:
+          - [ ]
+          - [ 0 ]
+          - [ 0, 1 ]
+          - [ 0, 1, 2 ]
+
+        sigma_sampler_config:
+          target: ldm.modules.diffusionmodules.sigma_sampling.EDMSampling
+          params:
+            p_mean: 1.0
+            p_std: 1.6
+            num_frames: 5
+
+        loss_weighting_config:
+          target: ldm.modules.diffusionmodules.loss_weighting.VWeighting
+
     cond_stage_config: 
       target: ldm.models.autoencoder.FrozenCLIPTextEmbedder
     scheduler_config: #10000 warmup steps
@@ -47,6 +94,7 @@ model:
         context_dim: 768
         use_checkpoint: False
         use_spatial_transformer: True
+        use_cond_mask: True
         # ckpt_path: stable_diffusion/sd-v1-4.ckpt
         ckpt_path: logs/2024-08-06T07-11-46_global_condition/checkpoints/last.ckpt
         # ckpt_path: logs/2024-08-04T21-52-13_global_condition/checkpoints/last.ckpt
@@ -182,6 +230,7 @@ data:
         num_boxes: 70
         movie_len: 5
         split_name: train
+        return_pose_info: True
   
     validation:
       target: data.dataloader_predict_video.dataloader
@@ -202,7 +251,7 @@ lightning:
     video_logger:
       target: main.VideoLogger
       params:
-        batch_frequency: 500
+        batch_frequency: 1000
         max_videos: 8
         fps: 5
         increase_log_steps: False

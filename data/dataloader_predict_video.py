@@ -58,7 +58,7 @@ class dataloader(data.Dataset):
             'singapore-queenstown': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-queenstown'),
         }
         self.nusc_can = NuScenesCanBus(dataroot=cfg['dataroot'])
-        self.nusc_can = NuScenesCanBus(dataroot='/storage/group/4dvlab/datasets/nuScenes')
+        
         self.return_pose_info = return_pose_info
         self.load_data_infos()
 
@@ -275,22 +275,22 @@ if __name__ == "__main__":
         num_workers =   2,
         collate_fn=collate_fn
     )
-    # network = instantiate_from_config(cfg['model'])
-    # model_path = 'logs/2024-08-22T11-49-40_prediction2_1/checkpoints/epoch=000116.ckpt'
-    # network.init_from_ckpt(model_path)
-    # network = network.eval().cuda()
-    # # network = network.eval()
-    # save_path = 'all_pics/'
-    # save_path = save_path + 'prediction2_1/'
-    # # 35
-    # if not os.path.exists(save_path):
-    #     os.makedirs(save_path)
+    network = instantiate_from_config(cfg['model'])
+    model_path = 'logs/2024-08-22T20-20-05_prediction2_4/checkpoints/epoch=000390.ckpt'
+    network.init_from_ckpt(model_path)
+    network = network.eval().cuda()
+    # network = network.eval()
+    save_path = 'all_pics/'
+    save_path = save_path + 'prediction2_4/'
+    # 35
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
     for _,batch in tqdm(enumerate(data_loader_)):
-        # batch = {k:v.cuda() if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
-        # # batch = {k:v if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
-        # logs = network.log_video(batch)
-        # save_tensor_as_video(logs['inputs'],file_path=save_path+f'inputs_{_:02d}.png')
-        # save_tensor_as_video(logs['samples'],file_path=save_path+f'samples{_:02d}.png')
-        # save_tensor_as_video(logs['lidar_samples'],file_path=save_path+f'lidar_samples{_:02d}.png')
-        # save_tensor_as_video(logs['lidar_inputs'],file_path=save_path+f'lidar_inputs{_:02d}.png')
+        batch = {k:v.cuda() if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
+        # batch = {k:v if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
+        logs = network.log_video(batch)
+        save_tensor_as_video(logs['inputs'],file_path=save_path+f'inputs_{_:02d}.png')
+        save_tensor_as_video(logs['samples'],file_path=save_path+f'samples{_:02d}.png')
+        save_tensor_as_video(logs['lidar_samples'],file_path=save_path+f'lidar_samples{_:02d}.png')
+        save_tensor_as_video(logs['lidar_inputs'],file_path=save_path+f'lidar_inputs{_:02d}.png')
         pass

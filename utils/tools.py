@@ -32,7 +32,6 @@ from einops import rearrange
 import matplotlib
 import imageio
 from io import BytesIO
-from memory_profiler import profile
 # import objgraph
 # from pympler import tracker,summary,muppy
 
@@ -263,7 +262,6 @@ def get_hdmap_with_fig(fig,
     ax.cla()
     return hdmap
 
-# @profile(precision=4,stream=open('log.txt',"w+",encoding="utf-8"))
 def get_hdmap(sample_data_token:str,
               nusc:NuScenes,
               nusc_map:NuScenesMap,
@@ -413,7 +411,6 @@ def get_image_info(sample_data_token:str,
 
     return data_path,cs_record,pose_record,cam_intrinsic,imsize,yaw,translation
 
-# @profile(precision=4,stream=open('log.txt',"w+",encoding="utf-8"))
 def convert_fig_to_numpy(fig,imsize):
     canvas = FigureCanvasAgg(fig)    
     canvas.draw()
@@ -421,7 +418,6 @@ def convert_fig_to_numpy(fig,imsize):
     img = np.frombuffer(buf, np.uint8).reshape(imsize[1],imsize[0],4)
     # canvas.close_event()
     return img
-# @profile(precision=4,stream=open('log.txt',"w+",encoding="utf-8"))
 def convert_fig_to_numpy2(fig):
     import PIL.Image as Image
     fig.canvas.draw()
@@ -432,17 +428,12 @@ def convert_fig_to_numpy2(fig):
     image = Image.frombytes("RGBA",(w,h),buf.tostring())
     image = np.asarray(image)
     return image
-# @profile(precision=4,stream=open('log.txt',"w+",encoding="utf-8"))
 def convert_fig_to_numpy3(fig):
     buf = BytesIO()
     fig.savefig(buf, format='png')
-    buf.seek(0)  # 将 BytesIO 的指针重置到开头
+    buf.seek(0)
     img = Image.open(buf)
-
-    # 将 PIL Image 对象转换为 numpy 数组
     img_np = np.array(img)
-
-    # 关闭虚拟文件对象
     buf.close()
     return img_np
 
@@ -474,7 +465,7 @@ def get_this_scene_info(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_to
     box_list = np.array(box_list)
     plt.close(hdmap_fig)
     return cam_front_img,box_list,now_hdmap,box_category,yaw,translation
-@profile(precision=4,stream=open('log.txt',"w+",encoding="utf-8"))
+
 def get_this_scene_info_with_lidar_figax(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448),return_camera_info=False,fig=None,ax=None):
     matplotlib.use("Agg")
     sample_record = nusc.get('sample',sample_token)
@@ -521,7 +512,7 @@ def get_this_scene_info_with_lidar_figax(dataset_dir,nusc:NuScenes,nusc_map:NuSc
     else:
         return cam_front_img,box_list,now_hdmap,box_category,range_image,dense_range_image,cam_front_record,cam_poserecord,Lidar_TOP_record,Lidar_TOP_poserecord
 
-@profile(precision=4,stream=open('log.txt',"w+",encoding="utf-8"))
+# @profile(precision=4,stream=open('log.txt',"w+",encoding="utf-8"))
 def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448),return_camera_info=False):
     # matplotlib.use("Agg")
     sample_record = nusc.get('sample',sample_token)

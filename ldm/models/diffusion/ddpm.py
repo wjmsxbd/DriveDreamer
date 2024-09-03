@@ -424,8 +424,8 @@ class DiffusionWrapper(pl.LightningModule):
     def from_pretrained_model(self,model_path):
         self.diffusion_model.from_pretrained_model(model_path)
 
-    def forward(self,x,t,y=None,boxes_emb=None,text_emb=None,cond_mask=None):
-        return self.diffusion_model(x,t,y=y,boxes_emb=boxes_emb,text_emb=text_emb,cond_mask=cond_mask)
+    def forward(self,x,t,y=None,boxes_emb=None,text_emb=None,cond_mask=None,actions=None):
+        return self.diffusion_model(x,t,y=y,boxes_emb=boxes_emb,text_emb=text_emb,cond_mask=cond_mask,actions=actions)
 
 #TODO:whether need split image
 class AutoDM(DDPM):
@@ -2779,47 +2779,59 @@ class AutoDM_GlobalCondition(DDPM):
 
     @torch.no_grad()
     def get_input(self,batch,return_first_stage_outputs=False):
+        condition_keys = batch.keys()
         b = batch['reference_image'].shape[0]
         ref_img = super().get_input(batch,'reference_image') # (b n c h w)
-        hdmap = super().get_input(batch,'HDmap') # (b n c h w)
-        range_image = super().get_input(batch,'range_image') # (b n c h w)
-        dense_range_image = super().get_input(batch,'dense_range_image') # (b n c h w)
-        boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d').contiguous()
-        boxes_category = np.zeros((len(batch['category']),self.movie_len,len(batch['category'][0][0]),768))
-        for i in range(len(batch['category'])):
-            for j in range(self.movie_len):
-                for k in range(len(batch['category'][0][0])):
-                    boxes_category[i][j][k] = self.clip(batch['category'][i][j][k]).cpu().detach().numpy()
-        boxes_category = boxes_category.reshape(b*self.movie_len,len(batch['category'][0][0]),768)
-        boxes_category = torch.tensor(boxes_category).to(self.device)
-        text = np.zeros((len(batch['text']),self.movie_len,768))
-        for i in range(len(batch['text'])):
-            for j in range(self.movie_len):
-                text[i,j] = self.clip(batch['text'][i][j]).cpu().detach().numpy()
-        text = text.reshape(b*self.movie_len,1,768)
-        text = torch.tensor(text).to(self.device)
         batch['reference_image'] = ref_img
-        batch['HDmap'] = hdmap
-        batch['3Dbox'] = boxes
-        batch['category'] = boxes_category
-        batch['text'] = text
-        batch['range_image'] = range_image
-        batch['dense_range_image'] = dense_range_image
-        if self.predict:
+        if 'HDmap' in condition_keys:
+            hdmap = super().get_input(batch,'HDmap') # (b n c h w)
+            batch['HDmap'] = hdmap
+        if 'range_image' in condition_keys:
+            range_image = super().get_input(batch,'range_image') # (b n c h w)
+            batch['range_image'] = range_image
+        if 'dense_range_image' in condition_keys:
+            dense_range_image = super().get_input(batch,'dense_range_image') # (b n c h w)
+            batch['dense_range_image'] = dense_range_image
+        if '3Dbox' in condition_keys:
+            boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d').contiguous()
+            boxes_category = np.zeros((len(batch['category']),self.movie_len,len(batch['category'][0][0]),768))
+            for i in range(len(batch['category'])):
+                for j in range(self.movie_len):
+                    for k in range(len(batch['category'][0][0])):
+                        boxes_category[i][j][k] = self.clip(batch['category'][i][j][k]).cpu().detach().numpy()
+            boxes_category = boxes_category.reshape(b*self.movie_len,len(batch['category'][0][0]),768)
+            boxes_category = torch.tensor(boxes_category).to(self.device)
+            batch['3Dbox'] = boxes
+            batch['category'] = boxes_category
+        if 'text' in condition_keys:
+            text = np.zeros((len(batch['text']),self.movie_len,768))
+            for i in range(len(batch['text'])):
+                for j in range(self.movie_len):
+                    text[i,j] = self.clip(batch['text'][i][j]).cpu().detach().numpy()
+            text = text.reshape(b*self.movie_len,1,768)
+            text = torch.tensor(text).to(self.device)
+            batch['text'] = text
+        if 'actions' in condition_keys:
             batch['actions'] = batch['actions']
         batch = {k:v.to(torch.float32) for k,v in batch.items()}
 
-        condition_out = self.global_condition.get_conditions(batch,return_encoder_posterior=True)
+        condition_out = self.global_condition.get_conditions(batch)
+
         z = condition_out['ref_image']
         lidar_z = condition_out['range_image']
         
         out = [z,lidar_z]
+        condition_keys = condition_out.keys()
         c = {}
-        c['hdmap'] = condition_out['hdmap'].to(torch.float32)
-        c['boxes_emb'] = condition_out['boxes_emb'].to(torch.float32)
-        c['text_emb'] = condition_out['text_emb'].to(torch.float32)
-        c['dense_range_image'] = condition_out['dense_range_image']
-        if self.predict:
+        if 'hdmap' in condition_keys:
+            c['hdmap'] = condition_out['hdmap'].to(torch.float32)
+        if 'boxes_emb' in condition_keys:
+            c['boxes_emb'] = condition_out['boxes_emb'].to(torch.float32)
+        if 'text_emb' in condition_keys:
+            c['text_emb'] = condition_out['text_emb'].to(torch.float32)
+        if 'dense_range_image' in condition_keys:
+            c['dense_range_image'] = condition_out['dense_range_image']
+        if 'actions' in condition_keys:
             c['actions'] = condition_out['actions']
         if return_first_stage_outputs:
             x_rec = self.global_condition.decode_first_stage_interface("reference_image",z)
@@ -2830,48 +2842,58 @@ class AutoDM_GlobalCondition(DDPM):
         
     # c = {'hdmap':...,"boxes":...,'category':...,"text":...}
     def shared_step(self,batch,**kwargs):
+        condition_keys = batch.keys()
         b = batch['reference_image'].shape[0]
         ref_img = super().get_input(batch,'reference_image') # (b n c h w)
-        hdmap = super().get_input(batch,'HDmap') # (b n c h w)
-        range_image = super().get_input(batch,'range_image') # (b n c h w)
-        dense_range_image = super().get_input(batch,'dense_range_image') # (b n c h w)
-        boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d').contiguous()
-
-        boxes_category = np.zeros((len(batch['category']),self.movie_len,len(batch['category'][0][0]),768))
-        for i in range(len(batch['category'])):
-            for j in range(self.movie_len):
-                for k in range(len(batch['category'][0][0])):
-                    boxes_category[i][j][k] = self.clip(batch['category'][i][j][k]).cpu().detach().numpy()
-        boxes_category = boxes_category.reshape(b*self.movie_len,len(batch['category'][0][0]),768)
-        boxes_category = torch.tensor(boxes_category).to(self.device)
-        text = np.zeros((len(batch['text']),self.movie_len,768))
-        for i in range(len(batch['text'])):
-            for j in range(self.movie_len):
-                text[i,j] = self.clip(batch['text'][i][j]).cpu().detach().numpy()
-        text = text.reshape(b*self.movie_len,1,768)
-        text = torch.tensor(text).to(self.device)
         batch['reference_image'] = ref_img
-        batch['HDmap'] = hdmap
-        batch['3Dbox'] = boxes
-        batch['category'] = boxes_category
-        batch['text'] = text
-        batch['range_image'] = range_image
-        batch['dense_range_image'] = dense_range_image
-        if self.predict:
+        if 'HDmap' in condition_keys:
+            hdmap = super().get_input(batch,'HDmap') # (b n c h w)
+            batch['HDmap'] = hdmap
+        if 'range_image' in condition_keys:
+            range_image = super().get_input(batch,'range_image') # (b n c h w)
+            batch['range_image'] = range_image
+        if 'dense_range_image' in condition_keys:
+            dense_range_image = super().get_input(batch,'dense_range_image') # (b n c h w)
+            batch['dense_range_image'] = dense_range_image
+        if '3Dbox' in condition_keys:
+            boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d').contiguous()
+            boxes_category = np.zeros((len(batch['category']),self.movie_len,len(batch['category'][0][0]),768))
+            for i in range(len(batch['category'])):
+                for j in range(self.movie_len):
+                    for k in range(len(batch['category'][0][0])):
+                        boxes_category[i][j][k] = self.clip(batch['category'][i][j][k]).cpu().detach().numpy()
+            boxes_category = boxes_category.reshape(b*self.movie_len,len(batch['category'][0][0]),768)
+            boxes_category = torch.tensor(boxes_category).to(self.device)
+            batch['3Dbox'] = boxes
+            batch['category'] = boxes_category
+        if 'text' in condition_keys:
+            text = np.zeros((len(batch['text']),self.movie_len,768))
+            for i in range(len(batch['text'])):
+                for j in range(self.movie_len):
+                    text[i,j] = self.clip(batch['text'][i][j]).cpu().detach().numpy()
+            text = text.reshape(b*self.movie_len,1,768)
+            text = torch.tensor(text).to(self.device)
+            batch['text'] = text
+        if 'actions' in condition_keys:
             batch['actions'] = batch['actions']
         batch = {k:v.to(torch.float32) for k,v in batch.items()}
 
         out = self.global_condition.get_conditions(batch)
+        condition_keys = out.keys()
         range_image = out['range_image']
         x = out['ref_image'].to(torch.float32)
         c = {}
-        c['hdmap'] = out['hdmap'].to(torch.float32)
-        c['boxes_emb'] = out['boxes_emb'].to(torch.float32)
-        c['text_emb'] = out['text_emb'].to(torch.float32)
-        c['dense_range_image'] = out['dense_range_image']
-        c['origin_range_image'] = range_image
-        if self.predict:
+        if 'hdmap' in condition_keys:
+            c['hdmap'] = out['hdmap'].to(torch.float32)
+        if 'boxes_emb' in condition_keys:
+            c['boxes_emb'] = out['boxes_emb'].to(torch.float32)
+        if 'text_emb' in condition_keys:
+            c['text_emb'] = out['text_emb'].to(torch.float32)
+        if 'dense_range_image' in condition_keys:
+            c['dense_range_image'] = out['dense_range_image']
+        if 'actions' in condition_keys:
             c['actions'] = out['actions']
+        c['origin_range_image'] = range_image
         loss,loss_dict = self(x,range_image,c)
         return loss,loss_dict
 
@@ -2990,18 +3012,33 @@ class AutoDM_GlobalCondition(DDPM):
                 return x_recon,range_recon
             return x_recon
         else:
-            if not self.predict:
-                boxes_emb = cond['boxes_emb']
-                text_emb = cond['text_emb']
-                dense_range_image = cond['dense_range_image']
+            condition_keys = cond.keys()
+            if not 'action' in condition_keys:
+                if 'boxes_emb' in condition_keys:
+                    boxes_emb = cond['boxes_emb']
+                    boxes_emb = torch.cat([boxes_emb,boxes_emb],dim=0)
+                else:
+                    boxes_emb = None
+                if 'text_emb' in condition_keys:
+                    text_emb = cond['text_emb']
+                    text_emb = torch.cat([text_emb,text_emb],dim=0)
+                else:
+                    text_emb = None
+                if 'hdmap' in condition_keys and 'dense_range_image' in condition_keys:
+                    dense_range_image = cond['dense_range_image']
+                    z = torch.cat([x_noisy,cond['hdmap']],dim=1)
+                    lidar_z = torch.cat([range_image_noisy,dense_range_image],dim=1)
+                elif not 'hdmap' in condition_keys and not 'dense_range_image' in condition_keys:
+                    z = x_noisy
+                    lidar_z = range_image_noisy
+                else:
+                    raise NotImplementedError
+                z = torch.cat([z,lidar_z])
                 classes = torch.tensor([[1.,0.],[0.,1.]],device=self.device,dtype=self.dtype)
                 classes_emb = torch.cat([torch.sin(classes),torch.cos(classes)],dim=-1)
-                z = torch.cat([x_noisy,cond['hdmap']],dim=1)
-                lidar_z = torch.cat([range_image_noisy,dense_range_image],dim=1)
-                z = torch.cat([z,lidar_z],dim=0)
+
                 class_label = torch.zeros((z.shape[0],4),device=self.device)
-                boxes_emb = torch.cat([boxes_emb,boxes_emb],dim=0)
-                text_emb = torch.cat([text_emb,text_emb],dim=0)
+
                 for i in range(z.shape[0]):
                     if i < z.shape[0] // 2:
                         class_label[i] = classes_emb[0]
@@ -3010,43 +3047,52 @@ class AutoDM_GlobalCondition(DDPM):
                 #TODO:need reshape z
                 x_recon = self.model(z,t,y=class_label,boxes_emb=boxes_emb,text_emb=text_emb)
             else:
-                boxes_emb = cond['boxes_emb']
-                text_emb = cond['text_emb']
-                dense_range_image = cond['dense_range_image']
-                b = boxes_emb.shape[0] // self.movie_len
-                boxes_emb = boxes_emb.reshape((b,self.movie_len)+boxes_emb.shape[1:])
-                boxes_emb = boxes_emb[:,0]
-                hdmap = cond['hdmap'].reshape((b,self.movie_len)+cond['hdmap'].shape[1:])[:,0]
-                actions = cond['actions']
-                dense_range_image = dense_range_image.reshape((b,self.movie_len)+dense_range_image.shape[1:])[:,0]
-                # x_noisy = x_noisy.reshape((b,self.movie_len)+x_noisy.shape[1:]) [:,0:1]
-                # range_image_noisy = range_image_noisy.reshape((b,self.movie_len)+range_image_noisy.shape[1:])[:,0:1]
+                b = x_noisy.shape[0] // self.movie_len
+                if 'boxes_emb' in condition_keys:
+                    boxes_emb = cond['boxes_emb']
+                    boxes_emb = boxes_emb.reshape((b,self.movie_len)+boxes_emb.shape[1:])
+                    boxes_emb = boxes_emb[:,0]
+                else:
+                    boxes_emb = None
+                if 'text_emb' in condition_keys:
+                    text_emb = cond['text_emb']
+                    text_emb = torch.cat([text_emb,text_emb],dim=0)
+                else:
+                    text_emb = None
+                if 'hdmap' in condition_keys and 'dense_range_image' in condition_keys:
+                    dense_range_image = cond['dense_range_image']
+                    hdmap = cond['hdmap'].reshape((b,self.movie_len)+cond['hdmap'].shape[1:])[:,0]
+                    actions = cond['actions']
+                    dense_range_image = dense_range_image.reshape((b,self.movie_len)+dense_range_image.shape[1:])[:,0]
+                    h = self.action_former(hdmap,boxes_emb,actions,dense_range_image)
+                    latent_hdmap = torch.stack([h[id][0] for id in range(len(h))]).reshape(cond['hdmap'].shape)
+                    latent_boxes = torch.stack([h[id][1] for id in range(len(h))]).reshape(cond['boxes_emb'].shape)
+                    latent_dense_range_image = torch.stack([h[id][2] for id in range(len(h))]).reshape(cond['dense_range_image'].shape)
+                    boxes_emb = torch.cat([latent_boxes,latent_boxes],dim=0)
 
-                h = self.action_former(hdmap,boxes_emb,actions,dense_range_image)
-                latent_hdmap = torch.stack([h[id][0] for id in range(len(h))]).reshape(cond['hdmap'].shape)
-                latent_boxes = torch.stack([h[id][1] for id in range(len(h))]).reshape(cond['boxes_emb'].shape)
-                latent_dense_range_image = torch.stack([h[id][2] for id in range(len(h))]).reshape(cond['dense_range_image'].shape)
+                    z = torch.cat([x_noisy,latent_hdmap],dim=1)
+                    lidar_z = torch.cat([range_image_noisy,latent_dense_range_image],dim=1)
+                    actions = None
+                elif not 'hdmap' in condition_keys and not 'dense_range_image' in condition_keys:
+                    z = x_noisy
+                    lidar_z = range_image_noisy
+                    actions = rearrange(cond['actions'],'b n c -> (b n) c')
+                    actions = torch.cat([actions,actions],dim=0)
+                else:
+                    raise NotImplementedError
+                z = torch.cat([z,lidar_z],dim=0)
 
-                # x_noisy = repeat(x_noisy,'b n c h w -> b (repeat n) c h w',repeat=self.movie_len)
-                # range_image_noisy = repeat(range_image_noisy,'b n c h w -> b (repeat n) c h w',repeat=self.movie_len)
-                # x_noisy = rearrange(x_noisy,'b n c h w -> (b n) c h w').contiguous()
-                # range_image_noisy = rearrange(range_image_noisy,'b n c h w -> (b n) c h w').contiguous()
                 classes = torch.tensor([[1.,0.],[0.,1.]],device=self.device,dtype=self.dtype)
                 classes_emb = torch.cat([torch.sin(classes),torch.cos(classes)],dim=-1)
-                z = torch.cat([x_noisy,latent_hdmap],dim=1)
-                lidar_z = torch.cat([range_image_noisy,latent_dense_range_image],dim=1)
 
-                z = torch.cat([z,lidar_z],dim=0)
                 class_label = torch.zeros((z.shape[0],4),device=self.device)
-                latent_boxes = torch.cat([latent_boxes,latent_boxes],dim=0)
-                text_emb = torch.cat([text_emb,text_emb],dim=0)
                 for i in range(z.shape[0]):
                     if i < z.shape[0] // 2:
                         class_label[i] = classes_emb[0]
                     else:
                         class_label[i] = classes_emb[1]
                 #TODO:need reshape z
-                x_recon = self.model(z,t,y=class_label,boxes_emb=latent_boxes,text_emb=text_emb)
+                x_recon = self.model(z,t,y=class_label,boxes_emb=boxes_emb,text_emb=text_emb,actions=actions)
 
 
 
@@ -3508,10 +3554,15 @@ class AutoDM_GlobalCondition(DDPM):
         log['lidar_reconstruction'] = range_image_rec.reshape((N,-1)+range_image_rec.shape[1:])
         # log['dense_range_image'] = c['dense_range_image'].reshape((N,-1),c['dense_range_image'].shape[1:])
         if sample:
-            c['hdmap'] = c['hdmap'][:N*self.movie_len]
-            c['boxes_emb'] = c['boxes_emb'][:N*self.movie_len]
-            c['text_emb'] = c['text_emb'][:N*self.movie_len]
-            c['dense_range_image'] = c['dense_range_image'][:N*self.movie_len]
+            condition_key = c.keys()
+            if 'hdmap' in condition_key:
+                c['hdmap'] = c['hdmap'][:N*self.movie_len]
+            if 'boxes_emb' in condition_key:
+                c['boxes_emb'] = c['boxes_emb'][:N*self.movie_len]
+            if 'text_emb' in condition_key:
+                c['text_emb'] = c['text_emb'][:N*self.movie_len]
+            if 'dense_range_image' in condition_key:
+                c['dense_range_image'] = c['dense_range_image'][:N*self.movie_len]
             c['x_start'] = z[:N*self.movie_len]
             with self.ema_scope("Plotting"):
                 # batch = {k:v.to(self.model.device) for k,v in batch.items()}
@@ -3839,47 +3890,58 @@ class AutoDM_GlobalCondition2(DDPM):
 
     @torch.no_grad()
     def get_input(self,batch,return_first_stage_outputs=False):
+        condition_keys = batch.keys()
         b = batch['reference_image'].shape[0]
         ref_img = super().get_input(batch,'reference_image') # (b n c h w)
-        hdmap = super().get_input(batch,'HDmap') # (b n c h w)
-        range_image = super().get_input(batch,'range_image') # (b n c h w)
-        dense_range_image = super().get_input(batch,'dense_range_image') # (b n c h w)
-        boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d').contiguous()
-        boxes_category = np.zeros((len(batch['category']),self.movie_len,len(batch['category'][0][0]),768))
-        for i in range(len(batch['category'])):
-            for j in range(self.movie_len):
-                for k in range(len(batch['category'][0][0])):
-                    boxes_category[i][j][k] = self.clip(batch['category'][i][j][k]).cpu().detach().numpy()
-        boxes_category = boxes_category.reshape(b*self.movie_len,len(batch['category'][0][0]),768)
-        boxes_category = torch.tensor(boxes_category).to(self.device)
-        text = np.zeros((len(batch['text']),self.movie_len,768))
-        for i in range(len(batch['text'])):
-            for j in range(self.movie_len):
-                text[i,j] = self.clip(batch['text'][i][j]).cpu().detach().numpy()
-        text = text.reshape(b*self.movie_len,1,768)
-        text = torch.tensor(text).to(self.device)
         batch['reference_image'] = ref_img
-        batch['HDmap'] = hdmap
-        batch['3Dbox'] = boxes
-        batch['category'] = boxes_category
-        batch['text'] = text
-        batch['range_image'] = range_image
-        batch['dense_range_image'] = dense_range_image
-        if self.predict:
+        if 'HDmap' in condition_keys:
+            hdmap = super().get_input(batch,'HDmap') # (b n c h w)
+            batch['HDmap'] = hdmap
+        if 'range_image' in condition_keys:
+            range_image = super().get_input(batch,'range_image') # (b n c h w)
+            batch['range_image'] = range_image
+        if 'dense_range_image' in condition_keys:
+            dense_range_image = super().get_input(batch,'dense_range_image') # (b n c h w)
+            batch['dense_range_image'] = dense_range_image
+        if '3Dbox' in condition_keys:
+            boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d').contiguous()
+            boxes_category = np.zeros((len(batch['category']),self.movie_len,len(batch['category'][0][0]),768))
+            for i in range(len(batch['category'])):
+                for j in range(self.movie_len):
+                    for k in range(len(batch['category'][0][0])):
+                        boxes_category[i][j][k] = self.clip(batch['category'][i][j][k]).cpu().detach().numpy()
+            boxes_category = boxes_category.reshape(b*self.movie_len,len(batch['category'][0][0]),768)
+            boxes_category = torch.tensor(boxes_category).to(self.device)
+            batch['3Dbox'] = boxes
+            batch['category'] = boxes_category
+        if 'text' in condition_keys:
+            text = np.zeros((len(batch['text']),self.movie_len,768))
+            for i in range(len(batch['text'])):
+                for j in range(self.movie_len):
+                    text[i,j] = self.clip(batch['text'][i][j]).cpu().detach().numpy()
+            text = text.reshape(b*self.movie_len,1,768)
+            text = torch.tensor(text).to(self.device)
+            batch['text'] = text
+        if 'actions' in condition_keys:
             batch['actions'] = batch['actions']
         batch = {k:v.to(torch.float32) for k,v in batch.items()}
 
-        condition_out = self.global_condition.get_conditions(batch,return_encoder_posterior=True)
+        condition_out = self.global_condition.get_conditions(batch)
+        condition_keys = condition_out.keys()
         z = condition_out['ref_image']
         lidar_z = condition_out['range_image']
         
         out = [z,lidar_z]
         c = {}
-        c['hdmap'] = condition_out['hdmap'].to(torch.float32)
-        c['boxes_emb'] = condition_out['boxes_emb'].to(torch.float32)
-        c['text_emb'] = condition_out['text_emb'].to(torch.float32)
-        c['dense_range_image'] = condition_out['dense_range_image']
-        if self.predict:
+        if 'hdmap' in condition_keys:
+            c['hdmap'] = condition_out['hdmap'].to(torch.float32)
+        if 'boxes_emb' in condition_keys:
+            c['boxes_emb'] = condition_out['boxes_emb'].to(torch.float32)
+        if 'text_emb' in condition_keys:
+            c['text_emb'] = condition_out['text_emb'].to(torch.float32)
+        if 'dense_range_image' in condition_keys:
+            c['dense_range_image'] = condition_out['dense_range_image']
+        if 'actions' in condition_keys:
             c['actions'] = condition_out['actions']
         if return_first_stage_outputs:
             x_rec = self.global_condition.decode_first_stage_interface("reference_image",z)
@@ -3890,49 +3952,59 @@ class AutoDM_GlobalCondition2(DDPM):
         
     # c = {'hdmap':...,"boxes":...,'category':...,"text":...}
     def shared_step(self,batch,**kwargs):
+        condition_keys = batch.keys()
         b = batch['reference_image'].shape[0]
         ref_img = super().get_input(batch,'reference_image') # (b n c h w)
-        hdmap = super().get_input(batch,'HDmap') # (b n c h w)
-        range_image = super().get_input(batch,'range_image') # (b n c h w)
-        dense_range_image = super().get_input(batch,'dense_range_image') # (b n c h w)
-        boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d').contiguous()
-
-        boxes_category = np.zeros((len(batch['category']),self.movie_len,len(batch['category'][0][0]),768))
-        for i in range(len(batch['category'])):
-            for j in range(self.movie_len):
-                for k in range(len(batch['category'][0][0])):
-                    boxes_category[i][j][k] = self.clip(batch['category'][i][j][k]).cpu().detach().numpy()
-        boxes_category = boxes_category.reshape(b*self.movie_len,len(batch['category'][0][0]),768)
-        boxes_category = torch.tensor(boxes_category).to(self.device)
-        text = np.zeros((len(batch['text']),self.movie_len,768))
-        for i in range(len(batch['text'])):
-            for j in range(self.movie_len):
-                text[i,j] = self.clip(batch['text'][i][j]).cpu().detach().numpy()
-        text = text.reshape(b*self.movie_len,1,768)
-        text = torch.tensor(text).to(self.device)
         batch['reference_image'] = ref_img
-        batch['HDmap'] = hdmap
-        batch['3Dbox'] = boxes
-        batch['category'] = boxes_category
-        batch['text'] = text
-        batch['range_image'] = range_image
-        batch['dense_range_image'] = dense_range_image
-        if self.predict:
+        if 'HDmap' in condition_keys:
+            hdmap = super().get_input(batch,'HDmap') # (b n c h w)
+            batch['HDmap'] = hdmap
+        if 'range_image' in condition_keys:
+            range_image = super().get_input(batch,'range_image') # (b n c h w)
+            batch['range_image'] = range_image
+        if 'dense_range_image' in condition_keys:
+            dense_range_image = super().get_input(batch,'dense_range_image') # (b n c h w)
+            batch['dense_range_image'] = dense_range_image
+        if '3Dbox' in condition_keys:
+            boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d').contiguous()
+            boxes_category = np.zeros((len(batch['category']),self.movie_len,len(batch['category'][0][0]),768))
+            for i in range(len(batch['category'])):
+                for j in range(self.movie_len):
+                    for k in range(len(batch['category'][0][0])):
+                        boxes_category[i][j][k] = self.clip(batch['category'][i][j][k]).cpu().detach().numpy()
+            boxes_category = boxes_category.reshape(b*self.movie_len,len(batch['category'][0][0]),768)
+            boxes_category = torch.tensor(boxes_category).to(self.device)
+            batch['3Dbox'] = boxes
+            batch['category'] = boxes_category
+        if 'text' in condition_keys:
+            text = np.zeros((len(batch['text']),self.movie_len,768))
+            for i in range(len(batch['text'])):
+                for j in range(self.movie_len):
+                    text[i,j] = self.clip(batch['text'][i][j]).cpu().detach().numpy()
+            text = text.reshape(b*self.movie_len,1,768)
+            text = torch.tensor(text).to(self.device)
+            batch['text'] = text
+        if 'actions' in condition_keys:
             batch['actions'] = batch['actions']
         batch = {k:v.to(torch.float32) for k,v in batch.items()}
 
         out = self.global_condition.get_conditions(batch)
+        condition_keys = out.keys()
         range_image = out['range_image']
         x = out['ref_image'].to(torch.float32)
         c = {}
-        c['hdmap'] = out['hdmap'].to(torch.float32)
-        c['boxes_emb'] = out['boxes_emb'].to(torch.float32)
-        c['text_emb'] = out['text_emb'].to(torch.float32)
-        c['dense_range_image'] = out['dense_range_image']
-        c['origin_range_image'] = range_image
-        if self.predict:
+        if 'hdmap' in condition_keys:
+            c['hdmap'] = out['hdmap'].to(torch.float32)
+        if 'boxes_emb' in condition_keys:
+            c['boxes_emb'] = out['boxes_emb'].to(torch.float32)
+        if 'text_emb' in condition_keys:
+            c['text_emb'] = out['text_emb'].to(torch.float32)
+        if 'dense_range_image' in condition_keys:
+            c['dense_range_image'] = out['dense_range_image']
+        if 'actions' in condition_keys:
             c['actions'] = out['actions']
-        loss, loss_dict = self(x, range_image,c)
+        c['origin_range_image'] = range_image
+        loss,loss_dict = self(x,range_image,c)
         return loss,loss_dict
 
 
@@ -4054,18 +4126,33 @@ class AutoDM_GlobalCondition2(DDPM):
                 return x_recon,range_recon
             return x_recon
         else:
-            if not self.predict:
-                boxes_emb = cond['boxes_emb']
-                text_emb = cond['text_emb']
-                dense_range_image = cond['dense_range_image']
+            condition_keys = cond.keys()
+            if not 'action' in condition_keys:
+                if 'boxes_emb' in condition_keys:
+                    boxes_emb = cond['boxes_emb']
+                    boxes_emb = torch.cat([boxes_emb,boxes_emb],dim=0)
+                else:
+                    boxes_emb = None
+                if 'text_emb' in condition_keys:
+                    text_emb = cond['text_emb']
+                    text_emb = torch.cat([text_emb,text_emb],dim=0)
+                else:
+                    text_emb = None
+                if 'hdmap' in condition_keys and 'dense_range_image' in condition_keys:
+                    dense_range_image = cond['dense_range_image']
+                    z = torch.cat([x_noisy,cond['hdmap']],dim=1)
+                    lidar_z = torch.cat([range_image_noisy,dense_range_image],dim=1)
+                elif not 'hdmap' in condition_keys and not 'dense_range_image' in condition_keys:
+                    z = x_noisy
+                    lidar_z = range_image_noisy
+                else:
+                    raise NotImplementedError
+                z = torch.cat([z,lidar_z])
                 classes = torch.tensor([[1.,0.],[0.,1.]],device=self.device,dtype=self.dtype)
                 classes_emb = torch.cat([torch.sin(classes),torch.cos(classes)],dim=-1)
-                z = torch.cat([x_noisy,cond['hdmap']],dim=1)
-                lidar_z = torch.cat([range_image_noisy,dense_range_image],dim=1)
-                z = torch.cat([z,lidar_z],dim=0)
+
                 class_label = torch.zeros((z.shape[0],4),device=self.device)
-                boxes_emb = torch.cat([boxes_emb,boxes_emb],dim=0)
-                text_emb = torch.cat([text_emb,text_emb],dim=0)
+
                 for i in range(z.shape[0]):
                     if i < z.shape[0] // 2:
                         class_label[i] = classes_emb[0]
@@ -4074,43 +4161,53 @@ class AutoDM_GlobalCondition2(DDPM):
                 #TODO:need reshape z
                 x_recon = self.model(z,t,y=class_label,boxes_emb=boxes_emb,text_emb=text_emb)
             else:
-                boxes_emb = cond['boxes_emb']
-                text_emb = cond['text_emb']
-                dense_range_image = cond['dense_range_image']
-                b = boxes_emb.shape[0] // self.movie_len
-                boxes_emb = boxes_emb.reshape((b,self.movie_len)+boxes_emb.shape[1:])
-                boxes_emb = boxes_emb[:,0]
-                hdmap = cond['hdmap'].reshape((b,self.movie_len)+cond['hdmap'].shape[1:])[:,0]
-                actions = cond['actions']
-                dense_range_image = dense_range_image.reshape((b,self.movie_len)+dense_range_image.shape[1:])[:,0]
-                # x_noisy = x_noisy.reshape((b,self.movie_len)+x_noisy.shape[1:]) [:,0:1]
-                # range_image_noisy = range_image_noisy.reshape((b,self.movie_len)+range_image_noisy.shape[1:])[:,0:1]
+                b = x_noisy.shape[0] // self.movie_len
+                if 'boxes_emb' in condition_keys:
+                    boxes_emb = cond['boxes_emb']
+                    boxes_emb = boxes_emb.reshape((b,self.movie_len)+boxes_emb.shape[1:])
+                    boxes_emb = boxes_emb[:,0]
+                else:
+                    boxes_emb = None
+                if 'text_emb' in condition_keys:
+                    text_emb = cond['text_emb']
+                    text_emb = torch.cat([text_emb,text_emb],dim=0)
+                else:
+                    text_emb = None
+                if 'hdmap' in condition_keys and 'dense_range_image' in condition_keys:
+                    dense_range_image = cond['dense_range_image']
+                    hdmap = cond['hdmap'].reshape((b,self.movie_len)+cond['hdmap'].shape[1:])[:,0]
+                    actions = cond['actions']
+                    dense_range_image = dense_range_image.reshape((b,self.movie_len)+dense_range_image.shape[1:])[:,0]
+                    h = self.action_former(hdmap,boxes_emb,actions,dense_range_image)
+                    latent_hdmap = torch.stack([h[id][0] for id in range(len(h))]).reshape(cond['hdmap'].shape)
+                    latent_boxes = torch.stack([h[id][1] for id in range(len(h))]).reshape(cond['boxes_emb'].shape)
+                    latent_dense_range_image = torch.stack([h[id][2] for id in range(len(h))]).reshape(cond['dense_range_image'].shape)
+                    boxes_emb = torch.cat([latent_boxes,latent_boxes],dim=0)
 
-                h = self.action_former(hdmap,boxes_emb,actions,dense_range_image)
-                latent_hdmap = torch.stack([h[id][0] for id in range(len(h))]).reshape(cond['hdmap'].shape)
-                latent_boxes = torch.stack([h[id][1] for id in range(len(h))]).reshape(cond['boxes_emb'].shape)
-                latent_dense_range_image = torch.stack([h[id][2] for id in range(len(h))]).reshape(cond['dense_range_image'].shape)
+                    z = torch.cat([x_noisy,latent_hdmap],dim=1)
+                    lidar_z = torch.cat([range_image_noisy,latent_dense_range_image],dim=1)
+                    actions = None
+                elif not 'hdmap' in condition_keys and not 'dense_range_image' in condition_keys:
+                    z = x_noisy
+                    lidar_z = range_image_noisy
+                    actions = rearrange(cond['actions'],'b n c -> (b n) c')
+                    actions = torch.cat([actions,actions],dim=0)
+                else:
+                    raise NotImplementedError
+                z = torch.cat([z,lidar_z],dim=0)
 
-                # x_noisy = repeat(x_noisy,'b n c h w -> b (repeat n) c h w',repeat=self.movie_len)
-                # range_image_noisy = repeat(range_image_noisy,'b n c h w -> b (repeat n) c h w',repeat=self.movie_len)
-                # x_noisy = rearrange(x_noisy,'b n c h w -> (b n) c h w').contiguous()
-                # range_image_noisy = rearrange(range_image_noisy,'b n c h w -> (b n) c h w').contiguous()
                 classes = torch.tensor([[1.,0.],[0.,1.]],device=self.device,dtype=self.dtype)
                 classes_emb = torch.cat([torch.sin(classes),torch.cos(classes)],dim=-1)
-                z = torch.cat([x_noisy,latent_hdmap],dim=1)
-                lidar_z = torch.cat([range_image_noisy,latent_dense_range_image],dim=1)
 
-                z = torch.cat([z,lidar_z],dim=0)
                 class_label = torch.zeros((z.shape[0],4),device=self.device)
-                latent_boxes = torch.cat([latent_boxes,latent_boxes],dim=0)
-                text_emb = torch.cat([text_emb,text_emb],dim=0)
                 for i in range(z.shape[0]):
                     if i < z.shape[0] // 2:
                         class_label[i] = classes_emb[0]
                     else:
                         class_label[i] = classes_emb[1]
                 #TODO:need reshape z
-                x_recon = self.model(z,t,y=class_label,boxes_emb=latent_boxes,text_emb=text_emb)
+                x_recon = self.model(z,t,y=class_label,boxes_emb=boxes_emb,text_emb=text_emb,actions=actions)
+
 
         return x_recon
     
@@ -4528,10 +4625,17 @@ class AutoDM_GlobalCondition2(DDPM):
         log['lidar_reconstruction'] = range_image_rec.reshape((N,-1)+range_image_rec.shape[1:])
         # log['dense_range_image'] = c['dense_range_image'].reshape((N,-1),c['dense_range_image'].shape[1:])
         if sample:
-            c['hdmap'] = c['hdmap'][:N*self.movie_len]
-            c['boxes_emb'] = c['boxes_emb'][:N*self.movie_len]
-            c['text_emb'] = c['text_emb'][:N*self.movie_len]
-            c['dense_range_image'] = c['dense_range_image'][:N*self.movie_len]
+            condition_key = c.keys()
+            if 'hdmap' in condition_key:
+                c['hdmap'] = c['hdmap'][:N*self.movie_len]
+            if 'boxes_emb' in condition_key:
+                c['boxes_emb'] = c['boxes_emb'][:N*self.movie_len]
+            if 'text_emb' in condition_key:
+                c['text_emb'] = c['text_emb'][:N*self.movie_len]
+            if 'dense_range_image' in condition_key:
+                c['dense_range_image'] = c['dense_range_image'][:N*self.movie_len]
+            if 'actions' in condition_key:
+                c['actions'] = c['actions'][:N]
             c['x_start'] = z[:N*self.movie_len]
             with self.ema_scope("Plotting"):
                 # batch = {k:v.to(self.model.device) for k,v in batch.items()}
@@ -4614,24 +4718,20 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/prediction2_1.yaml',
+                        default='configs/global_condition.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
     network = instantiate_from_config(cfg['model'])#.to('cuda:7')
     
-    x = torch.randn((2,5,128,256,3))
+    x = torch.randn((2,5,256,512,3))
     # x.requires_grad_(True)
-    hdmap = torch.randn((2,5,128,256,3))
-    # hdmap.requires_grad_(True)
-    # text.requires_grad_(True)
+    hdmap = torch.randn((2,5,256,512,3))
     boxes = torch.randn((2,5,70,16))
-    # boxes.requires_grad_(True)
-    # box_category.requires_grad_(True)
     text = [["None" for k in range(5)] for j in range(2)]
     box_category = [[["None" for k in range(70)] for i in range(5)] for j in range(2)]
-    depth_cam_front_img = torch.randn((2,5,128,256,3))
+    # depth_cam_front_img = torch.randn((2,5,128,256,3))
     import matplotlib.image as mpimg
     from PIL import Image
     # range_image = mpimg.imread('000.jpg')
@@ -4640,19 +4740,22 @@ if __name__ == '__main__':
     # range_image = torch.tensor(range_image,dtype=torch.float32)
     # range_image = range_image.unsqueeze(0)
     # range_image = range_image.unsqueeze(0)
-    range_image = torch.randn((2,5,128,256,3))
-    dense_range_image = torch.randn((2,5,128,256,3))
-    depth_cam_front_img = torch.randn((2,5,128,256,3))
+    range_image = torch.randn((2,5,256,512,3))
+    dense_range_image = torch.randn((2,5,256,512,3))
+    # depth_cam_front_img = torch.randn((2,5,128,256,3))
     actions = torch.randn((2,5,14))
+    # out = {'text':text,
+    #        '3Dbox':boxes,
+    #        'category':box_category,
+    #        'reference_image':x,
+    #        'HDmap':hdmap,
+    #        "range_image":range_image,
+    #        'dense_range_image': dense_range_image,
+    #        'actions':actions}
     out = {'text':text,
-           '3Dbox':boxes,
-           'category':box_category,
            'reference_image':x,
-           'HDmap':hdmap,
-           "range_image":range_image,
-           "depth_cam_front_img":depth_cam_front_img,
-           'dense_range_image': dense_range_image,
-           'actions':actions}
+           "range_image":range_image,}
+    
     # network.log_video(out)
     loss,loss_dict = network.shared_step(out)
     # loss,loss_dict = network.shared_step(out)

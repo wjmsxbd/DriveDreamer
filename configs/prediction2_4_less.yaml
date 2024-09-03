@@ -81,7 +81,7 @@ model:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
         image_size: [16,32]
-        in_channels: 8
+        in_channels: 4
         out_channels: 4
         num_classes: 2
         model_channels: 320
@@ -95,20 +95,22 @@ model:
         use_checkpoint: False
         use_spatial_transformer: True
         use_cond_mask: True
-        # ckpt_path: stable_diffusion/sd-v1-4.ckpt
-        ckpt_path: logs/2024-08-06T07-11-46_global_condition/checkpoints/last.ckpt
+        ckpt_path: stable_diffusion/sd-v1-4.ckpt
+        # ckpt_path: logs/2024-08-06T07-11-46_global_condition/checkpoints/last.ckpt
         # ckpt_path: logs/2024-08-04T21-52-13_global_condition/checkpoints/last.ckpt
         movie_len: 5
         height: 16
         width: 32
         obj_dims: 768
+        use_only_action: True
+        action_dim: 14
         outpadding: [[0,0],[0,0],[0,0]]
         # ignore_keys: ['first_stage_model','hdmap_encoder']
         # modify_keys: ['box_encoder']
         # ignore_keys: ['model.diffusion_model.input_blocks.1.1.temporal_blocks.0.positional_encoder','model.diffusion_model.input_blocks.2.1.temporal_blocks.0.positional_encoder','model.diffusion_model.input_blocks.4.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.input_blocks.5.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.input_blocks.7.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.input_blocks.8.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.middle_block.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.3.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.4.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.5.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.6.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.7.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.8.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.9.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.10.1.temporal_blocks.0.positional_encoder.pe','model.diffusion_model.output_blocks.11.1.temporal_blocks.0.positional_encoder.pe']
-        ignore_keys: ['global_condition.image_model']
+        # ignore_keys: ['global_condition.image_model']
         # modify_keys: []
-        # ignore_keys: ['model.diffusion_model.input_blocks.0.0']
+        ignore_keys: ['model.diffusion_model.input_blocks.0.0']
 
     actionformer_config:
       target: ldm.models.actionformer.ActionFormer4
@@ -232,7 +234,7 @@ data:
         num_boxes: 70
         movie_len: 5
         split_name: train
-        collect_condition: ['reference_image','HDmap','range_image','dense_range_image','3Dbox','text','actions']
+        collect_condition: ['reference_image','range_image','text','actions']
   
     validation:
       target: data.dataloader_predict_video.dataloader
@@ -246,7 +248,7 @@ data:
         num_boxes: 70
         movie_len: 5
         split_name: val
-        collect_condition: ['reference_image','HDmap','range_image','dense_range_image','3Dbox','text','actions']
+        collect_condition: ['reference_image','range_image','text','actions']
 
 
 lightning:

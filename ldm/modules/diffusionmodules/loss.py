@@ -36,13 +36,13 @@ class StandardDiffusionLoss(nn.Module):
 
         self.sigma_sampler = instantiate_from_config(sigma_sampler_config)
         self.loss_weighting = instantiate_from_config(loss_weighting_config)
+        self.offset_noise_level = offset_noise_level
+        self.additional_loss_weight = additional_loss_weight
+        self.movie_len = movie_len
+        self.replace_cond_frames = replace_cond_frames
+        self.cond_frames_choices = cond_frames_choices
         if depth_config is not None:
             self.depth_estimator = instantiate_from_config(depth_config)
-            self.offset_noise_level = offset_noise_level
-            self.additional_loss_weight = additional_loss_weight
-            self.movie_len = movie_len
-            self.replace_cond_frames = replace_cond_frames
-            self.cond_frames_choices = cond_frames_choices
             self.img_size = img_size
             self.theta_up = np.pi / 12 
             self.theta_down = -np.pi / 6

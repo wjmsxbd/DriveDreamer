@@ -261,33 +261,39 @@ class GlobalCondition(pl.LightningModule):
             else:
                 return model.decode(z)
             
-    def get_conditions(self,batch,return_encoder_posterior=False):
-        ref_image = batch['reference_image']
-        hdmap = batch['HDmap']
-        range_image = batch['range_image']
-        dense_range_image = batch['dense_range_image']
-        boxes = batch['3Dbox']
-        box_category = batch['category']
-        z = self.encode_first_stage(ref_image,self.image_model)
-        lidar_z = self.encode_first_stage(range_image,self.lidar_model)
-        ref_image = self.get_first_stage_encoding(z)
-        hdmap = self.get_first_stage_encoding(self.encode_first_stage(hdmap,self.image_model))
-        range_image = self.get_first_stage_encoding(lidar_z)
-        dense_range_image = self.get_first_stage_encoding(self.encode_first_stage(dense_range_image,self.lidar_model))
-        boxes_emb = self.box_encoder(boxes,box_category)
-        text_emb = batch['text']
+    def get_conditions(self,batch):
+        condition_keys = batch.keys()
         out = {}
-        if not self.action_encoder is None:
+        ref_image = batch['reference_image']
+        z = self.encode_first_stage(ref_image,self.image_model)
+        ref_image = self.get_first_stage_encoding(z)
+        out['ref_image'] = ref_image
+        if 'HDmap' in condition_keys:
+            hdmap = batch['HDmap']
+            hdmap = self.get_first_stage_encoding(self.encode_first_stage(hdmap,self.image_model))
+            out['hdmap'] = hdmap
+        if 'range_image' in condition_keys:
+            range_image = batch['range_image']
+            lidar_z = self.encode_first_stage(range_image,self.lidar_model)
+            range_image = self.get_first_stage_encoding(lidar_z)
+            out['range_image'] = range_image
+        if 'dense_range_image' in condition_keys:
+            dense_range_image = batch['dense_range_image']
+            dense_range_image = self.get_first_stage_encoding(self.encode_first_stage(dense_range_image,self.lidar_model))
+            out['dense_range_image'] = dense_range_image
+        if '3Dbox' in condition_keys:
+            boxes = batch['3Dbox']
+            box_category = batch['category']
+            boxes_emb = self.box_encoder(boxes,box_category)
+            out['boxes_emb'] = boxes_emb
+        if 'text' in condition_keys:
+            text_emb = batch['text']
+            out['text_emb'] = text_emb
+        if 'actions' in condition_keys:
             actions = batch['actions']
             actions_embed = self.action_encoder(actions)
             out['actions'] = actions_embed
 
-        out['ref_image'] = ref_image
-        out['hdmap'] = hdmap
-        out['range_image'] = range_image
-        out['dense_range_image'] = dense_range_image
-        out['boxes_emb'] = boxes_emb
-        out['text_emb'] = text_emb
         return out
     
     def get_losses(self,batch):

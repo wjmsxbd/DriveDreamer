@@ -42,7 +42,7 @@ except:
 
 
 class dataloader(data.Dataset):
-    def __init__(self,cfg,num_boxes,movie_len,split_name='train'):
+    def __init__(self,cfg,num_boxes,movie_len,split_name='train',collect_condition=None):
         self.split_name = split_name
         self.cfg = cfg
         self.nusc = NuScenes(version=cfg['version'],dataroot=cfg['dataroot'],verbose=True)
@@ -54,6 +54,7 @@ class dataloader(data.Dataset):
             'singapore-onenorth': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-onenorth'),
             'singapore-queenstown': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-queenstown'),
         }
+        self.collect_condition = collect_condition
         self.load_data_infos()
 
     def load_data_infos(self):
@@ -88,13 +89,14 @@ class dataloader(data.Dataset):
     def get_data_info(self,idx):
         video_info = self.video_infos[idx]
         out = {}
-        out['reference_image'] = torch.zeros((self.movie_len,self.cfg['img_size'][1],self.cfg['img_size'][0],3))
-        out['HDmap'] = torch.zeros((self.movie_len,self.cfg['img_size'][1],self.cfg['img_size'][0],3))
-        out['range_image'] = torch.zeros((self.movie_len,self.cfg['img_size'][1],self.cfg['img_size'][0],3))
-        out['dense_range_image'] = torch.zeros((self.movie_len,self.cfg['img_size'][1],self.cfg['img_size'][0],3))
-        out['3Dbox'] = torch.zeros((self.movie_len,self.num_boxes,16))
-        out['category'] = [None for i in range(self.movie_len)]
-        out['text'] = [None for i in range(self.movie_len)]
+        for key in self.collect_condition:
+            if key == '3Dbox':
+                out[key] = torch.zeros((self.movie_len,self.num_boxes,16))
+                out['category'] = [None for i in range(self.movie_len)]
+            elif key == 'text':
+                out[key] = [None for i in range(self.movie_len)]
+            else:
+                out[key] = torch.zeros((self.movie_len,self.cfg['img_size'][1],self.cfg['img_size'][0],3))
         for i in range(self.movie_len):
             sample_token = video_info[i]['token']
             scene_token = self.nusc.get('sample',sample_token)['scene_token']
@@ -105,38 +107,39 @@ class dataloader(data.Dataset):
             nusc_map = self.nusc_maps[log['location']]
             # cam_front_img,box_list,now_hdmap,box_category,depth_cam_front_img,range_image,dense_range_image
             if self.cfg['img_size'] is not None:
-                ref_img,boxes,hdmap,category,range_image,dense_range_image = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']))
+                collect_data = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),collect_data=self.collect_condition)
             else:
-                ref_img,boxes,hdmap,category,range_image,dense_range_image = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,fig=self.fig,ax=self.ax)
-            dense_range_image = np.repeat(dense_range_image[...,np.newaxis],3,axis=-1)
-
-            boxes = np.array(boxes).astype(np.float32)
-            ref_img = torch.from_numpy(ref_img / 255. * 2 - 1.).to(torch.float32)
-            hdmap = hdmap[:,:,:3].copy()
-            hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
-            range_image = torch.from_numpy(range_image / 255. * 2 - 1.).to(torch.float32)
-            dense_range_image = torch.from_numpy(dense_range_image / 255. * 2 - 1.).to(torch.float32)
-            if boxes.shape[0] == 0:
-                boxes = torch.from_numpy(np.zeros((self.num_boxes,16)))
-                category = ["None" for i in range(self.num_boxes)]
-            elif boxes.shape[0] < self.num_boxes:
-                zero_len = self.num_boxes - boxes.shape[0]
-                boxes_zero = np.zeros((self.num_boxes-boxes.shape[0],16))
-                boxes = torch.from_numpy(np.concatenate((boxes,boxes_zero),axis=0))
-                category_none = ["None" for i in range(zero_len)]
-                category = category + category_none
-            else:
-                boxes = torch.from_numpy(copy.deepcopy(boxes[:self.num_boxes]))
-                category_embed = copy.deepcopy(category[:self.num_boxes])
-                category = copy.deepcopy(category_embed[:self.num_boxes])
-            out['reference_image'][i] = ref_img
-            out['HDmap'][i] = hdmap
-            out['range_image'][i] = range_image
-            out['dense_range_image'][i] = dense_range_image
-            out['3Dbox'][i] = boxes
-            out['category'][i] = category
-            out['text'][i] = text
-
+                collect_data = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,collect_data=self.collect_condition)
+            if 'text' in self.collect_condition:
+                out['text'][i] = text
+            for key in collect_data:
+                if key == '3Dbox':
+                    boxes = collect_data['3Dbox']
+                    category = collect_data['category']
+                    boxes = np.array(boxes).astype(np.float32)
+                    if boxes.shape[0] == 0:
+                        boxes = torch.from_numpy(np.zeros((self.num_boxes,16)))
+                        category = ["None" for i in range(self.num_boxes)]
+                    elif boxes.shape[0] < self.num_boxes:
+                        zero_len = self.num_boxes - boxes.shape[0]
+                        boxes_zero = np.zeros((self.num_boxes-boxes.shape[0],16))
+                        boxes = torch.from_numpy(np.concatenate((boxes,boxes_zero),axis=0))
+                        category_none = ["None" for i in range(zero_len)]
+                        category = category + category_none
+                    else:
+                        boxes = torch.from_numpy(copy.deepcopy(boxes[:self.num_boxes]))
+                        category_embed = copy.deepcopy(category[:self.num_boxes])
+                        category = copy.deepcopy(category_embed[:self.num_boxes])
+                    out['3Dbox'][i] = boxes
+                    out['category'][i] = category
+                elif key == 'category' or key == 'cam_front_record':
+                    pass
+                else:
+                    img = collect_data[key]
+                    img = img[:,:,:3].copy()
+                    img = torch.from_numpy(img / 255. * 2 - 1.).to(torch.float32)
+                    out[key][i] = img
+            
         return out
     def __getitem__(self,idx):
         return self.get_data_info(idx)
@@ -205,7 +208,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/prediction.yaml',
+                        default='configs/global_condition.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()

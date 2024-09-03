@@ -1067,6 +1067,8 @@ class UNetModel(nn.Module):
         modify_keys=None,
         use_cond_mask=False,
         use_attn_additional=False,
+        use_only_action=False,
+        action_dim=None,
     ):
         super().__init__()
         if use_spatial_transformer:
@@ -1130,7 +1132,13 @@ class UNetModel(nn.Module):
                 linear(time_embed_dim, time_embed_dim),
             )
 
-
+        if use_only_action:
+            self.action_embed = nn.Sequential(
+                linear(action_dim, time_embed_dim),
+                nn.SiLU(),
+                linear(time_embed_dim, time_embed_dim),
+            )
+        self.use_only_action = use_only_action
         self.input_blocks = nn.ModuleList(
             [
                 TimestepEmbedSequential(
@@ -1346,7 +1354,7 @@ class UNetModel(nn.Module):
         #torch.save(my_model_state_dict,'./my_model_state_dict.pt')
         self.load_state_dict(state_dict,strict=False)
 
-    def forward(self, x, timesteps=None, y=None,boxes_emb=None,text_emb=None,cond_mask=None):
+    def forward(self, x, timesteps=None, y=None,boxes_emb=None,text_emb=None,cond_mask=None,actions=None):
         """
         Apply the model to an input batch.
         :param x: an [N x C x ...] Tensor of inputs.
@@ -1370,6 +1378,8 @@ class UNetModel(nn.Module):
             # if len(y.shape) == 1:
             #     y = y[None,:].expand(x.shape[0],y.shape[0])
             emb = emb + self.label_emb(y)
+        if self.use_only_action:
+            emb = emb + self.action_embed(actions)
         h = x.type(self.dtype)
         for module in self.input_blocks:
             if boxes_emb is None:

@@ -33,8 +33,8 @@ model:
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
-        image_size: [16,32]
-        in_channels: 8
+        image_size: [32,64]
+        in_channels: 4
         out_channels: 4
         num_classes: 2
         model_channels: 320
@@ -47,8 +47,8 @@ model:
         context_dim: 768
         use_checkpoint: False
         use_spatial_transformer: True
-        # ckpt_path: stable_diffusion/sd-v1-4.ckpt
-        ckpt_path: logs/2024-08-06T07-11-46_global_condition/checkpoints/last.ckpt
+        ckpt_path: stable_diffusion/sd-v1-4.ckpt
+        # ckpt_path: logs/2024-08-06T07-11-46_global_condition/checkpoints/last.ckpt
         # ckpt_path: logs/2024-08-04T21-52-13_global_condition/checkpoints/last.ckpt
         movie_len: 5
         height: 16
@@ -57,9 +57,9 @@ model:
         outpadding: [[0,0],[0,0],[0,0]]
         # ignore_keys: ['first_stage_model','hdmap_encoder']
         # modify_keys: ['box_encoder']
-        ignore_keys: []
+        # ignore_keys: []
         # modify_keys: []
-        # ignore_keys: ['model.diffusion_model.input_blocks.0.0']
+        ignore_keys: ['model.diffusion_model.input_blocks.0.0']
 
       
     global_condition_config:
@@ -123,7 +123,7 @@ model:
             ch: [256,512,768]
             context_dims: 768
             sigma: 1
-            trainable: True
+            trainable: False
         # action_encoder_config:
         #   target: ldm.models.actionformer.ActionEncoder
         #   params:
@@ -134,34 +134,36 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 2
+    batch_size: 1
     wrap: False
     num_workers: 2
     train:
       target: data.video_lidar_dataloader.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
           img_size: [256,128]
           nusc_canbus_frequency: 50
           camera_frequency: 3
         num_boxes: 70
         movie_len: 5
         split_name: train
+        collect_condition: ['reference_image','range_image','text']
   
     validation:
       target: data.video_lidar_dataloader.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
           img_size: [256,128]
           nusc_canbus_frequency: 50
           camera_frequency: 3
         num_boxes: 70
         movie_len: 5
         split_name: val
+        collect_condition: ['reference_image','range_image','text']
 
 
 lightning:
@@ -176,8 +178,7 @@ lightning:
 
   trainer:
     benchmark: True
-    gpus: 0,1,2,3
     num_nodes: 1
-    
+    gpus: 0,
 
     

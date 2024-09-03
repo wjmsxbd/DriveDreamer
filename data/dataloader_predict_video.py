@@ -40,7 +40,7 @@ from tqdm import tqdm
 import copy
 
 class dataloader(data.Dataset):
-    def __init__(self,cfg,num_boxes,movie_len,split_name='train',return_pose_info=False):
+    def __init__(self,cfg,num_boxes,movie_len,split_name='train',return_pose_info=False,collect_condition=None):
         self.split_name = split_name
         self.cfg = cfg
         self.nusc = NuScenes(version=cfg['version'],dataroot=cfg['dataroot'],verbose=True)
@@ -58,8 +58,8 @@ class dataloader(data.Dataset):
             'singapore-queenstown': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-queenstown'),
         }
         self.nusc_can = NuScenesCanBus(dataroot=cfg['dataroot'])
-        
         self.return_pose_info = return_pose_info
+        self.collect_condition = collect_condition
         self.load_data_infos()
 
     def load_data_infos(self):
@@ -108,23 +108,27 @@ class dataloader(data.Dataset):
         video_info = self.video_infos[idx]
         actions = self.action_infos[idx]
         out = {}
-        out['reference_image'] = torch.zeros((self.movie_len,self.cfg['img_size'][1],self.cfg['img_size'][0],3))
-        out['HDmap'] = torch.zeros((self.movie_len,self.cfg['img_size'][1],self.cfg['img_size'][0],3))
-        out['range_image'] = torch.zeros((self.movie_len,self.cfg['img_size'][1],self.cfg['img_size'][0],3))
-        out['dense_range_image'] = torch.zeros((self.movie_len,self.cfg['img_size'][1],self.cfg['img_size'][0],3))
-        out['3Dbox'] = torch.zeros((self.movie_len,self.num_boxes,16))
-        out['category'] = [None for i in range(self.movie_len)]
-        out['text'] = [None for i in range(self.movie_len)]
-        out['actions'] = torch.zeros((self.movie_len,14))
-        if self.return_pose_info:
-            out['cam_front_record'] = {}
-            out['cam_poserecord'] = {}
-            out['Lidar_TOP_record'] = {}
-            out['Lidar_TOP_poserecord'] = {}
-            init_keys = ['cam_front_record','cam_poserecord','Lidar_TOP_record','Lidar_TOP_poserecord']
-            for key in init_keys:
-                for k in self.save_keys:
-                    out[key][k] = [None for i in range(self.movie_len)]
+        out = {}
+        for key in self.collect_condition:
+            if key == '3Dbox':
+                out[key] = torch.zeros((self.movie_len,self.num_boxes,16))
+                out['category'] = [None for i in range(self.movie_len)]
+            elif key == 'text':
+                out[key] = [None for i in range(self.movie_len)]
+            elif key == 'actions':
+                out[key] = torch.zeros((self.movie_len,14))
+            else:
+                out[key] = torch.zeros((self.movie_len,self.cfg['img_size'][1],self.cfg['img_size'][0],3))
+
+        # if self.return_pose_info:
+        #     out['cam_front_record'] = {}
+        #     out['cam_poserecord'] = {}
+        #     out['Lidar_TOP_record'] = {}
+        #     out['Lidar_TOP_poserecord'] = {}
+        #     init_keys = ['cam_front_record','cam_poserecord','Lidar_TOP_record','Lidar_TOP_poserecord']
+        #     for key in init_keys:
+        #         for k in self.save_keys:
+        #             out[key][k] = [None for i in range(self.movie_len)]
         for i in range(self.movie_len):
             sample_token = video_info[i]['token']
             scene_token = self.nusc.get('sample',sample_token)['scene_token']
@@ -135,56 +139,59 @@ class dataloader(data.Dataset):
             nusc_map = self.nusc_maps[log['location']]
             # cam_front_img,box_list,now_hdmap,box_category,depth_cam_front_img,range_image,dense_range_image
             if self.cfg['img_size'] is not None:
-                ref_img,boxes,hdmap,category,range_image,dense_range_image,cam_front_record,cam_poserecord,Lidar_TOP_record,Lidar_TOP_poserecord = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=True)
+                collect_data = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=False,collect_data=self.collect_condition)
             else:
-                ref_img,boxes,hdmap,category,range_image,dense_range_image,cam_front_record,cam_poserecord,Lidar_TOP_record,Lidar_TOP_poserecord = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,return_camera_info=True)
+                collect_data = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,return_camera_info=False,collect_data=self.collect_condition)
             
-            cam_front_translation = torch.tensor(cam_front_record['translation'])
-            cam_front_rotation = torch.tensor(cam_front_record['rotation'])
+            cam_front_translation = torch.tensor(collect_data['cam_front_record']['translation'])
+            cam_front_rotation = torch.tensor(collect_data['cam_front_record']['rotation'])
             now_action = torch.cat([actions[i],cam_front_translation,cam_front_rotation],dim=-1).unsqueeze(0)
             
-            dense_range_image = np.repeat(dense_range_image[...,np.newaxis],3,axis=-1)
 
-            boxes = np.array(boxes).astype(np.float32)
-            ref_img = torch.from_numpy(ref_img / 255. * 2 - 1.).to(torch.float32)
-            hdmap = hdmap[:,:,:3].copy()
-            hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
-            range_image = torch.from_numpy(range_image / 255. * 2 - 1.).to(torch.float32)
-            dense_range_image = torch.from_numpy(dense_range_image / 255. * 2 - 1.).to(torch.float32)
-            if boxes.shape[0] == 0:
-                boxes = torch.from_numpy(np.zeros((self.num_boxes,16)))
-                category = ["None" for i in range(self.num_boxes)]
-            elif boxes.shape[0] < self.num_boxes:
-                zero_len = self.num_boxes - boxes.shape[0]
-                boxes_zero = np.zeros((self.num_boxes-boxes.shape[0],16))
-                boxes = torch.from_numpy(np.concatenate((boxes,boxes_zero),axis=0))
-                category_none = ["None" for i in range(zero_len)]
-                category = category + category_none
-            else:
-                boxes = torch.from_numpy(copy.deepcopy(boxes[:self.num_boxes]))
-                category_embed = copy.deepcopy(category[:self.num_boxes])
-                category = copy.deepcopy(category_embed[:self.num_boxes])
-            out['reference_image'][i] = ref_img
-            out['HDmap'][i] = hdmap
-            out['range_image'][i] = range_image
-            out['dense_range_image'][i] = dense_range_image
-            out['3Dbox'][i] = boxes
-            out['category'][i] = category
-            out['text'][i] = text
-            out['actions'][i]=now_action
-            if self.return_pose_info:
-                for key in self.save_keys:
-                    if key in cam_front_record.keys():
-                        out['cam_front_record'][key][i] = cam_front_record[key]
-                for key in self.save_keys:
-                    if key in cam_poserecord.keys():
-                        out['cam_poserecord'][key][i] = cam_poserecord[key]
-                for key in self.save_keys:
-                    if key in Lidar_TOP_record.keys():
-                        out['Lidar_TOP_record'][key][i] = Lidar_TOP_record[key]
-                for key in self.save_keys:
-                    if key in Lidar_TOP_poserecord.keys():
-                        out['Lidar_TOP_poserecord'][key][i] = Lidar_TOP_poserecord[key]
+            if 'text' in self.collect_condition:
+                out['text'][i] = text
+            if 'actions' in self.collect_condition:
+                out['actions'][i] = now_action
+            for key in collect_data:
+                if key == '3Dbox':
+                    boxes = collect_data['3Dbox']
+                    category = collect_data['category']
+                    boxes = np.array(boxes).astype(np.float32)
+                    if boxes.shape[0] == 0:
+                        boxes = torch.from_numpy(np.zeros((self.num_boxes,16)))
+                        category = ["None" for i in range(self.num_boxes)]
+                    elif boxes.shape[0] < self.num_boxes:
+                        zero_len = self.num_boxes - boxes.shape[0]
+                        boxes_zero = np.zeros((self.num_boxes-boxes.shape[0],16))
+                        boxes = torch.from_numpy(np.concatenate((boxes,boxes_zero),axis=0))
+                        category_none = ["None" for i in range(zero_len)]
+                        category = category + category_none
+                    else:
+                        boxes = torch.from_numpy(copy.deepcopy(boxes[:self.num_boxes]))
+                        category_embed = copy.deepcopy(category[:self.num_boxes])
+                        category = copy.deepcopy(category_embed[:self.num_boxes])
+                    out['3Dbox'][i] = boxes
+                    out['category'][i] = category
+                elif key == 'category' or key == 'actions' or key == 'cam_front_record':
+                    pass
+                else:
+                    img = collect_data[key]
+                    img = img[:,:,:3].copy()
+                    img = torch.from_numpy(img / 255. * 2 - 1.).to(torch.float32)
+                    out[key][i] = img
+            # if self.return_pose_info:
+            #     for key in self.save_keys:
+            #         if key in cam_front_record.keys():
+            #             out['cam_front_record'][key][i] = cam_front_record[key]
+            #     for key in self.save_keys:
+            #         if key in cam_poserecord.keys():
+            #             out['cam_poserecord'][key][i] = cam_poserecord[key]
+            #     for key in self.save_keys:
+            #         if key in Lidar_TOP_record.keys():
+            #             out['Lidar_TOP_record'][key][i] = Lidar_TOP_record[key]
+            #     for key in self.save_keys:
+            #         if key in Lidar_TOP_poserecord.keys():
+            #             out['Lidar_TOP_poserecord'][key][i] = Lidar_TOP_poserecord[key]
         return out
 
 def collate_fn(batch):
@@ -262,7 +269,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/prediction2_1.yaml',
+                        default='configs/prediction2_4.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
@@ -275,22 +282,22 @@ if __name__ == "__main__":
         num_workers =   2,
         collate_fn=collate_fn
     )
-    network = instantiate_from_config(cfg['model'])
-    model_path = 'logs/2024-08-22T20-20-05_prediction2_4/checkpoints/epoch=000390.ckpt'
-    network.init_from_ckpt(model_path)
-    network = network.eval().cuda()
-    # network = network.eval()
-    save_path = 'all_pics/'
-    save_path = save_path + 'prediction2_4/'
+    # network = instantiate_from_config(cfg['model'])
+    # model_path = 'logs/2024-08-22T20-20-05_prediction2_4/checkpoints/epoch=000390.ckpt'
+    # network.init_from_ckpt(model_path)
+    # network = network.eval().cuda()
+    # # network = network.eval()
+    # save_path = 'all_pics/'
+    # save_path = save_path + 'prediction2_4/'
     # 35
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
+    # if not os.path.exists(save_path):
+    #     os.makedirs(save_path)
     for _,batch in tqdm(enumerate(data_loader_)):
-        batch = {k:v.cuda() if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
-        # batch = {k:v if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
-        logs = network.log_video(batch)
-        save_tensor_as_video(logs['inputs'],file_path=save_path+f'inputs_{_:02d}.png')
-        save_tensor_as_video(logs['samples'],file_path=save_path+f'samples{_:02d}.png')
-        save_tensor_as_video(logs['lidar_samples'],file_path=save_path+f'lidar_samples{_:02d}.png')
-        save_tensor_as_video(logs['lidar_inputs'],file_path=save_path+f'lidar_inputs{_:02d}.png')
+        # batch = {k:v.cuda() if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
+        # # batch = {k:v if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
+        # logs = network.log_video(batch)
+        # save_tensor_as_video(logs['inputs'],file_path=save_path+f'inputs_{_:02d}.png')
+        # save_tensor_as_video(logs['samples'],file_path=save_path+f'samples{_:02d}.png')
+        # save_tensor_as_video(logs['lidar_samples'],file_path=save_path+f'lidar_samples{_:02d}.png')
+        # save_tensor_as_video(logs['lidar_inputs'],file_path=save_path+f'lidar_inputs{_:02d}.png')
         pass

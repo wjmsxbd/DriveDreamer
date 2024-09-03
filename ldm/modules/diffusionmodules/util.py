@@ -170,7 +170,7 @@ class CheckpointFunction(torch.autograd.Function):
             # Tensors.
             shallow_copies = [x.view_as(x) if not x is None else None for x in ctx.input_tensors]
             output_tensors = ctx.run_function(*shallow_copies)
-        ctx.input_tensors = [x if not x is None else torch.tensor([0],requires_grad=True) for x in ctx.input_tensors]
+        ctx.input_tensors = [x if not x is None else torch.tensor([0.],requires_grad=True) for x in ctx.input_tensors]
         input_grads = torch.autograd.grad(
             output_tensors,
             ctx.input_tensors + ctx.input_params,

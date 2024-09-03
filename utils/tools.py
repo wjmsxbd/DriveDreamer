@@ -513,8 +513,8 @@ def get_this_scene_info_with_lidar_figax(dataset_dir,nusc:NuScenes,nusc_map:NuSc
         return cam_front_img,box_list,now_hdmap,box_category,range_image,dense_range_image,cam_front_record,cam_poserecord,Lidar_TOP_record,Lidar_TOP_poserecord
 
 # @profile(precision=4,stream=open('log.txt',"w+",encoding="utf-8"))
-def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448),return_camera_info=False):
-    # matplotlib.use("Agg")
+def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448),return_camera_info=False,collect_data=None):
+    all_data = {}
     sample_record = nusc.get('sample',sample_token)
     cam_front_token = sample_record['data']['CAM_FRONT']
     cam_front_calibrated_sensor_token = nusc.get('sample_data',cam_front_token)['calibrated_sensor_token']
@@ -524,6 +524,14 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
     cam_front_record = nusc.get('calibrated_sensor',cam_front_calibrated_sensor_token)
     Lidar_TOP_poserecord = nusc.get('ego_pose',pointsensor['ego_pose_token'])
     cam_poserecord = nusc.get('ego_pose',nusc.get('sample_data',cam_front_token)['ego_pose_token'])
+
+    if 'Lidar_TOP_record' in collect_data:
+        all_data['Lidar_TOP_record'] = Lidar_TOP_record
+    if 'Lidar_TOP_poserecord' in collect_data:
+        all_data['Lidar_TOP_poserecord'] = Lidar_TOP_poserecord
+    all_data['cam_front_record'] = cam_front_record
+    if 'cam_poserecord' in collect_data:
+        all_data['cam_poserecord'] = cam_poserecord
 
     cam_front_path = nusc.get('sample_data',cam_front_token)['filename']
     hdmap_path = cam_front_path.split('/')
@@ -538,30 +546,43 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
         cam_front_img = Image.open(io.BytesIO(img_data))
         imsize = cam_front_img.size
         cam_front_img = np.array(cam_front_img.resize(img_size))
-        with mox.file.File(hdmap_path,'rb') as f:
-            img_data = f.read()
-        now_hdmap = Image.open(io.BytesIO(img_data))
-        now_hdmap = np.array(now_hdmap.resize(img_size))
+        if 'reference_image' in collect_data:
+            all_data['reference_image'] = cam_front_img
+        if 'HDmap' in collect_data:
+            with mox.file.File(hdmap_path,'rb') as f:
+                img_data = f.read()
+            now_hdmap = Image.open(io.BytesIO(img_data))
+            now_hdmap = np.array(now_hdmap.resize(img_size))
+            all_data['HDmap'] = now_hdmap
     else:
         cam_front_img = mpimg.imread(cam_front_path)
         now_hdmap = imageio.v2.imread(hdmap_path)
         imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
         cam_front_img = Image.fromarray(cam_front_img)
         cam_front_img = np.array(cam_front_img.resize(img_size))
-        now_hdmap = Image.fromarray(now_hdmap)
-        now_hdmap = np.array(now_hdmap.resize(img_size),dtype=np.uint8)
+        if 'reference_image' in collect_data:
+            all_data['reference_image'] = cam_front_img
+        if 'HDmap' in collect_data:
+            now_hdmap = Image.fromarray(now_hdmap)
+            now_hdmap = np.array(now_hdmap.resize(img_size),dtype=np.uint8)
+            all_data['HDmap'] = now_hdmap
 
-    box_list,box_category = get_3dbox(cam_front_token,nusc,imsize)#out_path=f'./temp/3dbox/{count:02d}.jpg'
-    box_list = np.array(box_list)
+    if '3Dbox' in collect_data:
+        box_list,box_category = get_3dbox(cam_front_token,nusc,imsize)#out_path=f'./temp/3dbox/{count:02d}.jpg'
+        box_list = np.array(box_list)
+        all_data['3Dbox'] = box_list
+        all_data['category'] = box_category
     
-    range_image = project_to_image(nusc,sample_token)
-    dense_range_image,_ = fill_in_multiscale(range_image,max_depth=100)
-    range_image = np.repeat(range_image[:,:,np.newaxis],3,axis=-1)
-
-    if return_camera_info == False:
-        return cam_front_img,box_list,now_hdmap,box_category,range_image,dense_range_image
-    else:
-        return cam_front_img,box_list,now_hdmap,box_category,range_image,dense_range_image,cam_front_record,cam_poserecord,Lidar_TOP_record,Lidar_TOP_poserecord
+    if 'range_image' in collect_data:
+        range_image = project_to_image(nusc,sample_token,img_size=(img_size[1],img_size[0]))
+        range_image = np.repeat(range_image[:,:,np.newaxis],3,axis=-1)
+        all_data['range_image'] = range_image
+    if 'dense_range_image' in collect_data:
+        tmp_img = range_image[:,:,0]
+        dense_range_image,_ = fill_in_multiscale(tmp_img,max_depth=100)
+        dense_range_image = np.repeat(dense_range_image[...,np.newaxis],3,axis=-1)
+        all_data['dense_range_image'] = dense_range_image
+    return all_data
 def project_to_image(nusc: NuScenes,sample_token:str,pointsensor_channel: str='LIDAR_TOP',camera_channel:str='CAM_FRONT',out_path:str=None,
                      img_size=(128,256)):
     sample_record = nusc.get('sample',sample_token)

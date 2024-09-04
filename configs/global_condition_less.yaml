@@ -34,7 +34,7 @@ model:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
         image_size: [16,32]
-        in_channels: 8
+        in_channels: 4
         out_channels: 4
         num_classes: 2
         model_channels: 320
@@ -123,7 +123,7 @@ model:
             ch: [256,512,768]
             context_dims: 768
             sigma: 1
-            trainable: True
+            trainable: False
         # action_encoder_config:
         #   target: ldm.models.actionformer.ActionEncoder
         #   params:
@@ -141,29 +141,29 @@ data:
       target: data.video_lidar_dataloader.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
           img_size: [256,128]
           nusc_canbus_frequency: 50
           camera_frequency: 3
         num_boxes: 70
         movie_len: 5
         split_name: train
-        collect_condition: ['reference_image','HDmap','range_image','dense_range_image','3Dbox','text']
+        collect_condition: ['reference_image','range_image','text']
   
     validation:
       target: data.video_lidar_dataloader.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
           img_size: [256,128]
           nusc_canbus_frequency: 50
           camera_frequency: 3
         num_boxes: 70
         movie_len: 5
         split_name: val
-        collect_condition: ['reference_image','HDmap','range_image','dense_range_image','3Dbox','text']
+        collect_condition: ['reference_image','range_image','text']
 
 
 lightning:

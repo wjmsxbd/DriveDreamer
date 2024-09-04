@@ -102,6 +102,8 @@ model:
         height: 16
         width: 32
         obj_dims: 768
+        use_only_action: True
+        action_dim: 14
         outpadding: [[0,0],[0,0],[0,0]]
         # ignore_keys: ['first_stage_model','hdmap_encoder']
         # modify_keys: ['box_encoder']
@@ -207,12 +209,6 @@ model:
             context_dims: 768
             sigma: 1
             trainable: False
-        action_encoder_config:
-          target: ldm.models.actionformer.ActionEncoder
-          params:
-            in_channels: 14
-            ch: [32,128]
-            trainable: True
 
 data:
   target: main.DataModuleFromConfig

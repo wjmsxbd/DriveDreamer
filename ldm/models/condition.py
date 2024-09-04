@@ -291,7 +291,10 @@ class GlobalCondition(pl.LightningModule):
             out['text_emb'] = text_emb
         if 'actions' in condition_keys:
             actions = batch['actions']
-            actions_embed = self.action_encoder(actions)
+            if not self.action_encoder is None:
+                actions_embed = self.action_encoder(actions)
+            else:
+                actions_embed = actions
             out['actions'] = actions_embed
 
         return out

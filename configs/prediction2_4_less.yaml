@@ -102,8 +102,6 @@ model:
         height: 16
         width: 32
         obj_dims: 768
-        use_only_action: True
-        action_dim: 14
         outpadding: [[0,0],[0,0],[0,0]]
         # ignore_keys: ['first_stage_model','hdmap_encoder']
         # modify_keys: ['box_encoder']

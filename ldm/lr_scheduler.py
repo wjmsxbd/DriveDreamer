@@ -96,3 +96,22 @@ class LambdaLinearScheduler(LambdaWarmUpCosineScheduler2):
             self.last_f = f
             return f
 
+
+class LambdaLinearScheduler2(LambdaWarmUpCosineScheduler2):
+
+    def schedule(self, n, **kwargs):
+        cycle = self.find_in_interval(n)
+        n = n - self.cum_cycles[cycle]
+        if self.verbosity_interval > 0:
+            if n % self.verbosity_interval == 0: print(f"current step: {n}, recent lr-multiplier: {self.last_f}, "
+                                                       f"current cycle {cycle}")
+
+        if n < self.lr_warm_up_steps[cycle]:
+            f = (self.f_max[cycle] - self.f_start[cycle]) / self.lr_warm_up_steps[cycle] * n + self.f_start[cycle]
+            self.last_f = f
+            return f
+        else:
+            f = self.f_min[cycle] + (self.f_max[cycle] - self.f_min[cycle]) * (self.cycle_lengths[cycle] - n) / (self.cycle_lengths[cycle] - self.lr_warm_up_steps[cycle])
+            self.last_f = f
+            return f
+        

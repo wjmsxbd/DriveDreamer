@@ -228,6 +228,7 @@ python main.py --base configs/global_condition_less.yaml --train True
 `
 
 predict：
+
 `
 python main.py --base configs/prediction2_4_less.yaml --train True
 `

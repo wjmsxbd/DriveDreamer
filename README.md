@@ -215,8 +215,9 @@ python main.py --base configs/prediction4.yaml --train True
 
 #### 多机多卡训练
 修改configs里面的num_nodes,在每个节点上运行以下命令
+
 `
-torchrun --nnodes 节点个数 --nproc_per_node 每个节点设置的显卡个数 --rdzv_backend c10d --rdzv_endpoint $MASTER_ADDR:$MASTER_PORT main.py --base configs/actionformer4_train.yaml --train True
+torchrun --nnodes 节点个数 --nproc_per_node 每个节点设置的显卡个数 --rdzv_backend c10d --rdzv_endpoint $MASTER_ADDR:$MASTER_PORT main.py --base configs/global_condition_less.yaml --train True
 `
 
 #### 只保留text和actions训练

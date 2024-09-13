@@ -222,9 +222,11 @@ torchrun --nnodes 节点个数 --nproc_per_node 每个节点设置的显卡个�
 
 #### 只保留text和actions训练
 video重建：
+
 `
 python main.py --base configs/global_condition_less.yaml --train True
 `
+
 predict：
 `
 python main.py --base configs/prediction2_4_less.yaml --train True

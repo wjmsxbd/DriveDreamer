@@ -32,9 +32,11 @@ from einops import rearrange
 import matplotlib
 import imageio
 from io import BytesIO
+from einops import repeat
 # import objgraph
 # from pympler import tracker,summary,muppy
-
+import math
+import cv2
 try:
     import moxing as mox
 
@@ -520,11 +522,18 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
     cam_front_calibrated_sensor_token = nusc.get('sample_data',cam_front_token)['calibrated_sensor_token']
     pointsensor_token = sample_record['data']['LIDAR_TOP']
     pointsensor = nusc.get('sample_data',pointsensor_token)
+    # ego_pose = nusc.get('ego_pose',pointsensor['ego_pose_token'])
+    # print(ego_pose['translation'])
     Lidar_TOP_record = nusc.get('calibrated_sensor',pointsensor['calibrated_sensor_token'])
     cam_front_record = nusc.get('calibrated_sensor',cam_front_calibrated_sensor_token)
     Lidar_TOP_poserecord = nusc.get('ego_pose',pointsensor['ego_pose_token'])
     cam_poserecord = nusc.get('ego_pose',nusc.get('sample_data',cam_front_token)['ego_pose_token'])
-
+    # get_bev_hdmap(cam_front_token,nusc,nusc_map)
+    if 'bev_images' in collect_data:
+        # outpath = 'test.png'
+        bev_images = render_ego_centric_map(cam_front_token,nusc,nusc_map,img_size=img_size)
+        all_data['bev_images'] = bev_images
+    
     if 'Lidar_TOP_record' in collect_data:
         all_data['Lidar_TOP_record'] = Lidar_TOP_record
     if 'Lidar_TOP_poserecord' in collect_data:
@@ -556,13 +565,13 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
             all_data['HDmap'] = now_hdmap
     else:
         cam_front_img = mpimg.imread(cam_front_path)
-        now_hdmap = imageio.v2.imread(hdmap_path)
         imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
         cam_front_img = Image.fromarray(cam_front_img)
         cam_front_img = np.array(cam_front_img.resize(img_size))
         if 'reference_image' in collect_data:
             all_data['reference_image'] = cam_front_img
         if 'HDmap' in collect_data:
+            now_hdmap = imageio.imread(hdmap_path)
             now_hdmap = Image.fromarray(now_hdmap)
             now_hdmap = np.array(now_hdmap.resize(img_size),dtype=np.uint8)
             all_data['HDmap'] = now_hdmap
@@ -614,7 +623,7 @@ def project_to_image(nusc: NuScenes,sample_token:str,pointsensor_channel: str='L
     col_indices = col_indices.astype(np.int16)
     range_image = np.zeros((h,w)).astype(np.uint8)
     for i in range(len(row_indices)):
-        
+
         range_image[row_indices[i],col_indices[i]] = max(range_image[row_indices[i],col_indices[i]],r[i].copy())
     # range_image = np.array(range_image * 255.).astype(np.uint8)
     scan,points = None,None
@@ -623,6 +632,21 @@ def project_to_image(nusc: NuScenes,sample_token:str,pointsensor_channel: str='L
         image = Image.fromarray(range_image)
         image.save(out_path)
     return range_image
+
+def get_gt_lidar_point(nusc:NuScenes,sample_token:str,return_intensity=False):
+    sample_record = nusc.get('sample',sample_token)
+    pointsensor_token = sample_record['data']['LIDAR_TOP']
+    pointsensor = nusc.get('sample_data',pointsensor_token)
+    pcl_path = osp.join(nusc.dataroot,pointsensor['filename'])
+    scan = np.fromfile(pcl_path, dtype=np.float32)
+    if return_intensity:
+        points = scan.reshape((-1,5))[:,:4].T
+    else:
+        points = scan.reshape((-1, 5))[:, :3].T
+    phi = np.arctan2(points[0],points[1])
+    mask = np.logical_and(phi > -np.pi/6,phi < np.pi/6)
+    points = points[:,mask]
+    return points.T
 
 def project_to_bev(nusc:NuScenes,sample_token:str,outpath:str,res=0.5):
     sample_record = nusc.get('sample',sample_token)
@@ -656,6 +680,52 @@ def project_to_bev(nusc:NuScenes,sample_token:str,outpath:str,res=0.5):
         img = Image.fromarray(top)
         img.save(outpath)
     return top
+
+def get_bev_hdmap(sample_data_token:str,
+                  nusc:NuScenes,
+                  nusc_map:NuScenesMap,
+                  patch_radius: float=25.6,
+                  resolution: int=10,
+                  ):
+    layer_names = ['lane_divider','lane','ped_crossing']
+    sd_record = nusc.get('sample_data',sample_data_token)
+    pose_record = nusc.get('ego_pose',sd_record['ego_pose_token'])
+    box_coords = (
+        pose_record['translation'][0] - patch_radius,
+        pose_record['translation'][1] - patch_radius,
+        pose_record['translation'][0] + patch_radius,
+        pose_record['translation'][1] + patch_radius
+    )
+    records_in_path = nusc_map.get_records_in_patch(box_coords,layer_names,mode='intersect')
+    layer_color = {'ped_crossing':(0,255,0),'lane':(0,0,255),'lane_divider':(255,0,0)}
+    bev_hdmap = np.zeros((int(patch_radius * resolution),int(patch_radius * resolution),3)).astype(np.uint8)
+    for layer_name in layer_names:
+        for token in records_in_path[layer_name]:
+            record = nusc_map.get(layer_name,token)
+            if layer_name == 'lane_divider':
+                line_token = record['line_token']
+                line = nusc_map.extract_line(line_token)
+                points = np.array(line.xy).copy()
+                points = ((points - np.array(pose_record['translation'][:2])[:,np.newaxis])) * resolution + np.array([bev_hdmap.shape[0] // 2,bev_hdmap.shape[1] //2])[:,np.newaxis]
+                points = points.astype(np.int16)
+                for i in range(len(points[0])-1):
+                    cv2.line(bev_hdmap,points[:,i],points[:,i+1],color=layer_color[layer_name],thickness=5)
+            else:
+                polygon_tokens = [record['polygon_token']]
+                for polygon_token in polygon_tokens:
+                    polygon = nusc_map.extract_polygon(polygon_token)
+                    points = np.array(polygon.exterior.xy).copy()
+                    points = ((points - np.array(pose_record['translation'][:2])[:,np.newaxis])) * resolution + np.array([bev_hdmap.shape[0] // 2,bev_hdmap.shape[1] //2])[:,np.newaxis]
+                    points = points.astype(np.int32)
+                    points = points.T.reshape(-1,1,2)
+                    cv2.polylines(bev_hdmap,[points],isClosed=True,color=layer_color[layer_name],thickness=3)
+        
+
+                
+    bev_hdmap = Image.fromarray(bev_hdmap)
+    bev_hdmap.save("test.png")
+
+
 
 def project_to_camera(range_image,point_sensor_record,cam_sensor_record,ego_pose_record,img_size=(128,256),min_dist=1.0,out_path=None):
     indices = np.nonzero(range_image)
@@ -941,6 +1011,163 @@ def map_pointcloud_to_image(nusc:NuScenes,
     points = points[:, mask]
     coloring = coloring[mask]
     return points, coloring, im
+
+
+def render_ego_centric_map(sample_data_token:str,
+                           nusc:NuScenes,
+                           nusc_map:NuScenesMap,
+                           axes_limit: float = 25.6,
+                           img_size: tuple = (256,128),
+                           outpath = None):
+    def crop_image(image:np.array,
+                   x_px: int,
+                   y_px: int,
+                   axes_limit_px: int,) -> np.array:
+        x_min = int(x_px - axes_limit_px)
+        x_max = int(x_px + axes_limit_px)
+        y_min = int(y_px - axes_limit_px // 2)
+        y_max = int(y_px + axes_limit_px // 2)
+        crop_image = image[y_min:y_max,x_min:x_max].copy()
+        return crop_image
+    def check_coords(x,y,x_min,x_max,y_min,y_max):
+        return x>=x_min and x<=x_max and y>=y_min and y<=y_max
+    
+    num_colors = 40
+    colors = plt.cm.get_cmap('tab20', num_colors)
+    colormap = {}
+    idx = 0
+    for category in nusc.category:
+        colormap[category['name']] = colors.colors[idx][:3]
+        idx += 1
+    sd_record = nusc.get('sample_data',sample_data_token)
+    sample = nusc.get('sample',sd_record['sample_token'])
+    scene = nusc.get('scene',sample['scene_token'])
+    log = nusc.get('log',scene['log_token'])
+
+    # map_path = os.path.join(nusc_map.dataroot,'maps/basemap',str(nusc_map.map_name)+'.png')
+    # detail_map = mpimg.imread(map_path)
+
+    map_ = nusc.get('map',log['map_token'])
+    map_mask = map_['mask']
+    pose = nusc.get('ego_pose',sd_record['ego_pose_token'])
+    pixel_coords = map_mask.to_pixel_coords(pose['translation'][0],pose['translation'][1])
+    scaled_limit_px = int(axes_limit * (1.0 / map_mask.resolution))
+    mask_raster = map_mask.mask()
+    # mask_raster = Image.fromarray(mask_raster)
+    # mask_raster.save('test.png')
+    cropped = crop_image(mask_raster,pixel_coords[0],pixel_coords[1],int(scaled_limit_px * math.sqrt(5)))
+    boxes = nusc.get_boxes(sample_data_token)
+    # _,boxes,_ = nusc.get_sample_data(sample_data_token,use_flat_vehicle_coordinates=True)
+    axes_limit_px = int(scaled_limit_px * math.sqrt(5))
+    x_min = pixel_coords[0] - axes_limit_px
+    x_max = pixel_coords[0] + axes_limit_px
+    y_min = pixel_coords[1] - axes_limit_px // 2
+    y_max = pixel_coords[1] + axes_limit_px // 2
+    cropped[cropped == map_mask.foreground] = 128
+    cropped[cropped == map_mask.background] = 255
+    cropped[cropped.shape[0]//2-5:cropped.shape[0]//2+5,cropped.shape[1]//2-5:cropped.shape[1]//2+5] = 0
+    cropped = np.repeat(cropped[...,np.newaxis],repeats=3,axis=-1)
+    cropped = (cropped / 255.).astype(np.float32)
+    for box in boxes:
+        corners = box.corners()
+        corners = corners.mean(axis=1)
+        box_coords = map_mask.to_pixel_coords(corners[0],corners[1])
+        if check_coords(box_coords[0],box_coords[1],x_min,x_max,y_min,y_max):
+            box_coords = (box_coords[1][0] - y_min[0],box_coords[0][0] - x_min[0])
+            box_colors = colormap[box.name]
+            cropped[box_coords[0]-5:box_coords[0]+5,box_coords[1]-5:box_coords[1]+5] = box_colors
+    ypr_rad = Quaternion(pose['rotation']).yaw_pitch_roll
+    yaw_deg = -math.degrees(ypr_rad[0])
+    cropped = (cropped * 255.).astype(np.uint8)
+    # rotated_cropped = np.array(Image.fromarray(cropped).rotate(yaw_deg))
+    rotated_cropped = cropped
+    ego_centric_map = crop_image(rotated_cropped,
+                                 int(rotated_cropped.shape[1] / 2),
+                                 int(rotated_cropped.shape[0] / 2),
+                                 scaled_limit_px)
+    ego_centric_map = Image.fromarray(ego_centric_map).resize(img_size)
+    ego_centric_map = np.array(ego_centric_map)
+    outpath="test1.png"
+    if outpath:
+        img = Image.fromarray(ego_centric_map)
+        img.save(outpath)
+    return ego_centric_map
+    
+def render_ego_centric_map_detail(sample_data_token:str,
+                           nusc:NuScenes,
+                           nusc_map:NuScenesMap,
+                           axes_limit: float = 25.6,
+                           img_size: tuple = (256,128),
+                           outpath = None):
+    def crop_image(image:np.array,
+                   x_px: int,
+                   y_px: int,
+                   axes_limit_px: int,) -> np.array:
+        x_min = int(x_px - axes_limit_px)
+        x_max = int(x_px + axes_limit_px)
+        y_min = int(y_px - axes_limit_px // 2)
+        y_max = int(y_px + axes_limit_px // 2)
+        crop_image = image[y_min:y_max,x_min:x_max].copy()
+        return crop_image
+    def check_coords(x,y,x_min,x_max,y_min,y_max):
+        return x>=x_min and x<=x_max and y>=y_min and y<=y_max
+    
+    num_colors = 40
+    colors = plt.cm.get_cmap('tab20', num_colors)
+    colormap = {}
+    idx = 0
+    for category in nusc.category:
+        colormap[category['name']] = colors.colors[idx][:3]
+        idx += 1
+    sd_record = nusc.get('sample_data',sample_data_token)
+    sample = nusc.get('sample',sd_record['sample_token'])
+    scene = nusc.get('scene',sample['scene_token'])
+    log = nusc.get('log',scene['log_token'])
+
+    map_path = os.path.join(nusc_map.dataroot,'maps/basemap',str(nusc_map.map_name)+'.png')
+    detail_map = mpimg.imread(map_path)
+
+    map_ = nusc.get('map',log['map_token'])
+    map_mask = map_['mask']
+    pose = nusc.get('ego_pose',sd_record['ego_pose_token'])
+    pixel_coords = map_mask.to_pixel_coords(pose['translation'][0],pose['translation'][1])
+    scaled_limit_px = int(axes_limit * (1.0 / map_mask.resolution))
+
+    cropped = crop_image(detail_map,pixel_coords[0],pixel_coords[1],int(scaled_limit_px * math.sqrt(5)))
+    del detail_map
+    boxes = nusc.get_boxes(sample_data_token)
+    # _,boxes,_ = nusc.get_sample_data(sample_data_token,use_flat_vehicle_coordinates=True)
+    axes_limit_px = int(scaled_limit_px * math.sqrt(5))
+    x_min = pixel_coords[0] - axes_limit_px
+    x_max = pixel_coords[0] + axes_limit_px
+    y_min = pixel_coords[1] - axes_limit_px // 2
+    y_max = pixel_coords[1] + axes_limit_px // 2
+    
+    cropped[cropped.shape[0]//2-5:cropped.shape[0]//2+5,cropped.shape[1]//2-5:cropped.shape[1]//2+5] = 0
+    cropped = np.repeat(cropped[...,np.newaxis],repeats=3,axis=-1)
+    for box in boxes:
+        corners = box.corners()
+        corners = corners.mean(axis=1)
+        box_coords = map_mask.to_pixel_coords(corners[0],corners[1])
+        if check_coords(box_coords[0],box_coords[1],x_min,x_max,y_min,y_max):
+            box_coords = (box_coords[1][0] - y_min[0],box_coords[0][0] - x_min[0])
+            box_colors = colormap[box.name]
+            cropped[box_coords[0]-5:box_coords[0]+5,box_coords[1]-5:box_coords[1]+5] = box_colors
+    ypr_rad = Quaternion(pose['rotation']).yaw_pitch_roll
+    yaw_deg = -math.degrees(ypr_rad[0])
+    cropped = (cropped * 255.).astype(np.uint8)
+    print(cropped.shape)
+    rotated_cropped = np.array(Image.fromarray(cropped).rotate(yaw_deg))
+    ego_centric_map = crop_image(rotated_cropped,
+                                 int(rotated_cropped.shape[1] / 2),
+                                 int(rotated_cropped.shape[0] / 2),
+                                 scaled_limit_px)
+    ego_centric_map = Image.fromarray(ego_centric_map).resize(img_size)
+    ego_centric_map = np.array(ego_centric_map)
+    if outpath:
+        img = Image.fromarray(ego_centric_map)
+        img.save(outpath)
+    return ego_centric_map
 
 def get_depth_min_max(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448)):
     sample_record = nusc.get('sample',sample_token)

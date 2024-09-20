@@ -44,6 +44,110 @@ try:
 except:
     pass
 
+eps = 1e-10
+def sgn(x):
+    if x < -eps:
+        return -1
+    if x > eps:
+        return 1
+    return 0
+
+class Point:
+    # TODO:modify dtype to float64
+    def __init__(self,x=0,y=0):
+        self.x = x
+        self.y = y
+
+    def __add__(self,other):
+        return Point(self.x + other.x,self.y + other.y)
+
+    def __sub__(self,other):
+        return Point(self.x - other.x,self.y - other.y)
+
+    def __mul__(self,other):
+        if isinstance(other,Point):
+            return self.x*other.x+self.y*other.y
+        else:
+            return Point(self.x * other,self.y * other)
+
+    def __truediv__(self,other):
+        return Point(self.x / other,self.y / other)
+
+    def __eq__(self,other):
+        return math.abs(self.x - other.x) <= eps and math.abs(self.y - other.y) <= eps
+    
+def cross(a:Point,b:Point):
+    return a.x * b.y - a.y * b.x
+
+def point_on_segment(p:Point,a:Point,b:Point):
+    return sgn(cross(b - a,p - a)) == 0 and sgn((p-a) * (p-b)) <= 0
+
+def has_intersection(a:Point,b:Point,p:Point,q:Point):
+    d1,d2,d3,d4 = sgn(cross(b-a,p-a)),sgn(cross(b-a,q-a)),sgn(cross(q-p,a-p)),sgn(cross(q-p,b-p))
+    if d1 * d2 < 0 and d3 * d4 < 0:
+        return 1 # have intersection and the intersection point is not at the endpoint
+    if (d1 == 0 and point_on_segment(p,a,b)) or (d2==0 and point_on_segment(q,a,b)) or (d3==0 and point_on_segment(a,p,q)) or (d4==0 and point_on_segment(b,p,q)):
+        return -1 # overlapping or intersection point is at the endpoint
+    return 0
+
+def line_intersection(a:Point,b:Point,p:Point,q:Point):
+    # p!=q and a!=b
+    U = cross(p-a,q-p)
+    D = cross(b-a,q-p)
+    if sgn(D) == 0:
+        if sgn(U) == 0:
+            return 2,None # overlapping
+        else:
+            return 0,None # parallel
+    o = a + (b-a) * (U / D)
+    return 1,o
+
+def get_intersection_with_squre(a:Point,b:Point,x:Point,y:Point,z:Point,w:Point):
+    # a->b x->y->z->w->x
+    def is_better(A,B):
+        if B is None:
+            return True
+
+    d1,d2,d3,d4 = has_intersection(a,b,x,y),has_intersection(a,b,y,z),has_intersection(a,b,z,w),has_intersection(a,b,w,x)
+    candidate_points = []
+    if d1 == 1:
+        _,o = line_intersection(a,b,x,y)
+        if _ == 1:
+            candidate_points.append(o)
+    elif d1 == -1:
+        _,o = line_intersection(a,b,x,y)
+        if _ == 2:
+            candidate_points.append(o)
+
+    if d2 == 1:
+        _,o = line_intersection(a,b,y,z)
+        if _ == 1:
+            candidate_points.append(o)
+    elif d2 == -1:
+        _,o = line_intersection(a,b,y,z)
+        if _ == 2:
+            candidate_points.append(o)
+
+    if d3 == 1:
+        _,o = line_intersection(a,b,z,w)
+        if _ == 1:
+            candidate_points.append(o)
+    elif d3 == -1:
+        _,o = line_intersection(a,b,z,w)
+        if _ == 2:
+            candidate_points.append(o)
+
+    if d4 == 1:
+        _,o = line_intersection(a,b,w,x)
+        if _ == 1:
+            candidate_points.append(o)
+    elif d4 == -1:
+        _,o = line_intersection(a,b,w,x)
+        if _ == 2:
+            candidate_points.append(o)
+
+    return candidate_points
+
 class LidarPointCloud(PointCloud):
 
     @staticmethod
@@ -267,14 +371,18 @@ def get_hdmap_with_fig(fig,
 def get_hdmap(sample_data_token:str,
               nusc:NuScenes,
               nusc_map:NuScenesMap,
-              patch_radius:float = 10000,
+              patch_radius:float = 80,
               render_behind_cam:bool = True,
               render_outside_im:bool = True,
-              min_polygon_area: float = 1000,
               outpath:str=None):
-        layer_names = ['lane_divider','lane','ped_crossing']
+        def check_out_windows(point):
+            return point.x < 0 or point.x >= 1600 or point.y < 0 or point.y >= 1200
+
+        layer_names = ['lane','ped_crossing']
+        # layer_names = ['lane','ped_crossing']
         _,cs_record,pose_record,cam_intrinsic,imsize,yaw,translation = get_image_info(sample_data_token,nusc)
         # im = Image.open(_)
+        # im.save('test_.png')
         box_coords = (
             pose_record['translation'][0] - patch_radius,
             pose_record['translation'][1] - patch_radius,
@@ -285,12 +393,12 @@ def get_hdmap(sample_data_token:str,
         records_in_patch = nusc_map.get_records_in_patch(box_coords,layer_names,mode='intersect')
 
         #Init axes.
-        fig = plt.figure(figsize=(16,9),facecolor='black',dpi=100)
-        ax = fig.add_axes([0,0,1,1])
-        ax.set_xlim(0,imsize[0])
-        ax.set_ylim(0,imsize[1])
-        
-        layer_color = {'ped_crossing':'green','lane':'red'}
+        hdmap = np.zeros((1200,1600,3)).astype(np.uint8)
+        left_up_corner = Point(0,0)
+        left_down_corner = Point(0,1200-1)
+        right_up_corner = Point(1600-1,0)
+        right_down_corner = Point(1600-1,1200-1)
+        layer_color = {'ped_crossing':(0,255,0),'lane':(0,0,255),'lane_divider':(255,0,0)}
         for layer_name in layer_names:
             for token in records_in_patch[layer_name]:
                 record = nusc_map.get(layer_name,token)
@@ -327,8 +435,28 @@ def get_hdmap(sample_data_token:str,
                     else:
                         if np.any(np.logical_not(inside)):
                             continue
-                    line_proj = mlines.Line2D(points[0,:],points[1,:],color='blue')
-                    ax.add_line(line_proj)
+                    points = points[:2]
+                    for i in range(len(points[0])-1):
+                        point_A,point_B = Point(points[0,i],points[1,i]),Point(points[0,i+1],points[1,i+1])
+                        Bool_A,Bool_B = check_out_windows(point_A),check_out_windows(point_B)
+                        if Bool_A and Bool_B:
+                            PointA,PointB = Point(points[0,i],points[1,i]),Point(points[0,i+1],points[1,i+1])
+                            pointC = get_intersection_with_squre(PointA,PointB,left_up_corner,right_up_corner,right_down_corner,left_down_corner)
+                            if len(pointC) == 2:
+                                PointA,PointB = pointC[0],pointC[1]
+                                cv2.line(hdmap,np.array([PointA.x,PointA.y],dtype=np.int16),np.array([PointB.x,PointB.y],dtype=np.int16),color=layer_color[layer_name],thickness=3)
+                        elif Bool_A or Bool_B:
+                            PointA,PointB = Point(points[0,i],points[1,i]),Point(points[0,i+1],points[1,i+1])
+                            pointC = get_intersection_with_squre(PointA,PointB,left_up_corner,right_up_corner,right_down_corner,left_down_corner)
+                            if pointC == []:
+                                continue
+                            if Bool_A:
+                                PointA = pointC[0]
+                            else:
+                                PointB = pointC[0]
+                            cv2.line(hdmap,np.array([PointA.x,PointA.y],dtype=np.int16),np.array([PointB.x,PointB.y],dtype=np.int16),color=layer_color[layer_name],thickness=3)
+                        else:
+                            cv2.line(hdmap,points[:,i].astype(np.int16),points[:,i+1].astype(np.int16),color=layer_color[layer_name],thickness=3)
                 else:
                     polygon_tokens = [record['polygon_token']]
                     for polygon_token in polygon_tokens:
@@ -373,26 +501,34 @@ def get_hdmap(sample_data_token:str,
                         else:
                             if np.any(np.logical_not(inside)):
                                 continue
-
                         points = points[:2,:]
-                        points = [(p0,p1) for (p0,p1) in zip(points[0],points[1])]
-                        polygon_proj = Polygon(points)
-
-                        if polygon_proj.area < min_polygon_area:
-                            continue
-                        label = layer_name
-                        
-                        plt.plot([point[0] for point in points],[point[1] for point in points],color=layer_color[layer_name])
-                        #ax.add_patch(descartes.PolygonPatch(polygon_proj,fc=nusc_map.explorer.color_map[layer_name],ec='red',alpha=0,label=label))
-        plt.axis('off')
-        ax.invert_yaxis()
-        ax.set_aspect('equal')
+                        # if polygon_proj.area < min_polygon_area or polygon_proj.area > 1000000:
+                        #     continue
+                        points = points[:2,:]
+                        for i in range(len(points[0])-1):
+                            point_A,point_B = Point(points[0,i],points[1,i]),Point(points[0,i+1],points[1,i+1])
+                            Bool_A,Bool_B = check_out_windows(point_A),check_out_windows(point_B)
+                            if Bool_A and Bool_B:
+                                PointA,PointB = Point(points[0,i],points[1,i]),Point(points[0,i+1],points[1,i+1])
+                                pointC = get_intersection_with_squre(PointA,PointB,left_up_corner,right_up_corner,right_down_corner,left_down_corner)
+                                if len(pointC) == 2:
+                                    PointA,PointB = pointC[0],pointC[1]
+                                    cv2.line(hdmap,np.array([PointA.x,PointA.y],dtype=np.int16),np.array([PointB.x,PointB.y],dtype=np.int16),color=layer_color[layer_name],thickness=3)
+                            elif Bool_A or Bool_B:
+                                PointA,PointB = Point(points[0,i],points[1,i]),Point(points[0,i+1],points[1,i+1])
+                                pointC = get_intersection_with_squre(PointA,PointB,left_up_corner,right_up_corner,right_down_corner,left_down_corner)
+                                if pointC == []:
+                                    continue
+                                if Bool_A:
+                                    PointA = pointC[0]
+                                else:
+                                    PointB = pointC[0]
+                                cv2.line(hdmap,np.array([PointA.x,PointA.y],dtype=np.int16),np.array([PointB.x,PointB.y],dtype=np.int16),color=layer_color[layer_name],thickness=3)
+                            else:
+                                cv2.line(hdmap,points[:,i].astype(np.int16),points[:,i+1].astype(np.int16),color=layer_color[layer_name],thickness=3)
         if outpath is not None:
-            fig.savefig(outpath,bbox_inches='tight',pad_inches=0)
-        hdmap = convert_fig_to_numpy3(fig)
-        fig.clf()
-        ax.cla()
-        plt.close(fig)
+            temp = Image.fromarray(hdmap)
+            temp.save(outpath)
         return hdmap
 
 def get_image_info(sample_data_token:str,
@@ -543,12 +679,7 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
         all_data['cam_poserecord'] = cam_poserecord
 
     cam_front_path = nusc.get('sample_data',cam_front_token)['filename']
-    hdmap_path = cam_front_path.split('/')
     cam_front_path = os.path.join(dataset_dir,cam_front_path)
-    hdmap_path[0] = hdmap_path[0] + "_hdmap"
-    hdmap_path[-1] = hdmap_path[-1][:-4] + '.png'
-    hdmap_path = os.path.join(dataset_dir,hdmap_path[0],hdmap_path[1],hdmap_path[2])
-
     if cam_front_path.startswith('obs'):
         with mox.file.File(cam_front_path, 'rb') as f:
             img_data = f.read()
@@ -557,12 +688,6 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
         cam_front_img = np.array(cam_front_img.resize(img_size))
         if 'reference_image' in collect_data:
             all_data['reference_image'] = cam_front_img
-        if 'HDmap' in collect_data:
-            with mox.file.File(hdmap_path,'rb') as f:
-                img_data = f.read()
-            now_hdmap = Image.open(io.BytesIO(img_data))
-            now_hdmap = np.array(now_hdmap.resize(img_size))
-            all_data['HDmap'] = now_hdmap
     else:
         cam_front_img = mpimg.imread(cam_front_path)
         imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
@@ -570,11 +695,12 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
         cam_front_img = np.array(cam_front_img.resize(img_size))
         if 'reference_image' in collect_data:
             all_data['reference_image'] = cam_front_img
-        if 'HDmap' in collect_data:
-            now_hdmap = imageio.imread(hdmap_path)
-            now_hdmap = Image.fromarray(now_hdmap)
-            now_hdmap = np.array(now_hdmap.resize(img_size),dtype=np.uint8)
-            all_data['HDmap'] = now_hdmap
+
+    if 'HDmap' in collect_data:
+        hdmap = get_hdmap(cam_front_token,nusc,nusc_map)
+        hdmap = Image.fromarray(hdmap)
+        hdmap = np.array(hdmap.resize(img_size),dtype=np.uint8)
+        all_data['HDmap'] = hdmap
 
     if '3Dbox' in collect_data:
         box_list,box_category = get_3dbox(cam_front_token,nusc,imsize)#out_path=f'./temp/3dbox/{count:02d}.jpg'
@@ -686,19 +812,32 @@ def get_bev_hdmap(sample_data_token:str,
                   nusc_map:NuScenesMap,
                   patch_radius: float=25.6,
                   resolution: int=10,
+                  img_size: List=[256,128]
                   ):
+    def crop_image(image:np.array,
+                   x_px: int,
+                   y_px: int,
+                   axes_limit_px: int,) -> np.array:
+        x_min = int(x_px - axes_limit_px)
+        x_max = int(x_px + axes_limit_px)
+        y_min = int(y_px - axes_limit_px // 2)
+        y_max = int(y_px + axes_limit_px // 2)
+        crop_image = image[y_min:y_max,x_min:x_max].copy()
+        return crop_image
     layer_names = ['lane_divider','lane','ped_crossing']
     sd_record = nusc.get('sample_data',sample_data_token)
     pose_record = nusc.get('ego_pose',sd_record['ego_pose_token'])
+    patch_radius_scale = patch_radius * 5
     box_coords = (
-        pose_record['translation'][0] - patch_radius,
-        pose_record['translation'][1] - patch_radius,
-        pose_record['translation'][0] + patch_radius,
-        pose_record['translation'][1] + patch_radius
+        pose_record['translation'][0] - patch_radius_scale,
+        pose_record['translation'][1] - patch_radius_scale / 2,
+        pose_record['translation'][0] + patch_radius_scale,
+        pose_record['translation'][1] + patch_radius_scale / 2,
     )
+
     records_in_path = nusc_map.get_records_in_patch(box_coords,layer_names,mode='intersect')
     layer_color = {'ped_crossing':(0,255,0),'lane':(0,0,255),'lane_divider':(255,0,0)}
-    bev_hdmap = np.zeros((int(patch_radius * resolution),int(patch_radius * resolution),3)).astype(np.uint8)
+    bev_hdmap = np.zeros((int(patch_radius_scale / 2 * resolution+1),int(patch_radius_scale * resolution+1),3)).astype(np.uint8)
     for layer_name in layer_names:
         for token in records_in_path[layer_name]:
             record = nusc_map.get(layer_name,token)
@@ -706,24 +845,34 @@ def get_bev_hdmap(sample_data_token:str,
                 line_token = record['line_token']
                 line = nusc_map.extract_line(line_token)
                 points = np.array(line.xy).copy()
-                points = ((points - np.array(pose_record['translation'][:2])[:,np.newaxis])) * resolution + np.array([bev_hdmap.shape[0] // 2,bev_hdmap.shape[1] //2])[:,np.newaxis]
+                # points = ((points - np.array(pose_record['translation'][:2])[:,np.newaxis])) * resolution + np.array([bev_hdmap.shape[0] // 2,bev_hdmap.shape[1] //2])[:,np.newaxis]
+                points_x = (points[0] - np.array(pose_record['translation'][0] )) * resolution + bev_hdmap.shape[1] // 2
+                points_y = (np.array(pose_record['translation'][1] - points[1])) * resolution + bev_hdmap.shape[0] // 2
+                points = np.concatenate([points_x[np.newaxis,:],points_y[np.newaxis,:]],axis=0)
                 points = points.astype(np.int16)
                 for i in range(len(points[0])-1):
-                    cv2.line(bev_hdmap,points[:,i],points[:,i+1],color=layer_color[layer_name],thickness=5)
+                    cv2.line(bev_hdmap,points[:,i],points[:,i+1],color=layer_color[layer_name],thickness=3)
             else:
                 polygon_tokens = [record['polygon_token']]
                 for polygon_token in polygon_tokens:
                     polygon = nusc_map.extract_polygon(polygon_token)
                     points = np.array(polygon.exterior.xy).copy()
-                    points = ((points - np.array(pose_record['translation'][:2])[:,np.newaxis])) * resolution + np.array([bev_hdmap.shape[0] // 2,bev_hdmap.shape[1] //2])[:,np.newaxis]
+                    # points = ((points - np.array(pose_record['translation'][:2])[:,np.newaxis])) * resolution + np.array([bev_hdmap.shape[0] // 2,bev_hdmap.shape[1] //2])[:,np.newaxis]
+                    points_x = (points[0] - np.array(pose_record['translation'][0])) * resolution + bev_hdmap.shape[1] // 2
+                    points_y = (np.array(pose_record['translation'][1] - points[1])) * resolution + bev_hdmap.shape[0] // 2
+                    points = np.concatenate([points_x[np.newaxis,:],points_y[np.newaxis,:]],axis=0)
                     points = points.astype(np.int32)
                     points = points.T.reshape(-1,1,2)
                     cv2.polylines(bev_hdmap,[points],isClosed=True,color=layer_color[layer_name],thickness=3)
         
-
-                
+    ypr_rad = Quaternion(pose_record['rotation']).yaw_pitch_roll
+    yaw_deg = -math.degrees(ypr_rad[0])
+    bev_hdmap = np.array(Image.fromarray(bev_hdmap).rotate(yaw_deg))     
+    bev_hdmap = crop_image(bev_hdmap,bev_hdmap.shape[1]//2,bev_hdmap.shape[0]//2,patch_radius*resolution)
     bev_hdmap = Image.fromarray(bev_hdmap)
-    bev_hdmap.save("test.png")
+    bev_hdmap = bev_hdmap.resize(img_size)
+    bev_hdmap = np.array(bev_hdmap)
+    return bev_hdmap
 
 
 

@@ -49,10 +49,10 @@ class dataloader(data.Dataset):
         self.movie_len = movie_len
         self.num_boxes = num_boxes
         self.nusc_maps = {
-            'boston-seaport': NuScenesMap(dataroot=cfg['dataroot'], map_name='boston-seaport'),
-            'singapore-hollandvillage': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-hollandvillage'),
-            'singapore-onenorth': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-onenorth'),
-            'singapore-queenstown': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-queenstown'),
+            'boston-seaport': NuScenesMap(dataroot='.', map_name='boston-seaport'),
+            'singapore-hollandvillage': NuScenesMap(dataroot='.', map_name='singapore-hollandvillage'),
+            'singapore-onenorth': NuScenesMap(dataroot='.', map_name='singapore-onenorth'),
+            'singapore-queenstown': NuScenesMap(dataroot='.', map_name='singapore-queenstown'),
         }
         self.collect_condition = collect_condition
         self.load_data_infos()
@@ -208,7 +208,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/global_condition.yaml',
+                        default='configs/global_condition_less.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()

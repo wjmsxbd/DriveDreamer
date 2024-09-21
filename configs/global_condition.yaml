@@ -23,18 +23,18 @@ model:
     cond_stage_config: 
       target: ldm.models.autoencoder.FrozenCLIPTextEmbedder
     scheduler_config: #10000 warmup steps
-      target: ldm.lr_scheduler.LambdaLinearScheduler
+      target: ldm.lr_scheduler.LambdaLinearScheduler2
       params:
         warm_up_steps: [10000]
-        cycle_lengths: [10000000000000]
+        cycle_lengths: [100000000000]
         f_start: [1.e-6]
         f_max: [1.]
-        f_min: [1.]
+        f_min: [1.e-4]
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
         image_size: [16,32]
-        in_channels: 8
+        in_channels: 4
         out_channels: 4
         num_classes: 2
         model_channels: 320
@@ -97,6 +97,7 @@ model:
             trainable: False
             image_key: 'range_image'
             ignore_keys: []
+            img_size: [128,256]
             ddconfig:
               double_z: True
               z_channels: 4
@@ -141,29 +142,29 @@ data:
       target: data.video_lidar_dataloader.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
           img_size: [256,128]
           nusc_canbus_frequency: 50
           camera_frequency: 3
         num_boxes: 70
         movie_len: 5
         split_name: train
-        collect_condition: ['reference_image','HDmap','range_image','dense_range_image','3Dbox','text']
+        collect_condition: ['reference_image','range_image','text']
   
     validation:
       target: data.video_lidar_dataloader.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
           img_size: [256,128]
           nusc_canbus_frequency: 50
           camera_frequency: 3
         num_boxes: 70
         movie_len: 5
         split_name: val
-        collect_condition: ['reference_image','HDmap','range_image','dense_range_image','3Dbox','text']
+        collect_condition: ['reference_image','range_image','text']
 
 
 lightning:

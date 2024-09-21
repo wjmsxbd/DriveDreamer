@@ -133,55 +133,55 @@ class StandardDiffusionLoss(nn.Module):
                 target_hf = fourier_filter(target, scale=0.)
                 hf_loss = torch.mean((w * (predict_hf - target_hf) ** 2).reshape(target.shape[0], -1), 1).mean()
 
-                if self.depth_estimator is not None:
-                    predict_x,predict_lidar = torch.chunk(predict,2,0)
-                    predict_lidar = (torch.clip(predict_lidar,-1,1) + 1) / 2.
-                    mask = predict_lidar > 0.05
-                    predict_lidar = (predict_lidar * mask) * 255.
-                    indices = [torch.nonzero(predict_lidar[i]) for i in range(predict_lidar.shape[0])]
-                    for batch_id in range(predict_lidar.shape[0]):
-                        indice = indices[batch_id]
-                        points = torch.zeros((len(indice),3))
-                        for idx in range(len(indice)):
-                            vi,ui = indice[idx]
-                            phi = ((1+ui)/self.img_size[1] - 1) * torch.pi / 6
-                            theta = self.theta_up - (self.theta_up - self.theta_down) * ((vi+1) - 1./2) / self.img_size[0]
-                            r = predict_lidar[batch_id,vi,ui,0]
-                            point_x = r * torch.cos(theta) * torch.sin(phi)
-                            point_y = r * torch.cos(theta) * torch.cos(phi)
-                            point_z = r * torch.sin(theta)
-                            points[idx] = torch.tensor([point_x,point_y,point_z]).to(torch.float32)
-                        points = rearrange(points,'n c -> c n')
-                        pc = LidarPointCloud(points=points)
-                        pc.rotate(Quaternion(cond['Lidar_TOP_record']['rotation']).rotation_matrix)
-                        pc.translate(np.array(cond['Lidar_TOP_record']['translation']))
+                # if self.depth_estimator is not None:
+                #     predict_x,predict_lidar = torch.chunk(predict,2,0)
+                #     predict_lidar = (torch.clip(predict_lidar,-1,1) + 1) / 2.
+                #     mask = predict_lidar > 0.05
+                #     predict_lidar = (predict_lidar * mask) * 255.
+                #     indices = [torch.nonzero(predict_lidar[i]) for i in range(predict_lidar.shape[0])]
+                #     for batch_id in range(predict_lidar.shape[0]):
+                #         indice = indices[batch_id]
+                #         points = torch.zeros((len(indice),3))
+                #         for idx in range(len(indice)):
+                #             vi,ui = indice[idx]
+                #             phi = ((1+ui)/self.img_size[1] - 1) * torch.pi / 6
+                #             theta = self.theta_up - (self.theta_up - self.theta_down) * ((vi+1) - 1./2) / self.img_size[0]
+                #             r = predict_lidar[batch_id,vi,ui,0]
+                #             point_x = r * torch.cos(theta) * torch.sin(phi)
+                #             point_y = r * torch.cos(theta) * torch.cos(phi)
+                #             point_z = r * torch.sin(theta)
+                #             points[idx] = torch.tensor([point_x,point_y,point_z]).to(torch.float32)
+                #         points = rearrange(points,'n c -> c n')
+                #         pc = LidarPointCloud(points=points)
+                #         pc.rotate(Quaternion(cond['Lidar_TOP_record']['rotation']).rotation_matrix)
+                #         pc.translate(np.array(cond['Lidar_TOP_record']['translation']))
 
-                        pc.rotate(Quaternion(cond['Lidar_TOP_poserecord']['rotation']).rotation_matrix)
-                        pc.translate(np.array(cond['Lidar_TOP_poserecord']['translation']))
+                #         pc.rotate(Quaternion(cond['Lidar_TOP_poserecord']['rotation']).rotation_matrix)
+                #         pc.translate(np.array(cond['Lidar_TOP_poserecord']['translation']))
 
-                        pc.translate(-np.array(cond['cam_poserecord']['translation']))
-                        pc.rotate(Quaternion(cond['cam_poserecord']['rotation']).rotation_matrix.T)
+                #         pc.translate(-np.array(cond['cam_poserecord']['translation']))
+                #         pc.rotate(Quaternion(cond['cam_poserecord']['rotation']).rotation_matrix.T)
 
-                        pc.translate(-np.array(cond['cam_front_record']['translation']))
-                        pc.rotate(Quaternion(cond['cam_front_record']['rotation']).rotation_matrix.T)
-                        points = pc.points
-                        depths = points[2,:]
-                        points = view_points(pc.points[:3,:],np.array(cond['cam_front_record']['camera_intrinsic']),normalize=True)
-                        mask = np.ones(depths.shape[1],dtype=bool)
-                        mask = np.logical_and(mask, depths > 1)
-                        mask = np.logical_and(mask,points[0,:] > 0)
-                        mask = np.logical_and(mask,points[0,:] < 1600)
-                        mask = np.logical_and(mask,points[1,:] > 0)
-                        mask = np.logical_and(mask,points[1,:] < 1200)
-                        points = points[:,mask]
-                        depths = depths[mask]
-                        points[0,:] = points[0,:] / 1600 * self.img_size[1]
-                        points[1,:] = points[1,:] / 1200 * self.img_size[0]
-                        points = points.to(torch.uint8)
+                #         pc.translate(-np.array(cond['cam_front_record']['translation']))
+                #         pc.rotate(Quaternion(cond['cam_front_record']['rotation']).rotation_matrix.T)
+                #         points = pc.points
+                #         depths = points[2,:]
+                #         points = view_points(pc.points[:3,:],np.array(cond['cam_front_record']['camera_intrinsic']),normalize=True)
+                #         mask = np.ones(depths.shape[1],dtype=bool)
+                #         mask = np.logical_and(mask, depths > 1)
+                #         mask = np.logical_and(mask,points[0,:] > 0)
+                #         mask = np.logical_and(mask,points[0,:] < 1600)
+                #         mask = np.logical_and(mask,points[1,:] > 0)
+                #         mask = np.logical_and(mask,points[1,:] < 1200)
+                #         points = points[:,mask]
+                #         depths = depths[mask]
+                #         points[0,:] = points[0,:] / 1600 * self.img_size[1]
+                #         points[1,:] = points[1,:] / 1200 * self.img_size[0]
+                #         points = points.to(torch.uint8)
 
-                        pred_depth = self.depth_estimator(predict_x)
-                        sampled_depth = pred_depth[points]
-                        loss1 = (sampled_depth - depths) ** 2
+                #         pred_depth = self.depth_estimator(predict_x)
+                #         sampled_depth = pred_depth[points]
+                #         loss1 = (sampled_depth - depths) ** 2
 
                 
 

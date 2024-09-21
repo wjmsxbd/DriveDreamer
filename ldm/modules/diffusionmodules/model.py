@@ -864,10 +864,11 @@ class Encoder_Diffusion(nn.Module):
                                         stride=1,
                                         padding=1)
     
-    def forward(self,x):
+    def forward(self,x,return_temp_output=False):
         #timestep embedding
         temb = None
-
+        if return_temp_output:
+            temp = []
         #downsampling
         hs = [self.conv_in(x)]
         for i_level in range(self.num_resolutions):
@@ -876,8 +877,13 @@ class Encoder_Diffusion(nn.Module):
                 if len(self.down[i_level].attn) > 0:
                     h = self.down[i_level].attn[i_block](h)
                 hs.append(h)
+            if i_level == 0 and return_temp_output:
+                temp.append(h)
             if i_level != self.num_resolutions - 1:
-                hs.append(self.down[i_level].downsample(hs[-1]))
+                h = self.down[i_level].downsample(hs[-1])
+                hs.append(h)
+                if return_temp_output:
+                    temp.append(h)
         #middle
         h = hs[-1]
         h = self.mid.block_1(h,temb)
@@ -888,6 +894,8 @@ class Encoder_Diffusion(nn.Module):
         h = self.norm_out(h)
         h = nonlinearity(h)
         h = self.conv_out(h)
+        if return_temp_output:
+            return h,temp
         return h
 
 class Decoder_Diffusion(nn.Module):
@@ -987,6 +995,8 @@ class Decoder_Diffusion(nn.Module):
                 h = self.up[i_level].block[i_block](h,temb)
                 if len(self.up[i_level].attn) > 0:
                     h = self.up[i_level].attn[i_block](h)
+            if i_level == self.num_resolutions - 1 and return_temp_output:
+                temp.append(h)
             if i_level != 0:
                 h = self.up[i_level].upsample(h)
                 if return_temp_output:
@@ -1119,9 +1129,9 @@ class AE3DConv(torch.nn.Conv2d):
         if skip_video:
             return x
         else:
-            x = rearrange(x, "(b t) c h w -> b c t h w", t=self.movie_len)
+            x = rearrange(x, "(b t) c h w -> b c t h w", t=self.movie_len).contiguous()
             x = self.time_mix_conv(x)
-            return rearrange(x, "b c t h w -> (b t) c h w")
+            return rearrange(x, "b c t h w -> (b t) c h w").contiguous()
 
 class Decoder_Temporal(nn.Module):
     def __init__(self,*,ch,out_ch,num_groups=32,ch_mult=(1,2,4,8),num_res_blocks,
@@ -1228,11 +1238,13 @@ class Decoder_Temporal(nn.Module):
                     b = b // self.movie_len
                     n = self.movie_len
                     h = self.up[i_level].block[i_block](h)
-                    h = rearrange(h,'(b h w) n c -> (b n) c h w',b=b,n=n,c=c,h=height,w=width)
+                    h = rearrange(h,'(b h w) n c -> (b n) c h w',b=b,n=n,c=c,h=height,w=width).contiguous()
                 else:
                     h = self.up[i_level].block[i_block](h,temb)
                 if len(self.up[i_level].attn) > 0:
                     h = self.up[i_level].attn[i_block](h)
+            if i_level == self.num_resolutions - 1 and return_temp_output:
+                temp.append(h)
             if i_level != 0:
                 h = self.up[i_level].upsample(h)
                 if return_temp_output:

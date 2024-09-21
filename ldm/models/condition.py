@@ -296,7 +296,10 @@ class GlobalCondition(pl.LightningModule):
             else:
                 actions_embed = actions
             out['actions'] = actions_embed
-
+        if 'bev_images' in condition_keys:
+            bev_image = batch['bev_images']
+            bev_image = self.get_first_stage_encoding(self.encode_first_stage(bev_image,self.image_model))
+            out['bev_images'] = bev_image
         return out
     
     def get_losses(self,batch):
@@ -354,7 +357,7 @@ class GlobalCondition(pl.LightningModule):
         ref_img = batch['reference_image']
         ref_img = rearrange(ref_img,'b n h w c -> (b n) c h w')
         ref_img = ref_img.to(memory_format=torch.contiguous_format).float()
-        z = self.get_first_stage_encoding(self.encode_first_stage(ref_img)).detach()
+        z = self.get_first_stage_encoding(self.encode_first_stage(ref_img,self.image_model)).detach()
         del self.scale_factor
         self.register_buffer('scale_factor',1. / z.flatten().std())
         print(f"setting self.scale_factor to {self.scale_factor}")

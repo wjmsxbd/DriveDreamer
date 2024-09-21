@@ -7,6 +7,7 @@ from ...util import append_dims, instantiate_from_config
 from .denoiser_scaling import DenoiserScaling
 from .discretizer import Discretization
 from einops import rearrange
+from ldm.modules.diffusionmodules.openaimodel import VideoUNet,UNetModel
 
 
 class Denoiser(nn.Module):
@@ -45,37 +46,54 @@ class Denoiser(nn.Module):
         c_noise = torch.cat([c_noise,c_noise],dim=0)
         condition_keys = cond.keys()
         b = x.shape[0] // movie_len
-        if 'boxes_emb' in condition_keys:
-            boxes_emb = cond['boxes_emb']
-            boxes_emb = boxes_emb.reshape((b,movie_len)+boxes_emb.shape[1:])
-            boxes_emb = boxes_emb[:,0]
-        else:
-            boxes_emb = None
-        if 'text_emb' in condition_keys:
-            text_emb = cond['text_emb']
-            text_emb = torch.cat([text_emb,text_emb],dim=0)
-        else:
-            text_emb = None
-        if 'hdmap' in condition_keys and 'dense_range_image' in condition_keys:
-            dense_range_image = cond['dense_range_image']
-            hdmap = cond['hdmap'].reshape((b,self.movie_len)+cond['hdmap'].shape[1:])[:,0]
-            actions = cond['actions']
-            dense_range_image = dense_range_image.reshape((b,movie_len)+dense_range_image.shape[1:])[:,0]
-            h = action_former(hdmap,boxes_emb,actions,dense_range_image)
-            latent_hdmap = torch.stack([h[id][0] for id in range(len(h))]).reshape(cond['hdmap'].shape)
-            latent_boxes = torch.stack([h[id][1] for id in range(len(h))]).reshape(cond['boxes_emb'].shape)
-            latent_dense_range_image = torch.stack([h[id][2] for id in range(len(h))]).reshape(cond['dense_range_image'].shape)
-            boxes_emb = torch.cat([latent_boxes,latent_boxes],dim=0)
-            z = torch.cat([x,latent_hdmap],dim=1)
-            lidar_z = torch.cat([range_image,latent_dense_range_image],dim=1)
-            actions = None
-        elif not 'hdmap' in condition_keys and not 'dense_range_image' in condition_keys:
-            z = x
-            lidar_z = range_image
+        if 'bev_images' in condition_keys:
+            if 'text_emb' in condition_keys:
+                text_emb = cond['text_emb']
+                text_emb = torch.cat([text_emb,text_emb],dim=0)
+            else:
+                text_emb = None
+            bev_images = cond['bev_images']
+            z = torch.cat([x,bev_images],dim=1)
+            lidar_z = torch.cat([range_image,bev_images],dim=1)
             actions = rearrange(cond['actions'],'b n c -> (b n) c')
             actions = torch.cat([actions,actions],dim=0)
+            boxes_emb = None
         else:
-            raise NotImplementedError
+            if 'boxes_emb' in condition_keys:
+                boxes_emb = cond['boxes_emb']
+                boxes_emb = boxes_emb.reshape((b,movie_len)+boxes_emb.shape[1:])
+                boxes_emb = boxes_emb[:,0]
+            else:
+                boxes_emb = None
+            if 'text_emb' in condition_keys:
+                text_emb = cond['text_emb']
+                text_emb = torch.cat([text_emb,text_emb],dim=0)
+            else:
+                text_emb = None
+            if 'hdmap' in condition_keys and 'dense_range_image' in condition_keys:
+                dense_range_image = cond['dense_range_image']
+                # hdmap = cond['hdmap'].reshape((b,self.movie_len)+cond['hdmap'].shape[1:])[:,0]
+                actions = cond['actions']
+                # dense_range_image = dense_range_image.reshape((b,movie_len)+dense_range_image.shape[1:])[:,0]
+                # h = action_former(hdmap,boxes_emb,actions,dense_range_image)
+                # latent_hdmap = torch.stack([h[id][0] for id in range(len(h))]).reshape(cond['hdmap'].shape)
+                # latent_boxes = torch.stack([h[id][1] for id in range(len(h))]).reshape(cond['boxes_emb'].shape)
+                # latent_dense_range_image = torch.stack([h[id][2] for id in range(len(h))]).reshape(cond['dense_range_image'].shape)
+                latent_hdmap = cond['hdmap']
+                latent_boxes = cond['boxes_emb']
+                latent_dense_range_image = cond['dense_range_image']
+
+                boxes_emb = torch.cat([latent_boxes,latent_boxes],dim=0)
+                z = torch.cat([x,latent_hdmap],dim=1)
+                lidar_z = torch.cat([range_image,latent_dense_range_image],dim=1)
+                actions = None
+            elif not 'hdmap' in condition_keys and not 'dense_range_image' in condition_keys:
+                z = x
+                lidar_z = range_image
+                actions = rearrange(cond['actions'],'b n c -> (b n) c')
+                actions = torch.cat([actions,actions],dim=0)
+            else:
+                raise NotImplementedError
 
         input = torch.cat([z,lidar_z])
         classes = torch.tensor([[1.,0.],[0.,1.]],device=x.device,dtype=x.dtype)
@@ -88,10 +106,15 @@ class Denoiser(nn.Module):
                 class_label[i] = classes_emb[1]
         cond_mask = torch.cat([cond_mask,cond_mask],dim=0)
         real_input = torch.cat([x,range_image],dim=0)
-        return (
-            network(input*c_in,c_noise,y=class_label,boxes_emb=boxes_emb,text_emb=text_emb,cond_mask=cond_mask,actions=actions) * c_out
-            + real_input * c_skip
-        )
+        if isinstance(network,UNetModel):
+            return (
+                network(input*c_in,c_noise,y=class_label,boxes_emb=boxes_emb,text_emb=text_emb,cond_mask=cond_mask,actions=actions) * c_out
+                + real_input * c_skip
+            )
+        else:
+            return (
+                network(input*c_in,c_noise,y=class_label,context=boxes_emb,cond_mask=cond_mask,num_frames=self.movie_len) * c_out + real_input * c_skip
+            )
 
 
 class DiscreteDenoiser(Denoiser):

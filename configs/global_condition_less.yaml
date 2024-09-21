@@ -1,8 +1,8 @@
 model:
-  base_learning_rate: 5e-6
+  base_learning_rate: 1e-7
   target: ldm.models.diffusion.ddpm.AutoDM_GlobalCondition
   params:
-    base_learning_rate: 5e-6
+    base_learning_rate: 1e-7
     linear_start: 0.0015
     linear_end: 0.0155
     num_timesteps_cond: 1
@@ -134,32 +134,32 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 1
+    batch_size: 8
     wrap: False
-    num_workers: 2
+    num_workers: 1
     train:
-      target: data.video_lidar_dataloader.dataloader
+      target: data.dataloader_predict_video.dataloader
       params:
         cfg:
-          version: v1.0-mini
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
+          version: advanced_12Hz_trainval
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/
           img_size: [256,128]
           nusc_canbus_frequency: 50
-          camera_frequency: 3
+          camera_frequency: 2
         num_boxes: 70
         movie_len: 5
         split_name: train
         collect_condition: ['reference_image','range_image','text']
   
     validation:
-      target: data.video_lidar_dataloader.dataloader
+      target: data.dataloader_predict_video.dataloader
       params:
         cfg:
-          version: v1.0-mini
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
+          version: advanced_12Hz_trainval
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/
           img_size: [256,128]
           nusc_canbus_frequency: 50
-          camera_frequency: 3
+          camera_frequency: 2
         num_boxes: 70
         movie_len: 5
         split_name: val
@@ -179,6 +179,6 @@ lightning:
   trainer:
     benchmark: True
     num_nodes: 1
-    gpus: 0,
+    gpus: 0,1,2,3,
 
     

@@ -5,7 +5,57 @@ import torch.nn.functional as F
 from torch import nn,einsum
 from einops import rearrange,repeat
 from ldm.models.attention import PositionalEncoder
-from ldm.modules.diffusionmodules.util import checkpoint
+# from ldm.modules.diffusionmodules.util import checkpoint
+from torch.utils.checkpoint import checkpoint
+from ldm.modules.diffusionmodules.util import linear,timestep_embedding,AlphaBlender
+from typing import Optional,Any
+from packaging import version
+
+if version.parse(torch.__version__) >= version.parse("2.0.0"):
+    SDP_IS_AVAILABLE = True
+    from torch.backends.cuda import SDPBackend, sdp_kernel
+
+    BACKEND_MAP = {
+        SDPBackend.MATH: {
+            "enable_math": True,
+            "enable_flash": False,
+            "enable_mem_efficient": False
+        },
+        SDPBackend.FLASH_ATTENTION: {
+            "enable_math": False,
+            "enable_flash": True,
+            "enable_mem_efficient": False
+        },
+        SDPBackend.EFFICIENT_ATTENTION: {
+            "enable_math": False,
+            "enable_flash": False,
+            "enable_mem_efficient": True
+        },
+        None: {
+            "enable_math": True,
+            "enable_flash": True,
+            "enable_mem_efficient": True
+        }
+    }
+else:
+    from contextlib import nullcontext
+
+    SDP_IS_AVAILABLE = False
+    sdp_kernel = nullcontext
+    BACKEND_MAP = dict()
+    print(
+        f"No SDP backend available, likely because you are running in pytorch versions < 2.0. "
+        f"In fact, you are using PyTorch {torch.__version__}. You might want to consider upgrading"
+    )
+
+try:
+    import xformers
+    import xformers.ops
+
+    XFORMERS_IS_AVAILABLE = True
+except:
+    XFORMERS_IS_AVAILABLE = False
+    print("No module `xformers`, processing without it")
 
 def exists(val):
     return val is not None
@@ -284,7 +334,7 @@ class GatedSelfAttention(nn.Module):
         return x 
 
 class BasicTransformerBlock(nn.Module):
-    def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, gated_ff=True, checkpoint=True,movie_len=None,height=None,width=None,obj_dims=None,use_additional_attn=False):
+    def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, gated_ff=True, checkpoint=True,movie_len=None,height=None,width=None,obj_dims=None,use_additional_attn=False,bev_dims=None):
         super().__init__()
         self.attn1 = GatedSelfAttention(query_dim=dim,context_dim=obj_dims, n_heads=n_heads, d_head=d_head)  # is a self-attention
         self.ff = FeedForward(dim, dropout=dropout, glu=gated_ff)
@@ -303,7 +353,7 @@ class BasicTransformerBlock(nn.Module):
         self.width = width
 
     def forward(self, x, objs=None,context=None):
-        return checkpoint(self._forward, (x, objs,context), self.parameters(), self.checkpoint)
+        return checkpoint(self._forward, x, objs,context,use_reentrant=False)
 
     def _forward(self, x, objs=None,context=None):
         # with temporal blocks
@@ -395,3 +445,719 @@ class SpatialTransformer(nn.Module):
         x = self.proj_out(x)
         return x + x_in
 
+class CrossAttention_Video(nn.Module):
+    def __init__(
+            self,
+            query_dim,
+            context_dim=None,
+            heads=8,
+            dim_head=64,
+            dropout=0.0,
+            backend=None,
+            zero_init=False,
+            **kwargs):
+        super().__init__()
+        inner_dim = dim_head * heads
+        context_dim = default(context_dim,query_dim)
+
+        self.scale = dim_head ** -0.5
+        self.heads = heads
+        self.to_q = nn.Linear(query_dim,inner_dim,bias=False)
+        self.to_k = nn.Linear(context_dim,inner_dim,bias=False)
+        self.to_v = nn.Linear(context_dim,inner_dim,bias=False)
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim,query_dim),
+            nn.Dropout(dropout)
+        )
+        self.backend = backend
+
+        if zero_init:
+            nn.init.zeros_(self.to_out[0].weight)
+            nn.init.zeros_(self.to_out[0].bias)
+
+    def forward(
+            self,
+            x,
+            context=None,
+            mask=None,
+            additional_tokens=None,
+            n_times_crossframe_attn_in_self=0,
+            **kwargs
+    ):
+        num_heads = self.heads
+
+        if additional_tokens is not None:
+            # get the number of masked tokens at the beginning of the output sequence
+            n_tokens_to_mask = additional_tokens.shape[1]
+            #add additional token
+            x = torch.cat((additional_tokens,x),dim=1)
+
+        q = self.to_q(x)
+        context = default(context,x)
+        k = self.to_k(context)
+        v = self.to_v(context)
+
+        if n_times_crossframe_attn_in_self:
+            assert x.shape[0] % n_times_crossframe_attn_in_self == 0
+            n_cp = x.shape[0] // n_times_crossframe_attn_in_self
+            k = repeat(
+                k[::n_times_crossframe_attn_in_self],"b ... -> (b n) ...",n=n_cp,
+            )
+            v = repeat(
+                v[::n_times_crossframe_attn_in_self],"b ... -> (b n) ...",n=n_cp,
+            )
+        q,k,v = map(lambda t:rearrange(t,"b n (h d) -> b h n d",h=num_heads).contiguous(),(q,k,v))
+
+        with sdp_kernel(**BACKEND_MAP[self.backend]):
+            out = F.scaled_dot_product_attention(q,k,v,attn_mask=mask) # scale is dim_head ** -0.5 per default
+        del q,k,v
+        out = rearrange(out,"b h n d -> b n (h d)",h=num_heads).contiguous()
+
+        if additional_tokens is not None:
+            # remove additional_token 
+            out = out[:,n_tokens_to_mask:]
+        return self.to_out(out)
+
+class MemoryEfficientCrossAttention(nn.Module):# we are using this implementation
+    # https://github.com/MatthieuTPHR/diffusers/blob/d80b531ff8060ec1ea982b65a1b8df70f73aa67c/src/diffusers/models/attention.py#L223
+    def __init__(
+            self,
+            query_dim,
+            context_dim=None,
+            heads=8,
+            dim_head=64,
+            dropout=0.0,
+            zero_init=False,
+            causual=False,
+            add_lora=False,
+            lora_rank=16,
+            lora_scale=1.0,
+            action_control=False,
+            **kwargs
+    ):
+        super().__init__()
+        print(
+            f"Setting up {self.__class__.__name__}. "
+            f"Query dim is {query_dim}, "
+            f"context_dim is {context_dim} and using {heads} heads with a dimension of {dim_head}"
+        )
+        inner_dim = dim_head * heads
+        context_dim = default(context_dim,query_dim)
+        self.heads = heads
+        self.dim_head = dim_head
+
+        self.to_q = nn.Linear(query_dim,inner_dim,bias=False)
+        self.to_k = nn.Linear(context_dim,inner_dim,bias=False)
+        self.to_v = nn.Linear(context_dim,inner_dim,bias=False)
+
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim,query_dim),
+            nn.Dropout(dropout)
+        )
+        self.attention_op: Optional[Any] = None
+        if causual:
+            self.attn_bias = xformers.ops.LowerTriangularMask()
+        else:
+            self.attn_bias = None
+
+        if zero_init:
+            nn.init.zeros_(self.to_out[0].weight)
+            nn.init.zeros_(self.to_out[0].bias)
+        
+        self.add_lora = add_lora
+        if add_lora:
+            self.lora_scale = lora_scale
+
+            self.q_adapter_down = nn.Linear(query_dim, lora_rank, bias=False)
+            nn.init.normal_(self.q_adapter_down.weight, std=1 / lora_rank)
+            self.q_adapter_up = nn.Linear(lora_rank, inner_dim, bias=False)
+            nn.init.zeros_(self.q_adapter_up.weight)
+
+            self.k_adapter_down = nn.Linear(context_dim, lora_rank, bias=False)
+            nn.init.normal_(self.k_adapter_down.weight, std=1 / lora_rank)
+            self.k_adapter_up = nn.Linear(lora_rank, inner_dim, bias=False)
+            nn.init.zeros_(self.k_adapter_up.weight)
+
+            self.v_adapter_down = nn.Linear(context_dim, lora_rank, bias=False)
+            nn.init.normal_(self.v_adapter_down.weight, std=1 / lora_rank)
+            self.v_adapter_up = nn.Linear(lora_rank, inner_dim, bias=False)
+            nn.init.zeros_(self.v_adapter_up.weight)
+
+            self.out_adapter_down = nn.Linear(inner_dim, lora_rank, bias=False)
+            nn.init.normal_(self.out_adapter_down.weight, std=1 / lora_rank)
+            self.out_adapter_up = nn.Linear(lora_rank, query_dim, bias=False)
+            nn.init.zeros_(self.out_adapter_up.weight)
+
+        self.action_control = action_control
+        if action_control:
+            self.context_dim = context_dim
+            self.k_adapter_action_control = nn.Linear(128*19,inner_dim,bias=False)
+            nn.init.zeros_(self.k_adapter_action_control.weight)
+            self.v_adapter_action_control = nn.Linear(128*19,inner_dim,bias=False)
+            nn.init.zeros_(self.v_adapter_action_control.weight)
+
+    def forward(
+            self,
+            x,
+            context=None,
+            mask=None,
+            additional_tokens=None,
+            n_times_crossframe_attn_in_self=0,
+            batchify_xformers=False):
+        if additional_tokens is not None:
+            # get the number of masked tokens at the beginning of the output sequence
+            n_tokens_to_mask = additional_tokens.shape[1]
+            # add additional token
+            x = torch.cat((additional_tokens, x), dim=1)
+        context = default(context,x)
+        if self.action_control:
+            context,context_ = context[:,:,:self.context_dim],context[:,:,self.context_dim:]
+        q = self.to_q(x)
+        k = self.to_k(context)
+        v = self.to_v(context)
+        if self.add_lora:
+            q += self.q_adapter_up(self.q_adapter_down(x)) * self.lora_scale
+            k += self.k_adapter_up(self.k_adapter_down(context)) * self.lora_scale
+            v += self.v_adapter_up(self.v_adapter_down(context)) * self.lora_scale
+        if self.action_control:
+            k += self.k_adapter_action_control(context_)
+            v += self.v_adapter_action_control(context_)
+
+        if n_times_crossframe_attn_in_self:
+            # reprogramming cross-frame attention as in https://arxiv.org/abs/2303.13439
+            assert x.shape[0] % n_times_crossframe_attn_in_self == 0
+            # n_cp = x.shape[0] // n_times_crossframe_attn_in_self
+            k = repeat(
+                k[::n_times_crossframe_attn_in_self],
+                "b ... -> (b n) ...",
+                n=n_times_crossframe_attn_in_self
+            )
+            v = repeat(
+                v[::n_times_crossframe_attn_in_self],
+                "b ... -> (b n) ...",
+                n=n_times_crossframe_attn_in_self
+            )
+        b,_,_ = q.shape
+        q,k,v = map(
+            lambda t: t.unsqueeze(3).
+            reshape(b,t.shape[1],self.heads,self.dim_head)
+            .permute(0,2,1,3)
+            .reshape(b*self.heads,t.shape[1],self.dim_head)
+            .contiguous(),
+            (q,k,v)
+        )
+        # print(f"q.shape:{q.shape},k.shape:{k.shape},v.shape:{v.shape}")
+        if exists(mask):
+            raise NotImplementedError
+        else:
+            # actually compute the attention, what we cannot get enough of
+            if batchify_xformers:
+                max_bs = 32768
+                n_batches = math.ceil(q.shape[0] / max_bs)
+                out = list()
+                for i_batch in range(n_batches):
+                    batch = slice(i_batch * max_bs,(i_batch + 1) * max_bs)
+                    out.append(
+                        
+                        xformers.ops.memory_efficient_attention(
+                            q[batch],
+                            k[batch],
+                            v[batch],
+                            attn_bias=self.attn_bias,
+                            op=self.attention_op
+                        )
+                    )
+                out = torch.cat(out,0)
+            else:
+                out = xformers.ops.memory_efficient_attention(
+                    q,
+                    k,
+                    v,
+                    attn_bias=self.attn_bias,
+                    op=self.attention_op
+                )
+        out = (
+            out.unsqueeze(0)
+            .reshape(b, self.heads, out.shape[1], self.dim_head)
+            .permute(0, 2, 1, 3)
+            .reshape(b, out.shape[1], self.heads * self.dim_head)
+        )
+        if additional_tokens is not None:
+            # remove additional token
+            out = out[:, n_tokens_to_mask:]
+        if self.add_lora:
+            return self.to_out(out) + self.out_adapter_up(self.out_adapter_down(out)) * self.lora_scale
+        else:
+            return self.to_out(out)
+
+
+
+class TimeMixSequential(nn.Sequential):
+    def forward(self,x,context=None,timesteps=None):
+        for layer in self:
+            x = layer(x,context,timesteps)
+
+class VideoTransformerBlock(nn.Module):
+    ATTENTION_MODES = {
+        "softmax": CrossAttention_Video,
+        "softmax_xformers": MemoryEfficientCrossAttention
+    }
+    def __init__(self,
+                 dim,
+                 n_heads,
+                 d_head,
+                 dropout=0.0,
+                 context_dim=None,
+                 gated_ff=True,
+                 use_checkpoint=False,
+                 timesteps=None,
+                 ff_in=False,
+                 inner_dim=None,
+                 attn_mode="softmax",
+                 disable_self_attn=False,
+                 disable_temporal_crossattention=False,
+                 switch_temporal_ca_to_sa=False,
+                 add_lora=False,
+                 action_control=False,):
+        super().__init__()
+        attn_cls = self.ATTENTION_MODES[attn_mode]
+        self.ff_in = ff_in or inner_dim is not None
+        if inner_dim is None:
+            inner_dim = dim
+        
+        assert int(n_heads * d_head) == inner_dim
+
+        self.is_res = inner_dim == dim
+        if self.ff_in:
+            self.norm_in = nn.LayerNorm(dim)
+            self.ff_in = FeedForward(dim,dim_out=inner_dim,dropout=dropout,glu=gated_ff)
+
+        self.timesteps = timesteps
+        self.disable_self_attn = disable_self_attn
+        if disable_self_attn:
+            self.attn1 = attn_cls(
+                query_dim=inner_dim,
+                context_dim=context_dim,
+                heads=n_heads,
+                dim_head=d_head,
+                dropout=dropout,
+                add_lora=add_lora,
+            ) # is a cross-attn
+        else:
+            self.attn1 = attn_cls(
+                query_dim=inner_dim,
+                heads=n_heads,
+                dim_head=d_head,
+                dropout=dropout,
+                causal=False,
+                add_lora=add_lora
+            )
+        self.ff = FeedForward(inner_dim,dim_out=dim,dropout=dropout,glu=gated_ff)
+
+        if not disable_temporal_crossattention:
+            self.norm2 = nn.LayerNorm(inner_dim)
+            if switch_temporal_ca_to_sa:
+                self.attn2 = attn_cls(
+                    query_dim=inner_dim,
+                    heads=n_heads,
+                    dim_head=d_head,
+                    dropout=dropout,
+                    casual=False,
+                    add_lora=add_lora,
+                ) # is a self-attn
+            else:
+                self.attn2 = attn_cls(
+                    query_dim=inner_dim,
+                    context_dim=context_dim,
+                    heads=n_heads,
+                    dim_head=d_head,
+                    dropout=dropout,
+                    add_lora=add_lora,
+                    action_control=action_control,
+                ) # is self-attn if context is None
+        self.norm1 = nn.LayerNorm(inner_dim)
+        self.norm3 = nn.LayerNorm(inner_dim)
+        self.switch_temporal_ca_to_sa = switch_temporal_ca_to_sa
+        self.use_checkpoint = use_checkpoint
+        if self.use_checkpoint:
+            print(f"{self.__class__.__name__} is using checkpointing")
+        
+
+    def forward(self,x,context=None,timesteps=None):
+        if self.use_checkpoint:
+            return checkpoint(self._forward,x,context,timesteps,use_reentrant=False)
+        else:
+            return self._forward(x,context,timesteps=timesteps)
+        
+    def _forward(self,x,context=None,timesteps=None):
+        assert self.timesteps or timesteps
+        assert not (self.timesteps and timesteps) or timesteps == self.timesteps
+        timesteps = self.timesteps or timesteps
+        B,S,C = x.shape
+        x = rearrange(x,"(b t) s c -> (b s) t c",t=timesteps).contiguous()
+
+        if self.ff_in:
+            x_skip = x
+            x = self.ff_in(self.norm_in(x))
+            if self.is_res:
+                x += x_skip
+        if self.disable_self_attn:
+            x = self.attn1(self.norm1(x),context=context,batchify_xformers=True) + x
+        else:
+            x = self.attn1(self.norm1(x),batchify_xformers=True) + x
+        
+        if hasattr(self,"attn2"):
+            if self.switch_temporal_ca_to_sa:
+                x = self.attn2(self.norm2(x),batchify_xformers=True) + x
+            else:
+                x = self.attn2(self.norm2(x),context=context,batchify_xformers=True) + x
+        x_skip = x
+        x = self.ff(self.norm3(x))
+        if self.is_res:
+            x += x_skip
+
+        x = rearrange(x,"(b s) t c -> (b t) s c",s=S,b=B//timesteps,c=C,t=timesteps).contiguous()
+        return x
+    
+    def get_last_layer(self):
+        return self.ff.net[-1].weight
+
+class BasicTransformerBlock_Video(nn.Module):
+    ATTENTION_MODES = {
+        "softmax": CrossAttention_Video,
+        "softmax_xformers": MemoryEfficientCrossAttention,
+    }
+    def __init__(
+            self,
+            dim,
+            n_heads,
+            d_head,
+            dropout=0.0,
+            context_dim=None,
+            gated_ff=True,
+            use_checkpoint=False,
+            disable_self_attn=False,
+            attn_mode="softmax",
+            sdp_backend=None,
+            add_lora=False,
+            action_control=False,
+    ):
+        super().__init__()
+        assert attn_mode in self.ATTENTION_MODES
+        if attn_mode != "softmax" and not XFORMERS_IS_AVAILABLE:
+            print(
+                f"Attention mode `{attn_mode}` is not available. Falling back to native attention. "
+                f"This is not a problem in Pytorch >= 2.0. You are running with PyTorch version {torch.__version__}"
+            )
+            attn_mode = "softmax"
+        elif attn_mode == "softmax" and not SDP_IS_AVAILABLE:
+            print("We do not support vanilla attention anymore, as it is too expensive")
+            if not XFORMERS_IS_AVAILABLE:
+                assert (
+                    False
+                ), "Please install xformers via e.g. `pip install xformers==0.0.16`"
+            else:
+                print("Falling back to xformers efficient attention")
+                attn_mode = "softmax-xformers"
+        attn_cls = self.ATTENTION_MODES[attn_mode]
+        if version.parse(torch.__version__) >= version.parse("2.0.0"):
+            assert sdp_backend is None or isinstance(sdp_backend, SDPBackend)
+        else:
+            assert sdp_backend is None
+        self.disable_self_attn = disable_self_attn
+        self.attn1 = attn_cls(
+            query_dim=dim,
+            context_dim=context_dim if self.disable_self_attn else None,
+            heads=n_heads,
+            dim_head=d_head,
+            dropout=dropout,
+            backend=sdp_backend,
+            add_lora=add_lora) # is a self-attn if not self.disable_self_attn
+        self.ff = FeedForward(dim,dropout=dropout,glu=gated_ff)
+        self.attn2 = attn_cls(
+            query_dim=dim,
+            context_dim=context_dim,
+            heads=n_heads,
+            dim_head=d_head,
+            dropout=dropout,
+            backend=sdp_backend,
+            add_lora = add_lora,
+            action_control=action_control
+        ) # is self-attn if context is None
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
+        self.norm3 = nn.LayerNorm(dim)
+        self.use_checkpoint = use_checkpoint
+        if self.use_checkpoint:
+            print(f"{self.__class__.__name__} is using checkpointing")
+        
+    def forward(self,x,context=None,additional_tokens=None,n_times_crossframe_attn_in_self=0):
+        kwargs = {"x":x}
+
+        if context is not None:
+            kwargs.update({"context":context})
+        if additional_tokens is not None:
+            kwargs.update({"additional_tokens":additional_tokens})
+        if n_times_crossframe_attn_in_self:
+            kwargs.update({"n_times_crossframe_attn_in_self":n_times_crossframe_attn_in_self})
+
+        if self.use_checkpoint:
+            return checkpoint(self._forward,x,context,use_reentrant=False)
+        else:
+            return self._forward(**kwargs)
+        
+    def _forward(self,x,context=None,additional_tokens=None,n_times_crossframe_attn_in_self=0):
+        # spatial self-attn
+        x = self.attn1(self.norm1(x),context=context if self.disable_self_attn else None,
+                       additional_tokens=additional_tokens,
+                       n_times_crossframe_attn_in_self=n_times_crossframe_attn_in_self if not self.disable_self_attn else 0) + x
+        # spatial cross-attn
+        x = self.attn2(self.norm2(x),context=context,additional_tokens=additional_tokens) + x
+        # feed forward
+        x = self.ff(self.norm3(x)) + x
+        return x
+        
+
+class SpatialTransformer_Video(nn.Module):
+
+    def __init__(
+            self,
+            in_channels,
+            n_heads,
+            d_head,
+            depth=1,
+            dropout=0.0,
+            context_dim=None,
+            disable_self_attn=False,
+            use_linear=False,
+            attn_type="softmax",
+            use_checkpoint=False,
+            sdp_backend=None,
+            add_lora=False,
+            action_control=False):
+        super().__init__()
+        print(f"Constructing {self.__class__.__name__} of depth {depth} w/ {in_channels} channels and {n_heads} heads")
+        from omegaconf import ListConfig
+
+        if exists(context_dim) and not isinstance(context_dim,(list,ListConfig)):
+            context_dim = [context_dim]
+        if exists(context_dim) and isinstance(context_dim,list):
+            if depth != len(context_dim):
+                print(
+                    f"WARNING: "
+                    f"{self.__class__.__name__}: found context dims {context_dim} of depth {len(context_dim)}, "
+                    f"which does not match the specified depth of {depth}. "
+                    f"Setting context_dim to {depth * [context_dim[0]]} now"
+                )
+                # depth does not match context dims
+                assert all(
+                    map(lambda x: x == context_dim[0], context_dim)
+                ), "Need homogenous context_dim to match depth automatically"
+                context_dim = depth * [context_dim[0]]
+        elif context_dim is None:
+            context_dim = [None] * depth
+        self.in_channels = in_channels
+        inner_dim = n_heads * d_head
+        self.norm = Normalize(in_channels)
+        if use_linear:
+            self.proj_in = nn.Linear(in_channels,inner_dim)
+        else:
+            self.proj_in = nn.Conv2d(in_channels,inner_dim,kernel_size=1,stride=1,padding=0)
+        self.transformer_blocks = nn.ModuleList(
+            [
+                BasicTransformerBlock_Video(inner_dim,
+                                      n_heads,
+                                      d_head,
+                                      dropout=dropout,
+                                      context_dim=context_dim[d],
+                                      disable_self_attn=disable_self_attn,
+                                      attn_mode=attn_type,
+                                      use_checkpoint=use_checkpoint,
+                                      sdp_backend=sdp_backend,
+                                      add_lora=add_lora,
+                                      action_control=action_control)
+                for d in range(depth)
+            ]
+        )
+        if use_linear:
+            self.proj_out = zero_module(
+                nn.Linear(inner_dim,in_channels)
+            )
+        else:
+            self.proj_out = zero_module(
+                nn.Conv2d(inner_dim,in_channels,kernel_size=1,stride=1,padding=0)
+            )
+        self.use_linear = use_linear
+
+    def forward(self,x,context=None):
+        if not isinstance(context,list):
+            context = [context]
+        b,c,h,w = x.shape
+        x_in = x
+        x = self.norm(x)
+        if not self.use_linear:
+            x = self.proj_in(x)
+        x = rearrange(x,'b c h w -> b (h w) c').contiugous()
+        if self.use_linear:
+            x = self.proj_in(x)
+        for i,block in enumerate(self.transformer_blocks):
+            if i>0 and len(context) == 1:
+                i = 0
+            x = block(x,context=context[i])
+        if self.use_linear:
+            x = self.proj_out(x)
+        x = rearrange(x,'b (h w) c -> b c h w',h=h,w=w).contiguous()
+        if not self.use_linear:
+            x = self.proj_out(x)
+        return x + x_in
+
+
+class SpatialVideoTransformer(SpatialTransformer_Video):
+    def __init__(
+        self,
+        in_channels,
+        n_heads,
+        d_head,
+        depth=1,
+        dropout=0.0,
+        use_linear=False,
+        context_dim=None,
+        use_spatial_context=False,
+        timesteps=None,
+        merge_strategy: str="fixed",
+        merge_factor: float=0.5,
+        time_context_dim=None,
+        ff_in=False,
+        use_checkpoint=False,
+        time_depth=1,
+        attn_mode="softmax",
+        disable_self_attn=False,
+        disable_temporal_crossattention=False,
+        max_time_embed_period=10000,
+        add_lora=False,
+        action_control=False,
+    ):
+        super().__init__(
+            in_channels,
+            n_heads,
+            d_head,
+            depth=depth,
+            dropout=dropout,
+            attn_type=attn_mode,
+            use_checkpoint=use_checkpoint,
+            context_dim=context_dim,
+            use_linear=use_linear,
+            disable_self_attn=disable_self_attn,
+            add_lora=add_lora,
+            action_control=action_control
+        )
+        self.time_depth = time_depth
+        self.depth = depth
+        self.max_time_embed_period = max_time_embed_period
+
+        time_mix_d_head = d_head
+        n_time_mix_heads = n_heads
+
+        time_mix_inner_dim = int(time_mix_d_head * n_time_mix_heads)
+
+        inner_dim = n_heads * d_head
+
+        if use_spatial_context:
+            time_context_dim = context_dim
+
+        self.time_stack = nn.ModuleList(
+            [
+                VideoTransformerBlock(
+                    inner_dim,
+                    n_time_mix_heads,
+                    time_mix_d_head,
+                    dropout=dropout,
+                    context_dim=time_context_dim,
+                    timesteps=timesteps,
+                    use_checkpoint=use_checkpoint,
+                    ff_in=ff_in,
+                    inner_dim = time_mix_inner_dim,
+                    attn_mode=attn_mode,
+                    disable_self_attn=disable_self_attn,
+                    disable_temporal_crossattention=disable_temporal_crossattention,
+                    add_lora=add_lora,
+                    action_control=action_control
+                )
+                for _ in range(self.depth)
+            ]
+        )
+        assert len(self.time_stack) == len(self.transformer_blocks)
+
+        self.use_spatial_context = use_spatial_context
+        self.in_channels = in_channels
+
+        time_embed_dim = in_channels * 4
+        self.time_pos_embed = nn.Sequential(
+            linear(in_channels,time_embed_dim),
+            nn.SiLU(),
+            linear(time_embed_dim,in_channels)
+        )
+
+        self.time_mixer = AlphaBlender(
+            alpha=merge_factor,
+            merge_strategy=merge_strategy,
+            rearrange_pattern = "b t -> (b t) 1 1"
+        )
+
+    def forward(
+            self,
+            x,
+            context=None,
+            time_context=None,
+            timesteps=None,
+    ):
+        _,_,h,w = x.shape
+        x_in = x
+        spatial_context = None
+        if exists(context):
+            spatial_context = context
+        
+        if self.use_spatial_context:
+            assert context.ndim == 3
+            time_context = context
+            time_context_first_timestep = time_context[::timesteps]
+            time_context = repeat(time_context_first_timestep, "b ... -> (b n) ...", n=h * w)
+        elif time_context is not None and self.use_spatial_context:
+            time_context = repeat(time_context, "b ... -> (b n) ...", n=h * w)
+            if time_context.ndim == 2:
+                time_context = rearrange(time_context, "b c -> b 1 c").contiguous()
+        
+        x = self.norm(x)
+        if not self.use_linear:
+            x = self.proj_in(x)
+        x = rearrange(x,'b c h w -> b (h w) c').contiguous()
+        if self.use_linear:
+            x = self.proj_in(x)
+
+        num_frames = torch.arange(timesteps,device=x.device)
+        num_frames = repeat(num_frames,"t -> (b t)",b=x.shape[0] // timesteps)
+        t_emb = timestep_embedding(
+            num_frames,
+            self.in_channels,
+            repeat_only=False,
+            max_period=self.max_time_embed_period
+        )
+        emb = self.time_pos_embed(t_emb)
+        emb = emb[:,None]
+
+        for block,mix_block in zip(self.transformer_blocks,self.time_stack):
+            x = block(x,context=spatial_context)
+
+            x_mix = x
+            x_mix = x_mix + emb
+
+            x_mix = mix_block(x_mix,context=time_context,timesteps=timesteps)
+            x = self.time_mixer(x_spatial=x,x_temporal=x_mix)
+
+        if self.use_linear:
+            x = self.proj_out(x)
+        x = rearrange(x,"b (h w) c -> b c h w",h=h,w=w).contiguous()
+        if not self.use_linear:
+            x = self.proj_out(x)
+        out = x + x_in
+        return out

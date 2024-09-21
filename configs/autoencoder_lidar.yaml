@@ -40,8 +40,8 @@ data:
       target: data.dataloader_only_lidar.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
           img_size: [256,128]
           capture_frequency: 3
         num_boxes: 70
@@ -51,8 +51,8 @@ data:
       target: data.dataloader_only_lidar.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
           img_size: [256,128]
           capture_frequency: 3
         num_boxes: 70

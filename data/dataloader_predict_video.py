@@ -52,12 +52,12 @@ class dataloader(data.Dataset):
         self.nusc_canbus_frequecy = nusc_canbus_frequency // ailgn_frequency
         self.camera_frequency = camera_frequency // ailgn_frequency
         self.nusc_maps = {
-            'boston-seaport': NuScenesMap(dataroot=cfg['dataroot'], map_name='boston-seaport'),
-            'singapore-hollandvillage': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-hollandvillage'),
-            'singapore-onenorth': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-onenorth'),
-            'singapore-queenstown': NuScenesMap(dataroot=cfg['dataroot'], map_name='singapore-queenstown'),
+            'boston-seaport': NuScenesMap(dataroot='.', map_name='boston-seaport'),
+            'singapore-hollandvillage': NuScenesMap(dataroot='.', map_name='singapore-hollandvillage'),
+            'singapore-onenorth': NuScenesMap(dataroot='.', map_name='singapore-onenorth'),
+            'singapore-queenstown': NuScenesMap(dataroot='.', map_name='singapore-queenstown'),
         }
-        self.nusc_can = NuScenesCanBus(dataroot=cfg['dataroot'])
+        self.nusc_can = NuScenesCanBus(dataroot='/storage/group/4dvlab/datasets/nuScenes')
         self.return_pose_info = return_pose_info
         self.collect_condition = collect_condition
         self.load_data_infos()
@@ -81,19 +81,43 @@ class dataloader(data.Dataset):
         idx = 0
         action_infos = {}
         for key,value in pic_infos.items():
-            pose = self.nusc_can.get_messages(key,'pose')[::self.nusc_canbus_frequecy]
-            value = list(sorted(value,key=lambda e:e['timestamp']))
-            frames = torch.arange(len(value)).to(torch.long)[::self.camera_frequency]
-            pose_len = len(pose)
-            frame_len = len(frames)
-            common_len = min(pose_len,frame_len)
-            pose = pose[:common_len]
-            frames = frames[:common_len]
-            chunks = frames.unfold(dimension=0,size=self.movie_len,step=1)
-            for ch_id,ch in enumerate(chunks):
-                video_infos[idx] = [value[id] for id in ch]
-                action_infos[idx] = torch.tensor([pose[id]['orientation'] + pose[id]['vel'] for id in ch])
-                idx += 1
+            scene_id = int(key[-4:])
+            if scene_id in self.nusc_can.can_blacklist:
+                continue
+            if self.camera_frequency == 1:
+                pose = self.nusc_can.get_messages(key,'pose')[::self.nusc_canbus_frequecy]
+                value = list(sorted(value,key=lambda e:e['timestamp']))
+                frames = torch.arange(len(value)).to(torch.long)[::self.camera_frequency]
+                pose_len = len(pose)
+                frame_len = len(frames)
+                common_len = min(pose_len,frame_len)
+                pose = pose[:common_len]
+                frames = frames[:common_len]
+                chunks = frames.unfold(dimension=0,size=self.movie_len,step=1)
+                for ch_id,ch in enumerate(chunks):
+                    video_infos[idx] = [value[id] for id in ch]
+                    action_infos[idx] = torch.tensor([pose[id]['orientation'] + pose[id]['vel'] for id in ch])
+                    idx += 1
+            elif self.camera_frequency == 6:
+                camera_frequency,nusc_canbus_frequecy = self.camera_frequency * 2,self.nusc_canbus_frequecy * 2
+                pose = self.nusc_can.get_messages(key,'pose')
+                can_bus_frames = torch.arange(len(pose)).to(torch.float16)
+                can_bus_frames = can_bus_frames * 60 / nusc_canbus_frequecy
+                value = sorted(value,key=lambda e:e['timestamp'])
+                camera_frames = torch.arange(len(value)).to(torch.float16) * 60 / camera_frequency
+                select_can_bus_frames = []
+                pos = 0
+                for i in range(len(camera_frames)):
+                    while pos < len(can_bus_frames) and can_bus_frames[pos] <= camera_frames[i]:
+                        pos += 1
+                    select_can_bus_frames.append(pos-1)
+                frames = torch.arange(len(value))
+                chunks = frames.unfold(dimension=0,size=self.movie_len,step=1)
+                for ch_id,ch in enumerate(chunks):
+                    video_infos[idx] = [value[id] for id in ch]
+                    action_infos[idx] = torch.tensor([pose[select_can_bus_frames[id]]['orientation'] + pose[select_can_bus_frames[id]]['vel'] for id in ch])
+            else:
+                raise NotImplementedError
         self.video_infos = video_infos
         self.action_infos = action_infos
         self.save_keys = ['translation','rotation','camera_intrinsic']
@@ -117,6 +141,8 @@ class dataloader(data.Dataset):
                 out[key] = [None for i in range(self.movie_len)]
             elif key == 'actions':
                 out[key] = torch.zeros((self.movie_len,14))
+            # elif key == 'bev_images':
+            #     out[key] = torch.zeros((self.movie_len,self.cfg['bev_size'][0],self.cfg['bev_size'][1],3))
             else:
                 out[key] = torch.zeros((self.movie_len,self.cfg['img_size'][1],self.cfg['img_size'][0],3))
 
@@ -145,8 +171,9 @@ class dataloader(data.Dataset):
             
             cam_front_translation = torch.tensor(collect_data['cam_front_record']['translation'])
             cam_front_rotation = torch.tensor(collect_data['cam_front_record']['rotation'])
+            cam_front_intrinsic = torch.tensor([collect_data['cam_front_record']['camera_intrinsic']],dtype=torch.float32).flatten()
+            # now_action = torch.cat([actions[i],cam_front_translation,cam_front_rotation,cam_front_intrinsic],dim=-1).unsqueeze(0)
             now_action = torch.cat([actions[i],cam_front_translation,cam_front_rotation],dim=-1).unsqueeze(0)
-            
 
             if 'text' in self.collect_condition:
                 out['text'][i] = text
@@ -260,16 +287,18 @@ def save_tensor_as_video(tensor,file_path):
     tensor = tensor.numpy()
     tensor = (tensor + 1.0) / 2.0
     tensor = (tensor * 255).astype(np.uint8)
-    writer = imageio.get_writer(filename,fps=5)
-    for i in range(tensor.shape[1]):
-        writer.append_data(tensor[:,i])
-    writer.close()
+    tensor = [tensor[0,i] for i in range(tensor.shape[1])]
+    imageio.mimsave(file_path,tensor,'GIF',fps=5,loop=0)
+    # writer = imageio.get_writer(filename,fps=5)
+    # for i in range(tensor.shape[1]):
+    #     writer.append_data(tensor[:,i])
+    # writer.close()
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/prediction2_4.yaml',
+                        default='configs/prediction2_4_dataloader.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
@@ -279,25 +308,39 @@ if __name__ == "__main__":
     data_loader_ = torch.utils.data.DataLoader(
         data_loader,
         batch_size  =   1,
-        num_workers =   2,
+        num_workers =   0,
         collate_fn=collate_fn
     )
     # network = instantiate_from_config(cfg['model'])
-    # model_path = 'logs/2024-08-22T20-20-05_prediction2_4/checkpoints/epoch=000390.ckpt'
+    # model_path = 'logs/2024-09-03T09-45-52_prediction2_4_less/checkpoints/last.ckpt'
     # network.init_from_ckpt(model_path)
     # network = network.eval().cuda()
     # # network = network.eval()
     # save_path = 'all_pics/'
     # save_path = save_path + 'prediction2_4/'
-    # 35
+    # # 35
     # if not os.path.exists(save_path):
     #     os.makedirs(save_path)
+    # l = len(data_loader)
     for _,batch in tqdm(enumerate(data_loader_)):
-        # batch = {k:v.cuda() if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
-        # # batch = {k:v if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
-        # logs = network.log_video(batch)
-        # save_tensor_as_video(logs['inputs'],file_path=save_path+f'inputs_{_:02d}.png')
-        # save_tensor_as_video(logs['samples'],file_path=save_path+f'samples{_:02d}.png')
-        # save_tensor_as_video(logs['lidar_samples'],file_path=save_path+f'lidar_samples{_:02d}.png')
-        # save_tensor_as_video(logs['lidar_inputs'],file_path=save_path+f'lidar_inputs{_:02d}.png')
         pass
+    #     # batch = {k:v if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
+    #     # __ = _ + 50
+    #     # if __>= l:
+    #     #     __ -= l
+    #     # swap_data = data_loader.__getitem__(__)
+    #     # for key in swap_data.keys():
+    #     #     if isinstance(swap_data[key],torch.Tensor):
+    #     #         swap_data[key] = swap_data[key].unsqueeze(0)
+    #     #     elif isinstance(swap_data[key],list):
+    #     #         swap_data[key] = [swap_data[key]]
+    #     # swap_data['reference_image'] = batch['reference_image']
+
+    #     # batch = swap_data
+    #     batch = {k:v.cuda() if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
+    #     logs = network.log_video(batch)
+    #     save_tensor_as_video(logs['inputs'],file_path=save_path+f'inputs_{_:02d}.png')
+    #     save_tensor_as_video(logs['samples'],file_path=save_path+f'samples{_:02d}.png')
+    #     save_tensor_as_video(logs['lidar_samples'],file_path=save_path+f'lidar_samples{_:02d}.png')
+    #     save_tensor_as_video(logs['lidar_inputs'],file_path=save_path+f'lidar_inputs{_:02d}.png')
+    #     pass

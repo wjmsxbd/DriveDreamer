@@ -33,6 +33,7 @@ import matplotlib
 import imageio
 from io import BytesIO
 from einops import repeat
+from memory_profiler import profile
 # import objgraph
 # from pympler import tracker,summary,muppy
 import math
@@ -664,10 +665,9 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
     cam_front_record = nusc.get('calibrated_sensor',cam_front_calibrated_sensor_token)
     Lidar_TOP_poserecord = nusc.get('ego_pose',pointsensor['ego_pose_token'])
     cam_poserecord = nusc.get('ego_pose',nusc.get('sample_data',cam_front_token)['ego_pose_token'])
-    # get_bev_hdmap(cam_front_token,nusc,nusc_map)
     if 'bev_images' in collect_data:
         # outpath = 'test.png'
-        bev_images = render_ego_centric_map(cam_front_token,nusc,nusc_map,img_size=img_size)
+        bev_images = get_bev_hdmap(cam_front_token,nusc,nusc_map,img_size=img_size)
         all_data['bev_images'] = bev_images
     
     if 'Lidar_TOP_record' in collect_data:
@@ -806,7 +806,7 @@ def project_to_bev(nusc:NuScenes,sample_token:str,outpath:str,res=0.5):
         img = Image.fromarray(top)
         img.save(outpath)
     return top
-
+# @profile
 def get_bev_hdmap(sample_data_token:str,
                   nusc:NuScenes,
                   nusc_map:NuScenesMap,

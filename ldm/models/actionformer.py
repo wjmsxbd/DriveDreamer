@@ -28,6 +28,93 @@ import omegaconf
 import time
 import concurrent.futures
 import threading
+from ldm.modules.diffusionmodules.util import (
+    checkpoint,
+    conv_nd,
+    linear,
+    avg_pool_nd,
+    zero_module,
+    timestep_embedding,
+)
+def normalization(channels):
+    """
+    Make a standard normalization layer.
+    :param channels: number of input channels.
+    :return: an nn.Module for normalization.
+    """
+    return nn.GroupNorm(4,channels)
+
+class ResBlock(nn.Module):
+    """
+    A residual block that can optionally change the number of channels.
+    :param channels: the number of input channels.
+    :param emb_channels: the number of timestep embedding channels.
+    :param dropout: the rate of dropout.
+    :param out_channels: if specified, the number of out channels.
+    :param use_conv: if True and out_channels is specified, use a spatial
+        convolution instead of a smaller 1x1 convolution to change the
+        channels in the skip connection.
+    :param dims: determines if the signal is 1D, 2D, or 3D.
+    :param use_checkpoint: if True, use gradient checkpointing on this module.
+    :param up: if True, use this block for upsampling.
+    :param down: if True, use this block for downsampling.
+    """
+    def __init__(
+            self,
+            channels,
+            dropout,
+            out_channels=None,
+            use_conv=False,
+            dims=2,
+            use_checkpoint=False,
+    ):
+        super().__init__()
+        self.channels = channels
+        self.dropout = dropout
+        self.out_channels = out_channels or channels
+        self.use_conv = use_conv
+        self.use_checkpoint = use_checkpoint
+
+        self.in_layers = nn.Sequential(
+            normalization(channels),
+            nn.SiLU(),
+            conv_nd(dims,channels,self.out_channels,3,padding=1),
+        )
+
+        self.out_layers = nn.Sequential(
+            normalization(self.out_channels),
+            nn.SiLU(),
+            nn.Dropout(p=dropout),
+            zero_module(
+                conv_nd(dims,self.out_channels,self.out_channels,3,padding=1)
+            )
+        )
+
+        if self.out_channels == channels:
+            self.skip_connection = nn.Identity()
+        elif use_conv:
+            self.skip_connection = conv_nd(
+                dims,channels,self.out_channels,3,padding=1
+            )
+        else:
+            self.skip_connection = conv_nd(dims,channels,self.out_channels,1)
+
+    def forward(self,x):
+        """
+        Apply the block to a Tensor, conditioned on a timestep embedding.
+        :param x: an [N x C x ...] Tensor of features.
+        :param emb: an [N x emb_channels] Tensor of timestep embeddings.
+        :return: an [N x C x ...] Tensor of outputs.
+        """
+        # return checkpoint(
+        #     self._forward,(x),self.parameters(),self.use_checkpoint
+        # )
+        return self._forward(x)
+        
+    def _forward(self,x):
+        h = self.in_layers(x)
+        h = self.out_layers(h)
+        return self.skip_connection(x) + h
 
 class GRU_Blocks(nn.Module):
     def __init__(self,
@@ -689,18 +776,268 @@ class ActionFormer4(nn.Module):
                 h.append(self.decoder(latent_x))
         return h
 
+class ActionDecoder5(nn.Module):
+    def __init__(self,
+                 in_channels,
+                 ch,
+                 num_heads=8,
+                 dim_head=64):
+        super().__init__()
+        self.attn1 = CrossAttention(in_channels,heads=num_heads,dim_head=dim_head)
+        self.norm1 = nn.LayerNorm(in_channels)
+        self.linear = nn.ModuleList()
+        pre_channel = in_channels
+        for i in range(len(ch)):
+            if i!=0:
+                self.linear.append(nn.LayerNorm(pre_channel))
+            self.linear.append(nn.Linear(pre_channel,ch[i]))
+            self.linear.append(nn.SiLU())
+            pre_channel = ch[i]
+        
+    def forward(self,x,actions):
+        x = torch.cat([x,actions],dim=-1)
+        x = x.unsqueeze(1)
+        x = self.attn1(self.norm1(x))
+        for layer in self.linear:
+            x = layer(x)
+        x = x[:,0]
+        return x
+
+class ActionFormer5(nn.Module):
+    def __init__(self,latent_bev_dims,flatten_dims,embed_dims,action_dims,gru_blocks_config,heads,dim_head,decoder_config):
+        super().__init__()
+        self.latent_bev_dims = latent_bev_dims
+        self.action_dims = action_dims
+        self.linear = nn.Linear(flatten_dims,embed_dims)
+        self.silu = nn.SiLU()
+        self.attn1 = CrossAttention(query_dim=embed_dims,heads=heads,dim_head=dim_head)
+        self.attn2 = CrossAttention(query_dim=embed_dims,context_dim=action_dims,heads=heads,dim_head=dim_head)
+        self.norm1 = nn.LayerNorm(embed_dims)
+        self.norm2 = nn.LayerNorm(embed_dims)
+        self.norm3 = nn.LayerNorm(action_dims)
+        self.gru_block = nn.GRU(input_size=gru_blocks_config['params']['in_channels'],hidden_size=gru_blocks_config['params']['hidden_state_channels'],num_layers=1)
+        self.decoder = instantiate_from_config(decoder_config)
+
+    def forward(self,latent_bev,actions):
+        b,c,h,w = latent_bev.shape
+        latent_bev = rearrange(latent_bev,'b c h w -> b (h w) c').contiguous()
+        x = latent_bev
+        x = x.reshape(b,-1)
+        x = self.linear(x)
+        # x = self.silu(x)
+        h = []
+        for timestamp in range(actions.shape[1]):
+            if timestamp == 0:
+                h.append(self.decoder(x,torch.zeros_like(actions[:,0])))
+            else:
+                s = x
+                s = s.unsqueeze(1)
+                x = x.unsqueeze(1)
+                s = self.attn1(self.norm1(s))
+                s = self.attn2(self.norm2(s),self.norm3(actions[:,timestamp-1:timestamp]))
+                s = rearrange(s,'b n c -> n b c').contiguous()
+                x = rearrange(x,'b n c -> n b c').contiguous()
+                x,_ = self.gru_block(s,x)
+                x = x[0]
+                h.append(self.decoder(x,actions[:,timestamp-1]))
+        return h
+
+class ActionDecoder6(nn.Module):
+    def __init__(self,
+                 in_channels,
+                 ch,
+                 num_heads=8,
+                 dim_head=64):
+        super().__init__()
+        self.attn1 = CrossAttention(in_channels,heads=num_heads,dim_head=dim_head)
+        self.norm1 = nn.LayerNorm(in_channels)
+        self.linear = nn.ModuleList()
+        pre_channel = in_channels
+        for i in range(len(ch)):
+            if i!=0:
+                self.linear.append(nn.LayerNorm(pre_channel))
+            self.linear.append(nn.Linear(pre_channel,ch[i]))
+            self.linear.append(nn.SiLU())
+            pre_channel = ch[i]
+        
+
+    def forward(self,x,actions):
+        x = torch.cat([x,actions],dim=-1)
+        x = x.unsqueeze(1)
+        x = self.attn1(self.norm1(x))
+        for layer in self.linear:
+            x = layer(x)
+        x = x[:,0]
+        return x
+
+class ActionFormer6(nn.Module):
+    def __init__(self,latent_bev_dims,flatten_dims,embed_dims,action_dims,gru_blocks_config,heads,dim_head,decoder_config,dropout=0.0):
+        super().__init__()
+        self.latent_bev_dims = latent_bev_dims
+        self.action_dims = action_dims
+        self.conv1 = ResBlock(latent_bev_dims,dropout)
+        self.conv2 = ResBlock(latent_bev_dims,dropout)
+        self.linear = nn.Linear(flatten_dims,embed_dims)
+        self.attn1 = CrossAttention(query_dim=embed_dims,heads=heads,dim_head=dim_head)
+        self.attn2 = CrossAttention(query_dim=embed_dims,context_dim=action_dims,heads=heads,dim_head=dim_head)
+        self.norm1 = nn.LayerNorm(embed_dims)
+        self.norm2 = nn.LayerNorm(embed_dims)
+        self.norm3 = nn.LayerNorm(action_dims)
+        self.gru_block = nn.GRU(input_size=gru_blocks_config['params']['in_channels'],hidden_size=gru_blocks_config['params']['hidden_state_channels'],num_layers=1)
+        self.decoder = instantiate_from_config(decoder_config)
+
+    def forward(self,latent_bev,actions):
+        b,c,h,w = latent_bev.shape
+        # latent_bev = rearrange(latent_bev,'b c h w -> b (h w) c').contiguous()
+        x = latent_bev
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = x.reshape(b,-1)
+        x = self.linear(x)
+        # x = self.silu(x)
+        h = []
+        for timestamp in range(actions.shape[1]):
+            if timestamp == 0:
+                h.append(self.decoder(x,torch.zeros_like(actions[:,0])))
+            else:
+                s = x
+                s = s.unsqueeze(1)
+                x = x.unsqueeze(1)
+                s = self.attn1(self.norm1(s))
+                s = self.attn2(self.norm2(s),self.norm3(actions[:,timestamp-1:timestamp]))
+                s = rearrange(s,'b n c -> n b c').contiguous()
+                x = rearrange(x,'b n c -> n b c').contiguous()
+                x,_ = self.gru_block(s,x)
+                x = x[0]
+                h.append(self.decoder(x,actions[:,timestamp-1]))
+        return h
+
+class PipeLineActionFormer5(pl.LightningModule):
+    def __init__(self,actionformer_config,global_condition_config,movie_len,predict,use_scheduler=False,scheduler_config=None,monitor='val/loss',*args,**kwargs):
+        super().__init__(*args,**kwargs)
+        self.action_former = instantiate_from_config(actionformer_config)
+        self.global_condition = instantiate_from_config(global_condition_config)
+
+        self.movie_len = movie_len
+        self.monitor = monitor
+        self.use_scheduler = not scheduler_config is None
+        self.scheduler_config = scheduler_config
+        self.predict = predict
+
+    def configure_optimizers(self):
+        lr = 1e-5
+        params = list()
+        params = params + list(self.action_former.parameters()) + list(self.global_condition.get_parameters())
+        opt = torch.optim.AdamW(params,lr=lr)
+        if self.use_scheduler:
+            assert 'target' in self.scheduler_config
+            scheduler = instantiate_from_config(self.scheduler_config)
+
+            print("Setting up LambdaLR scheduler...")
+
+            scheduler = [
+                {
+                    'scheduler':LambdaLR(opt,lr_lambda=scheduler.schedule),
+                    'interval':'step',
+                    'frequency':1
+                }]
+            return [opt],scheduler
+        return opt
+    
+    def get_input(self,batch,k):
+        x = batch[k]
+        # if len(x.shape) == 4:
+        #     x = x.unsqueeze(1)
+        x = rearrange(x,'b n h w c -> (b n) c h w')
+        x = x.to(memory_format=torch.contiguous_format).float()
+        return x
+
+    def training_step(self,batch,batch_idx):
+        loss,loss_dict = self.shared_step(batch)
+        self.log_dict(loss_dict,prog_bar=True,logger=True,on_step=True,on_epoch=True)
+        if self.use_scheduler:
+            lr = self.optimizers().param_groups[0]['lr']
+            self.log('lr_abs',lr,prog_bar=True,logger=True,on_step=True,on_epoch=False)
+        return loss
+        
+    def validation_step(self,batch,batch_idx):
+        _,loss_dict = self.shared_step(batch)
+        self.log_dict(loss_dict,prog_bar=True,logger=True,on_step=True,on_epoch=True)
+
+    def shared_step(self,batch):
+        b = batch['bev_images'].shape[0]
+        bev_imgs = self.get_input(batch,'bev_images')
+        batch['reference_image'] = self.get_input(batch,'reference_image')
+        batch['range_image'] = self.get_input(batch,'range_image')
+        batch['bev_images'] = bev_imgs
+        if self.predict:
+            batch['actions'] = batch['actions']
+        batch = {k:v.to(torch.float32) for k,v in batch.items()}
+
+        out = self.global_condition.get_conditions(batch)
+        bev_image = out['bev_images']
+        actions = out['actions']
+        loss,loss_dict = self(bev_image,actions)
+        return loss,loss_dict
+    
+    def forward(self,bev_image,actions):
+        return self.p_losses(bev_image,actions)
+    
+    def apply_model(self,bev_image,actions):
+        b = actions.shape[0]
+        x = bev_image.reshape((b,self.movie_len)+bev_image.shape[1:])
+        x = x[:,0]
+        h = self.action_former(x,actions)
+        bev_rec = torch.stack([h[id] for id in range(len(h))]).reshape(bev_image.shape)
+        return bev_rec
+        
+
+    def p_losses(self,bev_image,actions):
+        bev_rec = self.apply_model(bev_image,actions)
+        loss_bev = torch.abs(bev_rec - bev_image).mean()
+        
+        loss = loss_bev
+        prefix = 'train' if self.training else 'val'
+        loss_dict = {}
+        loss_dict.update({f'{prefix}/loss_simple': loss_bev})
+        return loss,loss_dict
+    
+    def log_video(self,batch,N=8,n_row=4,**kwargs):
+        log = dict()
+        b = batch['reference_image'].shape[0]
+        bev_imgs = self.get_input(batch,'bev_images')
+        batch['reference_image'] = self.get_input(batch,'reference_image')
+        batch['range_image'] = self.get_input(batch,'range_image')
+        batch['bev_images'] = bev_imgs
+        if self.predict:
+            batch['actions'] = batch['actions']
+        batch = {k:v.to(torch.float32) for k,v in batch.items()}
+
+        out = self.global_condition.get_conditions(batch)
+        bev_image = out['bev_images']
+        actions = out['actions']
+        bev_rec = self.apply_model(bev_image,actions)
+        bev_rec = self.global_condition.decode_first_stage_interface('reference_image',bev_rec)
+
+        log['inputs'] = bev_imgs.reshape((b,self.movie_len)+bev_imgs.shape[1:])
+        log['reconstructions'] = bev_rec.reshape((b,self.movie_len)+bev_rec.shape[1:])
+        return log
+
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/actionformer4.yaml',
+                        default='configs/actionformer6_train.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
-    actionformer = instantiate_from_config(cfg['model'])
-    latent_hdmap = torch.randn((2,4,16,32))
-    latent_boxes = torch.randn((2,70,768))
+    actionformer = instantiate_from_config(cfg['model']['params']['actionformer_config'])
+    # latent_hdmap = torch.randn((2,4,16,32))
+    # latent_boxes = torch.randn((2,70,768))
+    latent_bev = torch.randn(2,4,64,64)
     action = torch.randn(2,5,128)
-    dense_range_image = torch.randn((2,4,16,32))
-    actionformer(latent_hdmap,latent_boxes,action,dense_range_image)
+    # dense_range_image = torch.randn((2,4,16,32))
+    actionformer(latent_bev,action)

@@ -7,6 +7,8 @@ from ldm.util import instantiate_from_config
 import math
 import torch.fft as fft  # differentiable
 from einops import rearrange,repeat
+from typing import Iterable
+import torch.nn.functional as F
 
 def fourier_filter(x, scale, d_s=0.25):
     dtype = x.dtype
@@ -242,8 +244,24 @@ class SiLU(nn.Module):
 class GroupNorm32(nn.GroupNorm):
     def forward(self,x):
         return super().forward(x.float()).type(x.dtype)
-    
-def conv_nd(dims,*args,**kwargs):
+
+class CausalConv3d(nn.Conv3d):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, **kwargs):
+        super().__init__(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=0)
+
+        # make causal padding
+        assert isinstance(kernel_size, Iterable) and len(kernel_size) == 3 and kernel_size[-1] == kernel_size[-2]
+        temporal_padding = [kernel_size[0] - 1, 0]  # causal padding on temporal dimension
+        spatial_padding = [kernel_size[-1] // 2] * 4  # keep padding on spatial dimension
+        causal_padding = tuple(spatial_padding + temporal_padding)  # starting from the last dimension
+        self.causal_padding = causal_padding
+
+    def forward(self, x):
+        x = F.pad(x, self.causal_padding)
+        x = super().forward(x)
+        return x
+
+def conv_nd(dims,*args,causal=False,**kwargs):
     """
     Create a 1D, 2D, or 3D convolution module.
     """
@@ -252,6 +270,8 @@ def conv_nd(dims,*args,**kwargs):
     elif dims==2:
         return nn.Conv2d(*args,**kwargs)
     elif dims == 3:
+        if causal:
+            return CausalConv3d(*args,**kwargs)
         return nn.Conv3d(*args,**kwargs)
     raise ValueError(f"unsupported dimensions: {dims}")
 
@@ -272,3 +292,46 @@ def avg_pool_nd(dims,*args,**kwargs):
     elif dims == 3:
         return nn.AvgPool3d(*args, **kwargs)
     raise ValueError(f"unsupported dimensions: {dims}")
+
+class AlphaBlender(nn.Module):
+    strategies = ["learned", "fixed", "learned_with_images"]
+
+    def __init__(
+            self,
+            alpha: float,
+            merge_strategy: str,
+            rearrange_pattern: str
+    ):
+        super().__init__()
+        self.merge_strategy = merge_strategy
+        self.rearrange_pattern = rearrange_pattern
+
+        assert merge_strategy in self.strategies, f"merge_strategy needs to be in {self.strategies}"
+
+        if self.merge_strategy == "fixed":
+            self.register_buffer("mix_factor", torch.Tensor([alpha]))
+        elif self.merge_strategy == "learned" or self.merge_strategy == "learned_with_images":
+            self.register_parameter("mix_factor", torch.nn.Parameter(torch.Tensor([alpha])))
+        else:
+            raise ValueError(f"Unknown merge strategy {self.merge_strategy}")
+
+    def get_alpha(self) -> torch.Tensor:
+        if self.merge_strategy == "fixed":
+            alpha = self.mix_factor
+        elif self.merge_strategy == "learned":
+            alpha = torch.sigmoid(self.mix_factor)
+        elif self.merge_strategy == "learned_with_images":
+            alpha = rearrange(torch.sigmoid(self.mix_factor), "... -> ... 1")
+            alpha = rearrange(alpha, self.rearrange_pattern)
+        else:
+            raise NotImplementedError
+        return alpha
+
+    def forward(
+            self,
+            x_spatial: torch.Tensor,
+            x_temporal: torch.Tensor
+    ) -> torch.Tensor:
+        alpha = self.get_alpha()
+        x = alpha.to(x_spatial.dtype) * x_spatial + (1.0 - alpha).to(x_spatial.dtype) * x_temporal
+        return x

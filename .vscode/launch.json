@@ -11,8 +11,9 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "args": [
-                // "--base","configs/video_decoder.yaml",
+                // "--base","configs/svd.yaml",
                 // "--train","True"
+                // "--device","cpu","--video"
             ]
         }
     ]

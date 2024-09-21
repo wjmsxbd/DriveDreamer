@@ -116,6 +116,7 @@ class dataloader(data.Dataset):
                 for ch_id,ch in enumerate(chunks):
                     video_infos[idx] = [value[id] for id in ch]
                     action_infos[idx] = torch.tensor([pose[select_can_bus_frames[id]]['orientation'] + pose[select_can_bus_frames[id]]['vel'] for id in ch])
+                    idx+=1
             else:
                 raise NotImplementedError
         self.video_infos = video_infos
@@ -298,7 +299,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/prediction2_4_dataloader.yaml',
+                        default='configs/svd.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()

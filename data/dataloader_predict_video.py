@@ -102,9 +102,9 @@ class dataloader(data.Dataset):
                 camera_frequency,nusc_canbus_frequecy = self.camera_frequency * 2,self.nusc_canbus_frequecy * 2
                 pose = self.nusc_can.get_messages(key,'pose')
                 can_bus_frames = torch.arange(len(pose)).to(torch.float16)
-                can_bus_frames = can_bus_frames * 60 / nusc_canbus_frequecy
+                can_bus_frames = can_bus_frames / nusc_canbus_frequecy
                 value = sorted(value,key=lambda e:e['timestamp'])
-                camera_frames = torch.arange(len(value)).to(torch.float16) * 60 / camera_frequency
+                camera_frames = torch.arange(len(value)).to(torch.float16) / camera_frequency
                 select_can_bus_frames = []
                 pos = 0
                 for i in range(len(camera_frames)):
@@ -299,7 +299,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/svd.yaml',
+                        default='configs/prediction2_4_dataloader.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()

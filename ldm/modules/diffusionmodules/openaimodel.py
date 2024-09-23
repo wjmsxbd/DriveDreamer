@@ -1676,6 +1676,7 @@ class VideoUNet(nn.Module):
         safetensor_path: str=None,
         ckpt_path: str=None,
         class_embed_dim = 4,
+        ignore_keys=None,
     ):
         super().__init__()
         assert context_dim is not None

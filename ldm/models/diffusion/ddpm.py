@@ -3738,8 +3738,8 @@ class AutoDM_GlobalCondition2(DDPM):
             else:
                 self.from_pretrained_model(unet_config['params']['ckpt_path'],unet_config['params']['ignore_keys'])
             self.restarted_from_ckpt = True
-        # if unet_config['params']['safetensor_path'] is not None:
-        #     self.restarted_from_ckpt = True
+        if 'safetensor_path' in unet_config['params'].keys() and unet_config['params']['safetensor_path'] is not None:
+            self.restarted_from_ckpt = True
 
         self.clipped_category = {}
         self.clipped_text = {}
@@ -4769,19 +4769,19 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/prediction2_4.yaml',
+                        default='configs/single_frame.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
     network = instantiate_from_config(cfg['model'])#.cuda()#.to('cuda:7')
     
-    x = torch.randn((2,5,128,256,3))#.cuda()
+    x = torch.randn((2,1,256,448,3))#.cuda()
     # x.requires_grad_(True)
-    hdmap = torch.randn((2,5,128,256,3))#.cuda()
-    boxes = torch.randn((2,5,70,16))#.cuda()
+    hdmap = torch.randn((2,1,256,448,3))#.cuda()
+    boxes = torch.randn((2,1,70,16))#.cuda()
     text = [["None" for k in range(5)] for j in range(2)]
-    box_category = [[["None" for k in range(70)] for i in range(5)] for j in range(2)]
+    box_category = [[["None" for k in range(70)] for i in range(1)] for j in range(2)]
     # depth_cam_front_img = torch.randn((2,5,128,256,3))
     import matplotlib.image as mpimg
     from PIL import Image
@@ -4791,10 +4791,10 @@ if __name__ == '__main__':
     # range_image = torch.tensor(range_image,dtype=torch.float32)
     # range_image = range_image.unsqueeze(0)
     # range_image = range_image.unsqueeze(0)
-    range_image = torch.randn((2,5,128,256,3))#.cuda()
-    dense_range_image = torch.randn((2,5,128,256,3))#.cuda()
+    range_image = torch.randn((2,1,256,448,3))#.cuda()
+    dense_range_image = torch.randn((2,1,256,448,3))#.cuda()
     # depth_cam_front_img = torch.randn((2,5,128,256,3))
-    actions = torch.randn((2,5,14))#.cuda()
+    actions = torch.randn((2,1,14))#.cuda()
     # out = {'text':text,
     #        '3Dbox':boxes,
     #        'category':box_category,
@@ -4803,7 +4803,7 @@ if __name__ == '__main__':
     #        "range_image":range_image,
     #        'dense_range_image': dense_range_image,
     #        'actions':actions}
-    bev_images = torch.randn((2,5,128,256,3))#.cuda()
+    bev_images = torch.randn((2,1,256,448,3))#.cuda()
     out = {'text':text,
            'reference_image':x,
            "range_image":range_image,

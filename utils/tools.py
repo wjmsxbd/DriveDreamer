@@ -876,7 +876,7 @@ def get_bev_hdmap(sample_data_token:str,
 
 
 
-def project_to_camera(range_image,point_sensor_record,cam_sensor_record,ego_pose_record,img_size=(128,256),min_dist=1.0,out_path=None):
+def project_to_camera(range_image,point_sensor_record,cam_sensor_record,ego_pose_record_lidar,ego_pose_record_cam,img_size=(128,256),min_dist=1.0,out_path=None):
     indices = np.nonzero(range_image)
     points = np.zeros(len(indices),3)
     theta_up = np.pi / 12
@@ -898,11 +898,11 @@ def project_to_camera(range_image,point_sensor_record,cam_sensor_record,ego_pose
     pc.translate(np.array(point_sensor_record['translation']))
     
     
-    pc.rotate(Quaternion(ego_pose_record['rotation']).rotation_matrix)
-    pc.translate(np.array(ego_pose_record['translation']))
+    pc.rotate(Quaternion(ego_pose_record_lidar['rotation']).rotation_matrix)
+    pc.translate(np.array(ego_pose_record_lidar['translation']))
     
-    pc.translate(-np.array(ego_pose_record['translation']))
-    pc.rotate(Quaternion(ego_pose_record['rotation']).rotation_matrix.T)
+    pc.translate(-np.array(ego_pose_record_cam['translation']))
+    pc.rotate(Quaternion(ego_pose_record_cam['rotation']).rotation_matrix.T)
     
     pc.translate(-np.array(cam_sensor_record['translation']))
     pc.rotate(Quaternion(cam_sensor_record['rotation']).rotation_matrix.T)

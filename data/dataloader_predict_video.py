@@ -27,7 +27,7 @@ from PIL import Image
 from nuscenes.can_bus.can_bus_api import NuScenesCanBus
 import time
 import math
-
+import imageio
 try:
     import moxing as mox
 
@@ -252,48 +252,38 @@ def collate_fn(batch):
                 raise NotImplementedError
     return out
 
-def save_tensor_as_image(tensor, file_path):
+def save_tensor_as_image(tensor, file_path,batch_id,batch_size):
     if tensor.is_cuda:
         tensor = tensor.cpu()
-
-    if len(tensor.shape) == 4:
-        tensor = tensor.squeeze(0)
-
-    # mean = torch.tensor([0.485, 0.456, 0.406])
-    # std = torch.tensor([0.229, 0.224, 0.225])
-    # tensor = tensor * std[:, None, None] + mean[:, None, None]
-
     tensor = tensor.clamp(-1, 1)  # 确保值在[0, 1]之间
     tensor = (tensor + 1.0) / 2.0
     tensor = tensor * 255.0
-
     tensor = tensor.byte()
 
-
-    tensor = tensor.permute(1, 2, 0)
-
-
-    numpy_array = tensor.numpy()
-
-    image = Image.fromarray(numpy_array)
-
-    image.save(file_path)
-
-def save_tensor_as_video(tensor,file_path):
-    import imageio
+    if len(tensor.shape) == 5:
+        for idx in range(tensor.shape[0]):
+            for frame in range(tensor.shape[1]):
+                save_file_path = os.path.join(file_path,f'{batch_id*batch_size+idx:02d}_{frame:02d}.png')
+                img = tensor[idx,frame]
+                img = img.permute(1,2,0)
+                img = img.numpy()
+                img = Image.fromarray(img)
+                img.save(save_file_path)                
+    
+def save_tensor_as_video(tensor,file_path,batch_id,batch_size):
     tensor = tensor.detach().cpu()
     tensor = torch.clamp(tensor,-1.,1.)
-    filename = file_path
-    tensor = rearrange(tensor,'b n c h w -> b n h w c')
+    if len(tensor.shape) == 5:
+        tensor = rearrange(tensor,'b n c h w -> b n h w c')
+    else:
+        tensor = rearrange(tensor,'b c h w -> b h w c')
     tensor = tensor.numpy()
     tensor = (tensor + 1.0) / 2.0
     tensor = (tensor * 255).astype(np.uint8)
-    tensor = [tensor[0,i] for i in range(tensor.shape[1])]
-    imageio.mimsave(file_path,tensor,'GIF',fps=5,loop=0)
-    # writer = imageio.get_writer(filename,fps=5)
-    # for i in range(tensor.shape[1]):
-    #     writer.append_data(tensor[:,i])
-    # writer.close()
+    for i in range(tensor.shape[0]):
+        save_video_path = os.path.join(file_path,f'{batch_id*batch_size+i:02d}.gif')
+        video = [tensor[i,j] for j in range(tensor.shape[1])]
+        imageio.mimsave(save_video_path,video,'GIF',fps=5,loop=0)
 
 if __name__ == "__main__":
     import argparse
@@ -302,29 +292,78 @@ if __name__ == "__main__":
                         default='configs/prediction2_4_dataloader.yaml',
                         type=str,
                         help="config path")
+    parser.add_argument('--video',
+                        action='store_true',
+                        help="use video evaluation")
+    parser.add_argument('--train',
+                        action='store_true',
+                        help="train")
+    parser.add_argument('--device',
+                        default='cpu',
+                        type=str,
+                        help="device")
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
-
-    data_loader = dataloader(**cfg.data.params.train.params)
+    video_eval = cmd_args.video
+    device = cmd_args.device
+    use_train = cmd_args.train
+    if use_train:
+        data_loader = dataloader(**cfg.data.params.train.params)
+    else:
+        data_loader = dataloader(**cfg.data.params.validation.params)
+    batch_size = 2
     data_loader_ = torch.utils.data.DataLoader(
         data_loader,
-        batch_size  =   1,
+        batch_size  =   batch_size,
         num_workers =   0,
         collate_fn=collate_fn
     )
-    # network = instantiate_from_config(cfg['model'])
+    network = instantiate_from_config(cfg['model'])
     # model_path = 'logs/2024-09-03T09-45-52_prediction2_4_less/checkpoints/last.ckpt'
     # network.init_from_ckpt(model_path)
-    # network = network.eval().cuda()
+    network = network.eval().cuda()
     # # network = network.eval()
-    # save_path = 'all_pics/'
-    # save_path = save_path + 'prediction2_4/'
+    save_path = 'all_pics/'
+    save_path = save_path + 'prediction2_4/'
     # # 35
-    # if not os.path.exists(save_path):
-    #     os.makedirs(save_path)
+    cam_real_save_path = save_path + 'cam_inputs/'
+    cam_rec_save_path = save_path + "cam_rec/"
+    cam_samples_save_path = save_path + "cam_samples/"
+    lidar_real_save_path = save_path + 'lidar_inputs/'
+    lidar_rec_save_path = save_path + "lidar_rec/"
+    lidar_samples_save_path = save_path + "lidar_samples/"
+    if not os.path.exists(cam_real_save_path):
+        os.makedirs(cam_real_save_path)
+    if not os.path.exists(cam_rec_save_path):
+        os.makedirs(cam_rec_save_path)
+    if not os.path.exists(lidar_real_save_path):
+        os.makedirs(lidar_real_save_path)
+    if not os.path.exists(lidar_rec_save_path):
+        os.makedirs(lidar_rec_save_path)
+    if not os.path.exists(cam_samples_save_path):
+        os.makedirs(cam_samples_save_path)
+    if not os.path.exists(lidar_samples_save_path):
+        os.makedirs(lidar_samples_save_path)
     # l = len(data_loader)
+
     for _,batch in tqdm(enumerate(data_loader_)):
-        pass
+        if device == 'cuda':
+            batch = {k:v.cuda() if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
+        logs = network.log_video(batch)
+        if not video_eval:
+            save_tensor_as_image(logs['inputs'],file_path=cam_real_save_path,batch_id=_,batch_size=batch_size)
+            save_tensor_as_image(logs['reconstruction'],file_path=cam_rec_save_path,batch_id=_,batch_size=batch_size)
+            save_tensor_as_image(logs['lidar_reconstruction'],file_path=lidar_rec_save_path,batch_id=_,batch_size=batch_size)
+            save_tensor_as_image(logs['lidar_inputs'],file_path=lidar_real_save_path,batch_id=_,batch_size=batch_size)
+            save_tensor_as_image(logs['samples'],file_path=cam_samples_save_path,batch_id=_,batch_size=batch_size)
+            save_tensor_as_image(logs['lidar_samples'],file_path=lidar_samples_save_path,batch_id=_,batch_size=batch_size)
+        else:
+            save_tensor_as_video(logs['inputs'],file_path=cam_real_save_path,batch_id=_,batch_size=batch_size)
+            save_tensor_as_video(logs['reconstruction'],file_path=cam_rec_save_path,batch_id=_,batch_size=batch_size)
+            save_tensor_as_video(logs['lidar_reconstruction'],file_path=lidar_rec_save_path,batch_id=_,batch_size=batch_size)
+            save_tensor_as_video(logs['lidar_inputs'],file_path=lidar_real_save_path,batch_id=_,batch_size=batch_size)
+            save_tensor_as_video(logs['samples'],file_path=cam_samples_save_path,batch_id=_,batch_size=batch_size)
+            save_tensor_as_video(logs['lidar_samples'],file_path=lidar_samples_save_path,batch_id=_,batch_size=batch_size)
     #     # batch = {k:v if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
     #     # __ = _ + 50
     #     # if __>= l:

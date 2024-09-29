@@ -79,13 +79,22 @@ class EulerEDMSampler(SingleStepDiffusionSampler):
         sigma_hat = sigma * (gamma + 1.0)
         if gamma > 0:
             eps = torch.randn_like(cond_x) * self.s_noise
-            cond_x = cond_x + eps * append_dims(sigma_hat ** 2 - sigma ** 2,cond_x.ndim) ** 0.5
-            cond_range_image = cond_range_image + eps * append_dims(sigma_hat ** 2 - sigma ** 2,cond_range_image.ndim) ** 0.5
+            if cond_range_image is None:
+                cond_x = cond_x + eps * append_dims(sigma_hat ** 2 - sigma ** 2,cond_x.ndim) ** 0.5
+            else:
+                cond_x = cond_x + eps * append_dims(sigma_hat ** 2 - sigma ** 2,cond_x.ndim) ** 0.5
+                cond_range_image = cond_range_image + eps * append_dims(sigma_hat ** 2 - sigma ** 2,cond_range_image.ndim) ** 0.5
 
         denoised = self.denoise(cond_x,cond_range_image, denoiser, sigma_hat, cond, cond_mask, uc)
-        x = torch.cat([cond_x,cond_range_image],dim=0)
-        sigma_hat = torch.cat([sigma_hat,sigma_hat],dim=0)
-        next_sigma = torch.cat([next_sigma,next_sigma],dim=0)
+        if not cond_range_image is None:
+            x = torch.cat([cond_x,cond_range_image],dim=0)
+            sigma_hat = torch.cat([sigma_hat,sigma_hat],dim=0)
+            next_sigma = torch.cat([next_sigma,next_sigma],dim=0)
+        else:
+            x = cond_x
+        
+        # sigma_hat = torch.cat([sigma_hat,sigma_hat],dim=0)
+        # next_sigma = torch.cat([next_sigma,next_sigma],dim=0)
         d = to_d(x, sigma_hat, denoised)
         dt = append_dims(next_sigma - sigma_hat, x.ndim)
 
@@ -106,10 +115,16 @@ class EulerEDMSampler(SingleStepDiffusionSampler):
         x, s_in, sigmas, num_sigmas, cond, uc = self.prepare_sampling_loop(x, cond, uc, num_steps)
         replace_cond_frames = cond_mask is not None and cond_mask.any()
         x_x,range_x = x,x
+        temp = cond_x
+        eps = 1e-7
+        print(self.get_sigma_gen(num_sigmas))
         for i in self.get_sigma_gen(num_sigmas):
             if replace_cond_frames:
                 cond_x = x_x * append_dims(1 - cond_mask, x.ndim) + cond_x * append_dims(cond_mask, cond_x.ndim)
-                cond_range_image = range_x * append_dims(1 - cond_mask,x.ndim) + cond_range_image * append_dims(cond_mask,cond_range_image.ndim)
+                if not cond_range_image is None:
+                    cond_range_image = range_x * append_dims(1 - cond_mask,x.ndim) + cond_range_image * append_dims(cond_mask,cond_range_image.ndim)
+                else:
+                    cond_range_image = None
             gamma = (
                 min(self.s_churn / (num_sigmas - 1), 2 ** 0.5 - 1)
                 if self.s_tmin <= sigmas[i] <= self.s_tmax
@@ -126,10 +141,19 @@ class EulerEDMSampler(SingleStepDiffusionSampler):
                 uc,
                 gamma
             )
-            x_x,range_x = torch.chunk(x,2,0)
+            if not cond_range_image is None:
+                x_x,range_x = torch.chunk(x,2,0)
         if replace_cond_frames:
-            x_rec,range_rec = torch.chunk(x,2,dim=0)
-            x_rec = x_rec * append_dims(1-cond_mask,x_rec.ndim) + cond_x * append_dims(cond_mask,cond_x.ndim)
-            range_rec = range_rec * append_dims(1-cond_mask,range_rec.ndim) + cond_range_image * append_dims(cond_mask,range_rec.ndim)
-            x = torch.cat([x_rec,range_rec],dim=0)
+            # assert cond_range_image is None
+            if cond_range_image is None:
+                x_rec = x
+                x_rec = x_rec * append_dims(1-cond_mask,x_rec.ndim) + cond_x * append_dims(cond_mask,cond_x.ndim)
+                x = x_rec
+            else:
+                x_rec,range_rec = torch.chunk(x,2,dim=0)
+                x_rec = x_rec * append_dims(1-cond_mask,x_rec.ndim) + cond_x * append_dims(cond_mask,cond_x.ndim)
+                range_rec = range_rec * append_dims(1-cond_mask,range_rec.ndim) + cond_range_image * append_dims(cond_mask,range_rec.ndim)
+                x = torch.cat([x_rec,range_rec],dim=0)
+        print(torch.max(x[0] - temp[0]))
+        assert torch.max(x[0] - temp[0]) < eps
         return x

@@ -3220,6 +3220,7 @@ class AutoDM_GlobalCondition(DDPM):
             print("Diffusion model optimizing logvar")
             params.append(self.logvar)
         opt = torch.optim.AdamW(params,lr=lr)
+        # opt = torch.optim.SGD(params,lr=lr)
         if self.use_scheduler:
             assert 'target' in self.scheduler_config
             scheduler = instantiate_from_config(self.scheduler_config)
@@ -3690,6 +3691,8 @@ class AutoDM_GlobalCondition2(DDPM):
                  loss_fn_config=None,
                  replace_cond_frames=False,
                  fixed_cond_frames=None,
+                 calc_decoder_loss=False,
+                 use_similar="JS",
                  *args,**kwargs):
         self.num_timesteps_cond = default(num_timesteps_cond,1)
         self.scale_by_std = scale_by_std
@@ -3731,6 +3734,8 @@ class AutoDM_GlobalCondition2(DDPM):
         self.denoiser = instantiate_from_config(denoiser_config)
         self.sampler = instantiate_from_config(sampler_config)
         self.loss_fn = instantiate_from_config(loss_fn_config)
+        self.calc_decoder_loss = calc_decoder_loss
+        self.use_similar = use_similar
         if unet_config['params']['ckpt_path'] is not None:
             # self.model.from_pretrained_model(unet_config['params']['ckpt_path'])
             if self.init_from_video_model:
@@ -3879,7 +3884,12 @@ class AutoDM_GlobalCondition2(DDPM):
             lr = self.optimizers().param_groups[0]['lr']
             self.log('lr_abs',lr,prog_bar=True,logger=True,on_step=True,on_epoch=False)
 
+        # if self.calc_decoder_loss:
+        #     decoder_loss,decoder_loss_dict = self.global_condition.calc_similarity_loss(batch)
+        #     loss = decoder_loss + loss
+        #     self.log_dict(decoder_loss_dict,prog_bar=True,logger=True,on_epoch=True)
         # encoder_loss,encoder_loss_dict = self.global_condition.get_losses(batch)
+
         # loss = encoder_loss + loss 
         # self.log_dict(encoder_loss_dict,prog_bar=True,logger=True,on_step=True,on_epoch=True)
         # self.manual_backward(loss)
@@ -3962,7 +3972,10 @@ class AutoDM_GlobalCondition2(DDPM):
         condition_out = self.global_condition.get_conditions(batch)
         condition_keys = condition_out.keys()
         z = condition_out['ref_image']
-        lidar_z = condition_out['range_image']
+        if 'range_image' in condition_keys:
+            lidar_z = condition_out['range_image']
+        else:
+            lidar_z = None
         
         out = [z,lidar_z]
         c = {}
@@ -3978,10 +3991,17 @@ class AutoDM_GlobalCondition2(DDPM):
             c['actions'] = condition_out['actions']
         if 'bev_images' in condition_keys:
             c['bev_images'] = condition_out['bev_images']
+        if 'cam_enc' in condition_keys:
+            c['cam_enc'] = out['cam_enc']
+        if 'lidar_enc' in condition_keys:
+            c['lidar_enc'] = out['lidar_enc']
         if return_first_stage_outputs:
             x_rec = self.global_condition.decode_first_stage_interface("reference_image",z)
-            lidar_rec = self.global_condition.decode_first_stage_interface('lidar',lidar_z)
-            out.extend([batch['reference_image'],x_rec,batch['range_image'],lidar_rec])
+            if lidar_z is None:
+                out.extend([batch['reference_image'],x_rec,None,None])
+            else:
+                lidar_rec = self.global_condition.decode_first_stage_interface('lidar',lidar_z)
+                out.extend([batch['reference_image'],x_rec,batch['range_image'],lidar_rec])
         out.append(c)
         return out
         
@@ -4029,10 +4049,12 @@ class AutoDM_GlobalCondition2(DDPM):
         if 'actions' in condition_keys:
             batch['actions'] = batch['actions']
         batch = {k:v.to(torch.float32) for k,v in batch.items()}
-
-        out = self.global_condition.get_conditions(batch)
+        out = self.global_condition.get_conditions(batch,self.calc_decoder_loss)
         condition_keys = out.keys()
-        range_image = out['range_image']
+        if 'range_image' in out.keys():
+            range_image = out['range_image']
+        else:
+            range_image = None
         x = out['ref_image'].to(torch.float32)
         c = {}
         if 'hdmap' in condition_keys:
@@ -4047,16 +4069,25 @@ class AutoDM_GlobalCondition2(DDPM):
             c['actions'] = out['actions']
         if 'bev_images' in condition_keys:
             c['bev_images'] = out['bev_images']
+        if 'cam_enc' in condition_keys:
+            c['cam_enc'] = out['cam_enc']
+        if 'lidar_enc' in condition_keys:
+            c['lidar_enc'] = out['lidar_enc']
         c['origin_range_image'] = range_image
+        if self.calc_decoder_loss:
+            x_rec,cam_dec = self.global_condition.decode_first_stage_interface("reference_image",x,calc_decoder_loss=self.calc_decoder_loss)
+            lidar_rec,lidar_dec = self.global_condition.decode_first_stage_interface('lidar',range_image,calc_decoder_loss=self.calc_decoder_loss)
+            c['cam_dec'] = cam_dec
+            c['lidar_dec'] = lidar_dec
         loss,loss_dict = self(x,range_image,c)
         return loss,loss_dict
 
 
     def forward(self,x,range_image,c,*args,**kwargs):
-        loss = self.loss_fn(self.model,self.denoiser,c,x,range_image,self.action_former)
+        loss,camera_loss,range_image_loss = self.loss_fn(self.model,self.denoiser,c,x,range_image,self.action_former,self.calc_decoder_loss,self.use_similar)
         loss_mean = loss.mean()
         log_prefix = "train" if self.training else 'val'
-        loss_dict = {f"{log_prefix}/loss":loss_mean}
+        loss_dict = {f"{log_prefix}/loss":loss_mean,f"{log_prefix}/camera_loss":camera_loss,f"{log_prefix}/range_loss":range_image_loss}
         return loss,loss_dict
 
     def apply_model(self,x_noisy,t,cond,range_image_noisy=None,x_start=None,return_ids=False):
@@ -4562,8 +4593,9 @@ class AutoDM_GlobalCondition2(DDPM):
         n_row = min(x.shape[0],n_row)
         log['inputs'] = x
         log['reconstruction'] = x_rec
-        log['lidar_inputs'] = range_image
-        log['lidar_reconstruction'] =  lidar_rec
+        if not range_image is None:
+            log['lidar_inputs'] = range_image
+            log['lidar_reconstruction'] =  lidar_rec
         log['dense_range_image'] = c['dense_range_image']
 
         if plot_diffusion_rows:
@@ -4673,8 +4705,9 @@ class AutoDM_GlobalCondition2(DDPM):
 
         log['inputs'] = x.reshape((N,-1)+x.shape[1:])
         log['reconstruction'] = x_rec.reshape((N,-1)+x_rec.shape[1:])
-        log["lidar_inputs"] = range_image.reshape((N,-1)+range_image.shape[1:])
-        log['lidar_reconstruction'] = range_image_rec.reshape((N,-1)+range_image_rec.shape[1:])
+        if not range_image is None:
+            log["lidar_inputs"] = range_image.reshape((N,-1)+range_image.shape[1:])
+            log['lidar_reconstruction'] = range_image_rec.reshape((N,-1)+range_image_rec.shape[1:])
         # log['dense_range_image'] = c['dense_range_image'].reshape((N,-1),c['dense_range_image'].shape[1:])
         if sample:
             condition_key = c.keys()
@@ -4693,12 +4726,17 @@ class AutoDM_GlobalCondition2(DDPM):
                 # batch = {k:v.to(self.model.device) for k,v in batch.items()}
                 samples = self.sample(c,z,lidar_z,shape=z.shape[1:],N=self.movie_len,batch_size=b)
                 # samples, z_denoise_row = self.sample(cond=c, batch_size=N, return_intermediates=True)
+            print(torch.max(samples[0] - z[0]))
             samples = samples.to(self.global_condition.device)
-            samples,sample_lidar = torch.chunk(samples,2,dim=0)
-            x_samples = self.global_condition.decode_first_stage_interface('reference_image',samples)
-            lidar_sample = self.global_condition.decode_first_stage_interface('lidar',sample_lidar)
-            log["samples"] = x_samples.reshape((N,-1)+x_samples.shape[1:])
-            log['lidar_samples'] = lidar_sample.reshape((N,-1)+lidar_sample.shape[1:])
+            if not range_image is None:
+                samples,sample_lidar = torch.chunk(samples,2,dim=0)
+                x_samples = self.global_condition.decode_first_stage_interface('reference_image',samples)
+                lidar_sample = self.global_condition.decode_first_stage_interface('lidar',sample_lidar)
+                log["samples"] = x_samples.reshape((N,-1)+x_samples.shape[1:])
+                log['lidar_samples'] = lidar_sample.reshape((N,-1)+lidar_sample.shape[1:])
+            else:
+                x_samples = self.global_condition.decode_first_stage_interface('reference_image',samples)
+                log["samples"] = x_samples.reshape((N,-1)+x_samples.shape[1:])
         return log
 
     def get_infer_cond(self,batch):
@@ -4769,19 +4807,19 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/single_frame.yaml',
+                        default='configs/svd_debug.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
     network = instantiate_from_config(cfg['model'])#.cuda()#.to('cuda:7')
     
-    x = torch.randn((2,1,256,448,3))#.cuda()
+    x = torch.randn((2,5,128,256,3))#.cuda()
     # x.requires_grad_(True)
-    hdmap = torch.randn((2,1,256,448,3))#.cuda()
-    boxes = torch.randn((2,1,70,16))#.cuda()
+    hdmap = torch.randn((2,5,128,256,3))#.cuda()
+    boxes = torch.randn((2,5,70,16))#.cuda()
     text = [["None" for k in range(5)] for j in range(2)]
-    box_category = [[["None" for k in range(70)] for i in range(1)] for j in range(2)]
+    box_category = [[["None" for k in range(70)] for i in range(5)] for j in range(2)]
     # depth_cam_front_img = torch.randn((2,5,128,256,3))
     import matplotlib.image as mpimg
     from PIL import Image
@@ -4791,10 +4829,10 @@ if __name__ == '__main__':
     # range_image = torch.tensor(range_image,dtype=torch.float32)
     # range_image = range_image.unsqueeze(0)
     # range_image = range_image.unsqueeze(0)
-    range_image = torch.randn((2,1,256,448,3))#.cuda()
-    dense_range_image = torch.randn((2,1,256,448,3))#.cuda()
+    range_image = torch.randn((2,5,128,256,3))#.cuda()
+    dense_range_image = torch.randn((2,5,128,256,3))#.cuda()
     # depth_cam_front_img = torch.randn((2,5,128,256,3))
-    actions = torch.randn((2,1,14))#.cuda()
+    actions = torch.randn((2,5,14))#.cuda()
     # out = {'text':text,
     #        '3Dbox':boxes,
     #        'category':box_category,
@@ -4803,21 +4841,22 @@ if __name__ == '__main__':
     #        "range_image":range_image,
     #        'dense_range_image': dense_range_image,
     #        'actions':actions}
-    bev_images = torch.randn((2,1,256,448,3))#.cuda()
+    bev_images = torch.randn((2,5,128,256,3))#.cuda()
     out = {'text':text,
            'reference_image':x,
-           "range_image":range_image,
+        #    "range_image":range_image,
            'actions':actions,
            'HDmap':hdmap,
            '3Dbox':boxes,
            'category':box_category,
-           'dense_range_image':dense_range_image}
+        #    'dense_range_image':dense_range_image
+        }
     
     # network.log_video(out)
     # network.configure_optimizers()
-    loss,loss_dict = network.shared_step(out)
+    # loss = network.log_video(out)
     # loss.backward()
-    # loss,loss_dict = network.shared_step(out)
+    loss,loss_dict = network.shared_step(out)
     # print(loss)
     # loss.backward()
     # loss,loss_dict = network.shared_step(out)

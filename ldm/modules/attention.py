@@ -360,6 +360,7 @@ class BasicTransformerBlock(nn.Module):
         bhw = x.shape[0]
         batch_size = bhw // self.height // self.width
         x = rearrange(x,'(b h w) n c -> (b n) (h w) c',b=batch_size,h=self.height,w=self.width,n=self.movie_len).contiguous()
+        # x = rearrange(x,'b c h w -> b (h w) c').contiguous()
         if objs is None:
             x = self.attn1(self.norm1(x)) + x
         else:

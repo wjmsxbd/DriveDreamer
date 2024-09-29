@@ -28,6 +28,7 @@ class StandardDiffusionLoss(nn.Module):
             cond_frames_choices: Union[List, None] = None,
             img_size: tuple = (128,256),
             depth_config=None,
+            w_similarity=1.,
     ):
         super().__init__()
         assert loss_type in ["l2", "l1"]
@@ -50,7 +51,7 @@ class StandardDiffusionLoss(nn.Module):
             self.phi_res = (np.pi / 3) / self.img_size[1]
         else:
             self.depth_estimator = None
-
+        self.w_similarity = w_similarity
     def get_noised_input(
             self,
             sigmas_bc: torch.Tensor,
@@ -67,9 +68,11 @@ class StandardDiffusionLoss(nn.Module):
             cond:dict,
             x:torch.Tensor,
             range_image:torch.Tensor,
-            actionformer:nn.Module
+            actionformer:nn.Module,
+            calc_dec_loss:bool = False,
+            use_similar: str = "JS",
     ):
-        return self._forward(network,denoiser,cond,x,range_image,actionformer)
+        return self._forward(network,denoiser,cond,x,range_image,actionformer,calc_dec_loss,use_similar)
     
     def _forward(
             self,
@@ -79,6 +82,8 @@ class StandardDiffusionLoss(nn.Module):
             x:torch.Tensor,
             range_image:torch.Tensor,
             actionformer:nn.Module,
+            calc_dec_loss:bool = False,
+            use_similar: str = "JS",
     ):
         sigmas = self.sigma_sampler(x.shape[0]).to(x)
         cond_mask = torch.zeros_like(sigmas)
@@ -101,22 +106,80 @@ class StandardDiffusionLoss(nn.Module):
         else:
             sigmas_bc = append_dims(sigmas,x.ndim)
         noised_x = self.get_noised_input(sigmas_bc,noise,x)
-        noised_range_image = self.get_noised_input(sigmas_bc,noise,range_image)
-        
+        if not range_image is None:
+            noised_range_image = self.get_noised_input(sigmas_bc,noise,range_image)
+        else:
+            noised_range_image = None
         model_output = denoiser(network,noised_x,noised_range_image,sigmas,cond,self.movie_len,actionformer,cond_mask)
-        x_rec,range_image_rec = torch.chunk(model_output,2,0)
-        sigmas = torch.cat([sigmas,sigmas],dim=0)
+        if range_image is None:
+            x_rec = model_output
+        else:
+            x_rec,range_image_rec = torch.chunk(model_output,2,0)
+        if range_image is None:
+            sigmas = sigmas
+        else:
+            sigmas = torch.cat([sigmas,sigmas],dim=0)
         w = append_dims(self.loss_weighting(sigmas),x.ndim)
         if self.replace_cond_frames:
             predict_x = x_rec * append_dims(1 - cond_mask,x.ndim) + x * append_dims(cond_mask,x.ndim)
-            predict_range = range_image_rec * append_dims(1 - cond_mask,x.ndim) + range_image_rec * append_dims(cond_mask,x.ndim)
-            predict = torch.cat([predict_x,predict_range],dim=0)
+            if not range_image is None:
+                predict_range = range_image_rec * append_dims(1 - cond_mask,x.ndim) + range_image_rec * append_dims(cond_mask,x.ndim)
+                predict = torch.cat([predict_x,predict_range],dim=0)
+            else:
+                predict = predict_x
         else:
             predict = model_output
-        input = torch.cat([x,range_image],dim=0)
-        return self.get_loss(predict,input,w,cond)
+        if not range_image is None:
+            input = torch.cat([x,range_image],dim=0)
+        else:
+            input = x
+        return self.get_loss(predict,input,w,cond,calc_dec_loss,use_similar)
     
-    def get_loss(self,predict,target,w,cond):
+    def calc_single_similarity(self,cam_enc,lidar_enc,use_similar):
+        eps = 1e-7
+        data = []
+        if use_similar == 'JS':
+            for i in range(len(cam_enc)):
+                min_value = cam_enc[i].min()
+                max_value = cam_enc[i].max()
+                cam_enc[i] = (cam_enc[i] - min_value) / (max_value - min_value)
+                _,_,h,w = cam_enc[i].shape
+                l = h * w
+                cam_enc[i] = rearrange(cam_enc[i],'b c h w -> (b h w) c')
+                min_value = lidar_enc[i].min()
+                max_value = lidar_enc[i].max()
+                lidar_enc[i] = (lidar_enc[i] - min_value) / (max_value - min_value)
+                JS =  []
+                for j in range(cam_enc[i].shape[1]):
+                    xx = torch.histc(cam_enc[i][:,j],bins=256)
+                    lidar_xx = torch.histc(lidar_enc[i][:,j],bins=256)
+                    lidar_xx = lidar_xx / l + eps
+                    xx = xx / l + eps
+                    m = (xx + lidar_xx) * 0.5
+                    kl_pm = torch.sum((torch.kl_div(xx,m)))
+                    kl_qm = torch.sum((torch.kl_div(lidar_xx,m)))
+                    js = 0.5 * (kl_pm + kl_qm)
+                    JS.append(js)
+                JS = torch.tensor(JS,dtype=torch.float32,device=cam_enc[0].device)
+                JS = torch.mean(JS)
+                data.append(JS)
+        data = torch.tensor(data,dtype=torch.float32,device=cam_enc[0].device)
+        return torch.mean(data)
+        
+
+    def calc_similarity_loss(self,cam_enc,cam_dec,lidar_enc,lidar_dec,use_similar='JS'):
+        if use_similar == "JS":
+            gt = self.calc_single_similarity(cam_enc,lidar_enc,use_similar)
+            rec = self.calc_single_similarity(cam_dec,lidar_dec,use_similar)
+            similarity = (gt - rec).mean()
+            return similarity
+
+    def get_loss(self,predict,target,w,cond,calc_dec_loss=False,use_similar="JS",):
+        if calc_dec_loss:
+            cam_enc,cam_dec,lidar_enc,lidar_dec = cond['cam_enc'],cond['cam_dec'],cond['lidar_enc'],cond['lidar_dec']
+            similarity = self.calc_similarity_loss(cam_enc,cam_dec,lidar_enc,lidar_dec)
+            loss_similarity = similarity * self.w_similarity
+
         if self.loss_type == "l2":
             if self.use_additional_loss:
                 predict_seq = rearrange(predict, "(b t) ... -> b t ...", t=self.movie_len)
@@ -133,65 +196,19 @@ class StandardDiffusionLoss(nn.Module):
                 target_hf = fourier_filter(target, scale=0.)
                 hf_loss = torch.mean((w * (predict_hf - target_hf) ** 2).reshape(target.shape[0], -1), 1).mean()
 
-                # if self.depth_estimator is not None:
-                #     predict_x,predict_lidar = torch.chunk(predict,2,0)
-                #     predict_lidar = (torch.clip(predict_lidar,-1,1) + 1) / 2.
-                #     mask = predict_lidar > 0.05
-                #     predict_lidar = (predict_lidar * mask) * 255.
-                #     indices = [torch.nonzero(predict_lidar[i]) for i in range(predict_lidar.shape[0])]
-                #     for batch_id in range(predict_lidar.shape[0]):
-                #         indice = indices[batch_id]
-                #         points = torch.zeros((len(indice),3))
-                #         for idx in range(len(indice)):
-                #             vi,ui = indice[idx]
-                #             phi = ((1+ui)/self.img_size[1] - 1) * torch.pi / 6
-                #             theta = self.theta_up - (self.theta_up - self.theta_down) * ((vi+1) - 1./2) / self.img_size[0]
-                #             r = predict_lidar[batch_id,vi,ui,0]
-                #             point_x = r * torch.cos(theta) * torch.sin(phi)
-                #             point_y = r * torch.cos(theta) * torch.cos(phi)
-                #             point_z = r * torch.sin(theta)
-                #             points[idx] = torch.tensor([point_x,point_y,point_z]).to(torch.float32)
-                #         points = rearrange(points,'n c -> c n')
-                #         pc = LidarPointCloud(points=points)
-                #         pc.rotate(Quaternion(cond['Lidar_TOP_record']['rotation']).rotation_matrix)
-                #         pc.translate(np.array(cond['Lidar_TOP_record']['translation']))
-
-                #         pc.rotate(Quaternion(cond['Lidar_TOP_poserecord']['rotation']).rotation_matrix)
-                #         pc.translate(np.array(cond['Lidar_TOP_poserecord']['translation']))
-
-                #         pc.translate(-np.array(cond['cam_poserecord']['translation']))
-                #         pc.rotate(Quaternion(cond['cam_poserecord']['rotation']).rotation_matrix.T)
-
-                #         pc.translate(-np.array(cond['cam_front_record']['translation']))
-                #         pc.rotate(Quaternion(cond['cam_front_record']['rotation']).rotation_matrix.T)
-                #         points = pc.points
-                #         depths = points[2,:]
-                #         points = view_points(pc.points[:3,:],np.array(cond['cam_front_record']['camera_intrinsic']),normalize=True)
-                #         mask = np.ones(depths.shape[1],dtype=bool)
-                #         mask = np.logical_and(mask, depths > 1)
-                #         mask = np.logical_and(mask,points[0,:] > 0)
-                #         mask = np.logical_and(mask,points[0,:] < 1600)
-                #         mask = np.logical_and(mask,points[1,:] > 0)
-                #         mask = np.logical_and(mask,points[1,:] < 1200)
-                #         points = points[:,mask]
-                #         depths = depths[mask]
-                #         points[0,:] = points[0,:] / 1600 * self.img_size[1]
-                #         points[1,:] = points[1,:] / 1200 * self.img_size[0]
-                #         points = points.to(torch.uint8)
-
-                #         pred_depth = self.depth_estimator(predict_x)
-                #         sampled_depth = pred_depth[points]
-                #         loss1 = (sampled_depth - depths) ** 2
-
-                
-
+                if calc_dec_loss:
+                    return torch.mean(
+                        (w * (predict - target) ** 2).reshape(target.shape[0], -1) * aux_w.detach(), 1
+                    ).mean() + self.additional_loss_weight * hf_loss + loss_similarity
                 return torch.mean(
                     (w * (predict - target) ** 2).reshape(target.shape[0], -1) * aux_w.detach(), 1
                 ).mean() + self.additional_loss_weight * hf_loss
             else:
-                return torch.mean(
-                    (w * (predict - target) ** 2).reshape(target.shape[0], -1), 1
-                )
+                camera_loss,range_image_loss = torch.mean((w*(predict - target)**2).reshape(target.shape[0],-1),1).chunk(2,0)
+                camera_loss = torch.mean(camera_loss)
+                range_image_loss = torch.mean(range_image_loss)
+                loss = camera_loss / camera_loss.detach() + range_image_loss / range_image_loss.detach()
+                return loss,camera_loss,range_image_loss
         elif self.loss_type == "l1":
             if self.use_additional_loss:
                 predict_seq = rearrange(predict, "(b t) ... -> b t ...", t=self.num_frames)

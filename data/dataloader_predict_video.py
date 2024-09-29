@@ -185,6 +185,14 @@ class dataloader(data.Dataset):
                     boxes = collect_data['3Dbox']
                     category = collect_data['category']
                     boxes = np.array(boxes).astype(np.float32)
+                    # add_box = np.array([0.25,0.23,0.23,0.25,0.25,0.23,0.23,0.25,0.52,0.52,0.62,0.62,0.52,0.52,0.62,0.62]).astype(np.float32)
+                    # add_category = 'human.pedestrian.adult'
+                    # if boxes.shape[0] >= self.num_boxes:
+                    #     boxes[self.num_boxes-1] = add_box
+                    #     category[self.num_boxes-1] = add_category
+                    # else:
+                    #     boxes = np.concatenate([boxes,add_box[np.newaxis]],axis=0)
+                    #     category.append(add_category)
                     if boxes.shape[0] == 0:
                         boxes = torch.from_numpy(np.zeros((self.num_boxes,16)))
                         category = ["None" for i in range(self.num_boxes)]
@@ -289,7 +297,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/prediction2_4_dataloader.yaml',
+                        default='configs/svd_2gpus.yaml',
                         type=str,
                         help="config path")
     parser.add_argument('--video',
@@ -319,32 +327,32 @@ if __name__ == "__main__":
         collate_fn=collate_fn
     )
     network = instantiate_from_config(cfg['model'])
-    # model_path = 'logs/2024-09-03T09-45-52_prediction2_4_less/checkpoints/last.ckpt'
-    # network.init_from_ckpt(model_path)
-    network = network.eval().cuda()
-    # # network = network.eval()
+    model_path = 'logs/2024-09-29T16-28-25_svd_2gpus/checkpoints/epoch=000000.ckpt'
+    network.init_from_ckpt(model_path)
+    # network = network.eval().cuda()
+    network = network.eval()
     save_path = 'all_pics/'
-    save_path = save_path + 'prediction2_4/'
-    # # 35
+    save_path = save_path + 'test/'
+    # # # # 35
     cam_real_save_path = save_path + 'cam_inputs/'
     cam_rec_save_path = save_path + "cam_rec/"
     cam_samples_save_path = save_path + "cam_samples/"
-    lidar_real_save_path = save_path + 'lidar_inputs/'
-    lidar_rec_save_path = save_path + "lidar_rec/"
-    lidar_samples_save_path = save_path + "lidar_samples/"
+    # lidar_real_save_path = save_path + 'lidar_inputs/'
+    # lidar_rec_save_path = save_path + "lidar_rec/"
+    # lidar_samples_save_path = save_path + "lidar_samples/"
     if not os.path.exists(cam_real_save_path):
         os.makedirs(cam_real_save_path)
     if not os.path.exists(cam_rec_save_path):
         os.makedirs(cam_rec_save_path)
-    if not os.path.exists(lidar_real_save_path):
-        os.makedirs(lidar_real_save_path)
-    if not os.path.exists(lidar_rec_save_path):
-        os.makedirs(lidar_rec_save_path)
+    # if not os.path.exists(lidar_real_save_path):
+    #     os.makedirs(lidar_real_save_path)
+    # if not os.path.exists(lidar_rec_save_path):
+    #     os.makedirs(lidar_rec_save_path)
     if not os.path.exists(cam_samples_save_path):
         os.makedirs(cam_samples_save_path)
-    if not os.path.exists(lidar_samples_save_path):
-        os.makedirs(lidar_samples_save_path)
-    # l = len(data_loader)
+    # if not os.path.exists(lidar_samples_save_path):
+    #     os.makedirs(lidar_samples_save_path)
+    # # # l = len(data_loader)
 
     for _,batch in tqdm(enumerate(data_loader_)):
         if device == 'cuda':
@@ -353,17 +361,19 @@ if __name__ == "__main__":
         if not video_eval:
             save_tensor_as_image(logs['inputs'],file_path=cam_real_save_path,batch_id=_,batch_size=batch_size)
             save_tensor_as_image(logs['reconstruction'],file_path=cam_rec_save_path,batch_id=_,batch_size=batch_size)
-            save_tensor_as_image(logs['lidar_reconstruction'],file_path=lidar_rec_save_path,batch_id=_,batch_size=batch_size)
-            save_tensor_as_image(logs['lidar_inputs'],file_path=lidar_real_save_path,batch_id=_,batch_size=batch_size)
+        #     save_tensor_as_image(logs['lidar_reconstruction'],file_path=lidar_rec_save_path,batch_id=_,batch_size=batch_size)
+        #     save_tensor_as_image(logs['lidar_inputs'],file_path=lidar_real_save_path,batch_id=_,batch_size=batch_size)
             save_tensor_as_image(logs['samples'],file_path=cam_samples_save_path,batch_id=_,batch_size=batch_size)
-            save_tensor_as_image(logs['lidar_samples'],file_path=lidar_samples_save_path,batch_id=_,batch_size=batch_size)
+        #     save_tensor_as_image(logs['lidar_samples'],file_path=lidar_samples_save_path,batch_id=_,batch_size=batch_size)
         else:
             save_tensor_as_video(logs['inputs'],file_path=cam_real_save_path,batch_id=_,batch_size=batch_size)
             save_tensor_as_video(logs['reconstruction'],file_path=cam_rec_save_path,batch_id=_,batch_size=batch_size)
-            save_tensor_as_video(logs['lidar_reconstruction'],file_path=lidar_rec_save_path,batch_id=_,batch_size=batch_size)
-            save_tensor_as_video(logs['lidar_inputs'],file_path=lidar_real_save_path,batch_id=_,batch_size=batch_size)
+        #     save_tensor_as_video(logs['lidar_reconstruction'],file_path=lidar_rec_save_path,batch_id=_,batch_size=batch_size)
+        #     save_tensor_as_video(logs['lidar_inputs'],file_path=lidar_real_save_path,batch_id=_,batch_size=batch_size)
             save_tensor_as_video(logs['samples'],file_path=cam_samples_save_path,batch_id=_,batch_size=batch_size)
-            save_tensor_as_video(logs['lidar_samples'],file_path=lidar_samples_save_path,batch_id=_,batch_size=batch_size)
+        #     save_tensor_as_video(logs['lidar_samples'],file_path=lidar_samples_save_path,batch_id=_,batch_size=batch_size)
+        if _ > 1:
+            break
     #     # batch = {k:v if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
     #     # __ = _ + 50
     #     # if __>= l:

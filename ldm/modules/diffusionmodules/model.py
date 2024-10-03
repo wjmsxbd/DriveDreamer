@@ -882,8 +882,8 @@ class Encoder_Diffusion(nn.Module):
             if i_level != self.num_resolutions - 1:
                 h = self.down[i_level].downsample(hs[-1])
                 hs.append(h)
-                if return_temp_output:
-                    temp.append(h)
+                # if return_temp_output:
+                #     temp.append(h)
         #middle
         h = hs[-1]
         h = self.mid.block_1(h,temb)
@@ -999,8 +999,8 @@ class Decoder_Diffusion(nn.Module):
                 temp.append(h)
             if i_level != 0:
                 h = self.up[i_level].upsample(h)
-                if return_temp_output:
-                    temp.append(h)
+                # if return_temp_output:
+                #     temp.append(h)
 
         #end
         if self.give_pre_end:
@@ -1247,8 +1247,8 @@ class Decoder_Temporal(nn.Module):
                 temp.append(h)
             if i_level != 0:
                 h = self.up[i_level].upsample(h)
-                if return_temp_output:
-                    temp.append(h)
+                # if return_temp_output:
+                #     temp.append(h)
 
         #end
         if self.give_pre_end:

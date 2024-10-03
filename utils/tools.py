@@ -38,12 +38,37 @@ from memory_profiler import profile
 # from pympler import tracker,summary,muppy
 import math
 import cv2
+from skimage import morphology
 try:
     import moxing as mox
 
     mox.file.shift('os', 'mox')
 except:
     pass
+import queue
+
+def distance(p1,p2):
+    return np.sqrt(np.sum((p1-p2)**2))
+
+def FPS(sample,num):
+    n = sample.shape[0]
+    center = np.mean(sample,axis=0)
+    p_idx = []
+    dis = []
+    for i in range(n):
+        dis.append(distance(center,sample[i]))
+    p0 = np.argmax(dis)
+    p_idx.append(p0)
+    dis = []
+    for i in range(n):
+        dis.append(distance(sample[p0],sample[i]))
+    p_idx.append(np.argmax(dis))
+    for i in range(num-2):
+        for j in range(n):
+            d = distance(sample[p_idx[-1]],sample[j])
+            dis[j] = min(dis[j],d)
+        p_idx.append(np.argmax(dis))
+    return p_idx,sample[p_idx].copy()
 
 eps = 1e-10
 def sgn(x):
@@ -379,7 +404,7 @@ def get_hdmap(sample_data_token:str,
         def check_out_windows(point):
             return point.x < 0 or point.x >= 1600 or point.y < 0 or point.y >= 1200
 
-        layer_names = ['lane','ped_crossing']
+        layer_names = ['lane','ped_crossing','lane_divider']
         # layer_names = ['lane','ped_crossing']
         _,cs_record,pose_record,cam_intrinsic,imsize,yaw,translation = get_image_info(sample_data_token,nusc)
         # im = Image.open(_)
@@ -605,52 +630,6 @@ def get_this_scene_info(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_to
     plt.close(hdmap_fig)
     return cam_front_img,box_list,now_hdmap,box_category,yaw,translation
 
-def get_this_scene_info_with_lidar_figax(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448),return_camera_info=False,fig=None,ax=None):
-    matplotlib.use("Agg")
-    sample_record = nusc.get('sample',sample_token)
-    cam_front_token = sample_record['data']['CAM_FRONT']
-    cam_front_calibrated_sensor_token = nusc.get('sample_data',cam_front_token)['calibrated_sensor_token']
-    pointsensor_token = sample_record['data']['LIDAR_TOP']
-    pointsensor = nusc.get('sample_data',pointsensor_token)
-    Lidar_TOP_record = nusc.get('calibrated_sensor',pointsensor['calibrated_sensor_token'])
-    cam_front_record = nusc.get('calibrated_sensor',cam_front_calibrated_sensor_token)
-    Lidar_TOP_poserecord = nusc.get('ego_pose',pointsensor['ego_pose_token'])
-    cam_poserecord = nusc.get('ego_pose',nusc.get('sample_data',cam_front_token)['ego_pose_token'])
-
-    # cam_front_translation = torch.tensor(cs_record['translation'])
-    # cam_front_rotation = torch.tensor(cs_record['rotation'])
-
-    cam_front_path = nusc.get('sample_data',cam_front_token)['filename']
-    cam_front_path = os.path.join(dataset_dir,cam_front_path)
-
-    # mpimg.imsave(f'./temp/depth_camera_front/{sample_token}.png',depth_cam_front_img)
-    cam_front_img = imageio.v2.imread(cam_front_path)
-    imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
-    cam_front_img = Image.fromarray(cam_front_img)
-    cam_front_img = np.array(cam_front_img.resize(img_size))
-    # project_to_image(nusc,sample_token,out_path="004.png")
-    # box_list,box_category = get_3dbox(cam_front_token,nusc,imsize)#out_path=f'./temp/3dbox/{count:02d}.jpg'
-    # box_list = np.array(box_list)
-    box_list = np.random.randn(70,16)
-    box_category = ["None" for i in range(70)]
-    
-    # nusc.render_pointcloud_in_image(sample_token,out_path="002.png")
-
-    # range_image = project_to_image(nusc,sample_token)
-    # dense_range_image,_ = fill_in_multiscale(range_image,max_depth=100)
-    # range_image = np.repeat(range_image[:,:,np.newaxis],3,axis=-1)
-    range_image = np.random.randn(128,256,3)
-    dense_range_image = np.random.randn(128,256)
-
-    now_hdmap = get_hdmap_with_fig(fig,ax,cam_front_token,nusc,nusc_map)#,outpath=f'./temp/hdmap/{count:02d}.jpg'
-
-    now_hdmap = Image.fromarray(now_hdmap)
-    now_hdmap = np.array(now_hdmap.resize(img_size),dtype=np.uint8)
-    if return_camera_info == False:
-        return cam_front_img,box_list,now_hdmap,box_category,range_image,dense_range_image
-    else:
-        return cam_front_img,box_list,now_hdmap,box_category,range_image,dense_range_image,cam_front_record,cam_poserecord,Lidar_TOP_record,Lidar_TOP_poserecord
-
 # @profile(precision=4,stream=open('log.txt',"w+",encoding="utf-8"))
 def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448),return_camera_info=False,collect_data=None):
     all_data = {}
@@ -806,13 +785,18 @@ def project_to_bev(nusc:NuScenes,sample_token:str,outpath:str,res=0.5):
         img = Image.fromarray(top)
         img.save(outpath)
     return top
+
+def check(x,y,h,w):
+    return x>=0 and y>=0 and x<h and y<w
+
 # @profile
 def get_bev_hdmap(sample_data_token:str,
                   nusc:NuScenes,
                   nusc_map:NuScenesMap,
                   patch_radius: float=25.6,
                   resolution: int=10,
-                  img_size: List=[256,128]
+                  img_size: List=[256,128],
+                  return_point=False,
                   ):
     def crop_image(image:np.array,
                    x_px: int,
@@ -824,7 +808,6 @@ def get_bev_hdmap(sample_data_token:str,
         y_max = int(y_px + axes_limit_px // 2)
         crop_image = image[y_min:y_max,x_min:x_max].copy()
         return crop_image
-    layer_names = ['lane_divider','lane','ped_crossing']
     sd_record = nusc.get('sample_data',sample_data_token)
     pose_record = nusc.get('ego_pose',sd_record['ego_pose_token'])
     patch_radius_scale = patch_radius * 5
@@ -834,9 +817,10 @@ def get_bev_hdmap(sample_data_token:str,
         pose_record['translation'][0] + patch_radius_scale,
         pose_record['translation'][1] + patch_radius_scale / 2,
     )
-
+    # layer_names = ['lane_divider','lane','ped_crossing']
+    layer_names = ['lane','ped_crossing','lane_divider']
     records_in_path = nusc_map.get_records_in_patch(box_coords,layer_names,mode='intersect')
-    layer_color = {'ped_crossing':(0,255,0),'lane':(0,0,255),'lane_divider':(255,0,0)}
+    layer_color = {'ped_crossing':(0,255,0),'lane':(255,0,0),'lane_divider':(0,0,255)}
     bev_hdmap = np.zeros((int(patch_radius_scale / 2 * resolution+1),int(patch_radius_scale * resolution+1),3)).astype(np.uint8)
     for layer_name in layer_names:
         for token in records_in_path[layer_name]:
@@ -851,7 +835,7 @@ def get_bev_hdmap(sample_data_token:str,
                 points = np.concatenate([points_x[np.newaxis,:],points_y[np.newaxis,:]],axis=0)
                 points = points.astype(np.int16)
                 for i in range(len(points[0])-1):
-                    cv2.line(bev_hdmap,points[:,i],points[:,i+1],color=layer_color[layer_name],thickness=3)
+                    cv2.line(bev_hdmap,points[:,i],points[:,i+1],color=layer_color[layer_name],thickness=2)
             else:
                 polygon_tokens = [record['polygon_token']]
                 for polygon_token in polygon_tokens:
@@ -863,15 +847,64 @@ def get_bev_hdmap(sample_data_token:str,
                     points = np.concatenate([points_x[np.newaxis,:],points_y[np.newaxis,:]],axis=0)
                     points = points.astype(np.int32)
                     points = points.T.reshape(-1,1,2)
-                    cv2.polylines(bev_hdmap,[points],isClosed=True,color=layer_color[layer_name],thickness=3)
-        
+                    cv2.polylines(bev_hdmap,[points],isClosed=True,color=layer_color[layer_name],thickness=2)
+                    
     ypr_rad = Quaternion(pose_record['rotation']).yaw_pitch_roll
     yaw_deg = -math.degrees(ypr_rad[0])
     bev_hdmap = np.array(Image.fromarray(bev_hdmap).rotate(yaw_deg))     
     bev_hdmap = crop_image(bev_hdmap,bev_hdmap.shape[1]//2,bev_hdmap.shape[0]//2,patch_radius*resolution)
+    lane = bev_hdmap[:,:,0].copy()
+    lane_divider = bev_hdmap[:,:,2].copy()
+    bev_hdmap[:,:,2] = lane
+    bev_hdmap[:,:,0] = lane_divider
     bev_hdmap = Image.fromarray(bev_hdmap)
-    bev_hdmap = bev_hdmap.resize(img_size)
+    # bev_hdmap = bev_hdmap.resize(img_size)
+    bev_hdmap.save('test.png')
     bev_hdmap = np.array(bev_hdmap)
+    if return_point:
+        h,w,_ = bev_hdmap.shape
+        lane = bev_hdmap[:,:,2]
+        cross = bev_hdmap[:,:,1]
+        lane_divider = bev_hdmap[:,:,0]
+        category = {'lane':lane,'cross':cross,'lane_divider':lane_divider}
+        dx = [1,-1,0,0]
+        dy = [0,0,1,-1]
+        sample_points = {'lane':{},'cross':{},'lane_divider':{}}
+        for key,value in category.items():
+            num_colors = 0
+            color_map = np.zeros_like(lane)
+            Q = queue.Queue()
+            x_indices,y_indices = np.nonzero(value)
+            for x,y in zip(x_indices,y_indices):
+                if color_map[x,y]:
+                    continue
+                num_colors = num_colors + 1
+                c = num_colors 
+                Q.put([x,y])
+                sample_points[key][c] = [[x,y]]
+                while not Q.empty():
+                    x,y = Q.get()
+                    for direction in range(4):
+                        nowx,nowy = x+dx[direction],y+dy[direction]
+
+                        if check(nowx,nowy,h,w) and color_map[nowx,nowy] == 0 and value[nowx,nowy]!=0:
+                            color_map[nowx,nowy] = c
+                            sample_points[key][c].append([nowx,nowy])
+                            Q.put([nowx,nowy])
+        point_map = np.zeros_like(bev_hdmap)
+        layer_colors = {'lane':(0,0,255),'lane_divider':(255,0,0),'cross':(0,255,0)}
+        for key,value in sample_points.items():
+            for k,v in value.items():
+                tmp = np.array(v)
+                if tmp.shape[0] < 20:
+                    continue
+                v_idx,v = FPS(tmp,8)
+                for i in range(v.shape[0]):
+                    point_map[v[i][0],v[i][1]] = layer_colors[key]
+                    # cv2.circle(point_map,[v[i][1],v[i][0]],radius=2,color=layer_colors[key])
+        point_map = Image.fromarray(point_map)
+        point_map.save('test_de.png')
+        return bev_hdmap,sample_points
     return bev_hdmap
 
 

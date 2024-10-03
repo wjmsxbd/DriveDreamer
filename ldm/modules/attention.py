@@ -360,6 +360,7 @@ class BasicTransformerBlock(nn.Module):
         bhw = x.shape[0]
         batch_size = bhw // self.height // self.width
         x = rearrange(x,'(b h w) n c -> (b n) (h w) c',b=batch_size,h=self.height,w=self.width,n=self.movie_len).contiguous()
+         # x = rearrange(x,'b c h w -> b (h w) c').contiguous()
         if objs is None:
             x = self.attn1(self.norm1(x)) + x
         else:
@@ -517,6 +518,247 @@ class CrossAttention_Video(nn.Module):
             # remove additional_token 
             out = out[:,n_tokens_to_mask:]
         return self.to_out(out)
+
+class CrossAttention_MultiModal(nn.Module):
+    def __init__(
+            self,
+            query_dim,
+            context_dim=None,
+            heads=8,
+            dim_head=64,
+            dropout=0.0,
+            backend=None,
+            zero_init=False,
+            **kwargs):
+        super().__init__()
+        inner_dim = dim_head * heads
+        context_dim = default(context_dim,query_dim)
+
+        self.scale = dim_head ** -0.5
+        self.heads = heads
+        self.to_q = nn.Linear(query_dim,inner_dim,bias=False)
+        self.to_k = nn.Linear(context_dim,inner_dim,bias=False)
+        self.to_v = nn.Linear(context_dim,inner_dim,bias=False)
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim,query_dim),
+            nn.Dropout(dropout)
+        )
+        self.backend = backend
+
+        if zero_init:
+            nn.init.zeros_(self.to_out[0].weight)
+            nn.init.zeros_(self.to_out[0].bias)
+
+    def forward(
+            self,
+            x,
+            context=None,
+            mask=None,
+            additional_tokens=None,
+            n_times_crossframe_attn_in_self=0,
+            **kwargs
+    ):
+        num_heads = self.heads
+
+        if additional_tokens is not None:
+            # get the number of masked tokens at the beginning of the output sequence
+            n_tokens_to_mask = additional_tokens.shape[1]
+            #add additional token
+            x = torch.cat((additional_tokens,x),dim=1)
+        
+        q = self.to_q(x)
+        # context = default(context,x)
+        k = self.to_k(x)
+        v = self.to_v(x)
+        key_0,key_1 = torch.chunk(k,chunks=2,dim=0)
+        value_0,value_1 = torch.chunk(v,chunks=2,dim=0)
+        k_0,k_1 = torch.cat([key_0,key_1],dim=1),torch.cat([key_1,key_0],dim=1)
+        v_0,v_1 = torch.cat([value_0,value_1],dim=1),torch.cat([value_1,value_0],dim=1)
+        k = torch.cat([k_0,k_1],dim=0)
+        v = torch.cat([v_0,v_1],dim=0)
+
+        if n_times_crossframe_attn_in_self:
+            assert x.shape[0] % n_times_crossframe_attn_in_self == 0
+            n_cp = x.shape[0] // n_times_crossframe_attn_in_self
+            k = repeat(
+                k[::n_times_crossframe_attn_in_self],"b ... -> (b n) ...",n=n_cp,
+            )
+            v = repeat(
+                v[::n_times_crossframe_attn_in_self],"b ... -> (b n) ...",n=n_cp,
+            )
+        q,k,v = map(lambda t:rearrange(t,"b n (h d) -> b h n d",h=num_heads).contiguous(),(q,k,v))
+
+        with sdp_kernel(**BACKEND_MAP[self.backend]):
+            out = F.scaled_dot_product_attention(q,k,v,attn_mask=mask) # scale is dim_head ** -0.5 per default
+        del q,k,v
+        out = rearrange(out,"b h n d -> b n (h d)",h=num_heads).contiguous()
+
+        if additional_tokens is not None:
+            # remove additional_token 
+            out = out[:,n_tokens_to_mask:]
+        return self.to_out(out)
+
+class MemoryEfficientCrossAttention_MultiModal(nn.Module):# we are using this implementation
+    # https://github.com/MatthieuTPHR/diffusers/blob/d80b531ff8060ec1ea982b65a1b8df70f73aa67c/src/diffusers/models/attention.py#L223
+    def __init__(
+            self,
+            query_dim,
+            context_dim=None,
+            heads=8,
+            dim_head=64,
+            dropout=0.0,
+            zero_init=False,
+            causual=False,
+            add_lora=False,
+            lora_rank=16,
+            lora_scale=1.0,
+            action_control=False,
+            **kwargs
+    ):
+        super().__init__()
+        print(
+            f"Setting up {self.__class__.__name__}. "
+            f"Query dim is {query_dim}, "
+            f"context_dim is {context_dim} and using {heads} heads with a dimension of {dim_head}"
+        )
+        inner_dim = dim_head * heads
+        context_dim = default(context_dim,query_dim)
+        self.heads = heads
+        self.dim_head = dim_head
+
+        self.to_q = nn.Linear(query_dim,inner_dim,bias=False)
+        self.to_k = nn.Linear(context_dim,inner_dim,bias=False)
+        self.to_v = nn.Linear(context_dim,inner_dim,bias=False)
+
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim,query_dim),
+            nn.Dropout(dropout)
+        )
+        self.attention_op: Optional[Any] = None
+        if causual:
+            self.attn_bias = xformers.ops.LowerTriangularMask()
+        else:
+            self.attn_bias = None
+
+        if zero_init:
+            nn.init.zeros_(self.to_out[0].weight)
+            nn.init.zeros_(self.to_out[0].bias)
+        
+        self.add_lora = add_lora
+        if add_lora:
+            self.lora_scale = lora_scale
+
+            self.q_adapter_down = nn.Linear(query_dim, lora_rank, bias=False)
+            nn.init.normal_(self.q_adapter_down.weight, std=1 / lora_rank)
+            self.q_adapter_up = nn.Linear(lora_rank, inner_dim, bias=False)
+            nn.init.zeros_(self.q_adapter_up.weight)
+
+            self.k_adapter_down = nn.Linear(context_dim, lora_rank, bias=False)
+            nn.init.normal_(self.k_adapter_down.weight, std=1 / lora_rank)
+            self.k_adapter_up = nn.Linear(lora_rank, inner_dim, bias=False)
+            nn.init.zeros_(self.k_adapter_up.weight)
+
+            self.v_adapter_down = nn.Linear(context_dim, lora_rank, bias=False)
+            nn.init.normal_(self.v_adapter_down.weight, std=1 / lora_rank)
+            self.v_adapter_up = nn.Linear(lora_rank, inner_dim, bias=False)
+            nn.init.zeros_(self.v_adapter_up.weight)
+
+            self.out_adapter_down = nn.Linear(inner_dim, lora_rank, bias=False)
+            nn.init.normal_(self.out_adapter_down.weight, std=1 / lora_rank)
+            self.out_adapter_up = nn.Linear(lora_rank, query_dim, bias=False)
+            nn.init.zeros_(self.out_adapter_up.weight)
+
+    def forward(
+            self,
+            x,
+            context=None,
+            mask=None,
+            additional_tokens=None,
+            n_times_crossframe_attn_in_self=0,
+            batchify_xformers=False):
+        if additional_tokens is not None:
+            # get the number of masked tokens at the beginning of the output sequence
+            n_tokens_to_mask = additional_tokens.shape[1]
+            # add additional token
+            x = torch.cat((additional_tokens, x), dim=1)
+
+        q = self.to_q(x)
+        # context = default(context,x)
+        k = self.to_k(x)
+        v = self.to_v(x)
+        key_0,key_1 = torch.chunk(k,chunks=2,dim=0)
+        value_0,value_1 = torch.chunk(v,chunks=2,dim=0)
+        k_0,k_1 = torch.cat([key_0,key_1],dim=1),torch.cat([key_0,key_1],dim=1)
+        v_0,v_1 = torch.cat([value_0,value_1],dim=1),torch.cat([value_0,value_1],dim=1)
+        k = torch.cat([k_0,k_1],dim=0)
+        v = torch.cat([v_0,v_1],dim=0)
+
+        if n_times_crossframe_attn_in_self:
+            # reprogramming cross-frame attention as in https://arxiv.org/abs/2303.13439
+            assert x.shape[0] % n_times_crossframe_attn_in_self == 0
+            # n_cp = x.shape[0] // n_times_crossframe_attn_in_self
+            k = repeat(
+                k[::n_times_crossframe_attn_in_self],
+                "b ... -> (b n) ...",
+                n=n_times_crossframe_attn_in_self
+            )
+            v = repeat(
+                v[::n_times_crossframe_attn_in_self],
+                "b ... -> (b n) ...",
+                n=n_times_crossframe_attn_in_self
+            )
+        b,_,_ = q.shape
+        q,k,v = map(
+            lambda t: t.unsqueeze(3).
+            reshape(b,t.shape[1],self.heads,self.dim_head)
+            .permute(0,2,1,3)
+            .reshape(b*self.heads,t.shape[1],self.dim_head)
+            .contiguous(),
+            (q,k,v)
+        )
+        # print(f"q.shape:{q.shape},k.shape:{k.shape},v.shape:{v.shape}")
+        if exists(mask):
+            raise NotImplementedError
+        else:
+            # actually compute the attention, what we cannot get enough of
+            if batchify_xformers:
+                max_bs = 32768
+                n_batches = math.ceil(q.shape[0] / max_bs)
+                out = list()
+                for i_batch in range(n_batches):
+                    batch = slice(i_batch * max_bs,(i_batch + 1) * max_bs)
+                    out.append(
+                        
+                        xformers.ops.memory_efficient_attention(
+                            q[batch],
+                            k[batch],
+                            v[batch],
+                            attn_bias=self.attn_bias,
+                            op=self.attention_op
+                        )
+                    )
+                out = torch.cat(out,0)
+            else:
+                out = xformers.ops.memory_efficient_attention(
+                    q,
+                    k,
+                    v,
+                    attn_bias=self.attn_bias,
+                    op=self.attention_op
+                )
+        out = (
+            out.unsqueeze(0)
+            .reshape(b, self.heads, out.shape[1], self.dim_head)
+            .permute(0, 2, 1, 3)
+            .reshape(b, out.shape[1], self.heads * self.dim_head)
+        )
+        if additional_tokens is not None:
+            # remove additional token
+            out = out[:, n_tokens_to_mask:]
+        if self.add_lora:
+            return self.to_out(out) + self.out_adapter_up(self.out_adapter_down(out)) * self.lora_scale
+        else:
+            return self.to_out(out)
 
 class MemoryEfficientCrossAttention(nn.Module):# we are using this implementation
     # https://github.com/MatthieuTPHR/diffusers/blob/d80b531ff8060ec1ea982b65a1b8df70f73aa67c/src/diffusers/models/attention.py#L223
@@ -826,6 +1068,8 @@ class BasicTransformerBlock_Video(nn.Module):
     ATTENTION_MODES = {
         "softmax": CrossAttention_Video,
         "softmax_xformers": MemoryEfficientCrossAttention,
+        "multimodal_softmax": CrossAttention_MultiModal,
+        "multimodal_softmax_xformers": MemoryEfficientCrossAttention_MultiModal,
     }
     def __init__(
             self,
@@ -841,6 +1085,7 @@ class BasicTransformerBlock_Video(nn.Module):
             sdp_backend=None,
             add_lora=False,
             action_control=False,
+            use_multimodal=False,
     ):
         super().__init__()
         assert attn_mode in self.ATTENTION_MODES
@@ -859,20 +1104,32 @@ class BasicTransformerBlock_Video(nn.Module):
             else:
                 print("Falling back to xformers efficient attention")
                 attn_mode = "softmax-xformers"
+        if use_multimodal:
+            multimodal_attn_cls = self.ATTENTION_MODES['multimodal_'+attn_mode]
         attn_cls = self.ATTENTION_MODES[attn_mode]
         if version.parse(torch.__version__) >= version.parse("2.0.0"):
             assert sdp_backend is None or isinstance(sdp_backend, SDPBackend)
         else:
             assert sdp_backend is None
         self.disable_self_attn = disable_self_attn
-        self.attn1 = attn_cls(
-            query_dim=dim,
-            context_dim=context_dim if self.disable_self_attn else None,
-            heads=n_heads,
-            dim_head=d_head,
-            dropout=dropout,
-            backend=sdp_backend,
-            add_lora=add_lora) # is a self-attn if not self.disable_self_attn
+        if use_multimodal:
+            self.attn1 = multimodal_attn_cls(
+                query_dim=dim,
+                context_dim=context_dim if self.disable_self_attn else None,
+                heads=n_heads,
+                dim_head=d_head,
+                dropout=dropout,
+                backend=sdp_backend,
+                add_lora=add_lora) # is a self-attn if not self.disable_self_attn
+        else:
+            self.attn1 = attn_cls(
+                query_dim=dim,
+                context_dim=context_dim if self.disable_self_attn else None,
+                heads=n_heads,
+                dim_head=d_head,
+                dropout=dropout,
+                backend=sdp_backend,
+                add_lora=add_lora) # is a self-attn if not self.disable_self_attn
         self.ff = FeedForward(dim,dropout=dropout,glu=gated_ff)
         self.attn2 = attn_cls(
             query_dim=dim,
@@ -934,7 +1191,8 @@ class SpatialTransformer_Video(nn.Module):
             use_checkpoint=False,
             sdp_backend=None,
             add_lora=False,
-            action_control=False):
+            action_control=False,
+            use_multimodal=False,):
         super().__init__()
         print(f"Constructing {self.__class__.__name__} of depth {depth} w/ {in_channels} channels and {n_heads} heads")
         from omegaconf import ListConfig
@@ -975,7 +1233,8 @@ class SpatialTransformer_Video(nn.Module):
                                       use_checkpoint=use_checkpoint,
                                       sdp_backend=sdp_backend,
                                       add_lora=add_lora,
-                                      action_control=action_control)
+                                      action_control=action_control,
+                                      use_multimodal=use_multimodal,)
                 for d in range(depth)
             ]
         )
@@ -1036,6 +1295,7 @@ class SpatialVideoTransformer(SpatialTransformer_Video):
         max_time_embed_period=10000,
         add_lora=False,
         action_control=False,
+        use_multimodal=False,
     ):
         super().__init__(
             in_channels,
@@ -1049,7 +1309,8 @@ class SpatialVideoTransformer(SpatialTransformer_Video):
             use_linear=use_linear,
             disable_self_attn=disable_self_attn,
             add_lora=add_lora,
-            action_control=action_control
+            action_control=action_control,
+            use_multimodal=use_multimodal
         )
         self.time_depth = time_depth
         self.depth = depth

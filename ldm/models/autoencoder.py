@@ -819,7 +819,8 @@ class AutoencoderKL_Temporal(pl.LightningModule):
                  movie_len=None,
                  trainable=False,
                  use_ema=False,
-                 safetensor_path=None):
+                 safetensor_path=None,
+                 load_from_AECombine=False):
         super().__init__()
         self.image_key = image_key
         self.encoder = Encoder_Diffusion(**ddconfig)
@@ -838,11 +839,24 @@ class AutoencoderKL_Temporal(pl.LightningModule):
         if monitor is not None:
             self.monitor = monitor
         self.use_finetune=use_finetune
-        if ckpt_path is not None:
-            self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
-        if safetensor_path is not None:
-            self.init_from_safetensor(safetensor_path)
+        if load_from_AECombine:
+            self.load_from_AECombine(ckpt_path)
+        else:
+            if ckpt_path is not None:
+                self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+            if safetensor_path is not None:
+                self.init_from_safetensor(safetensor_path)
         
+    def load_from_AECombine(self,path):
+        sd = torch.load(path,map_location='cpu')["state_dict"]
+        keys = list(sd.keys())
+        weight = dict()
+        for k in keys:
+            if 'image_model' in k:
+                weight[k[len('image_model')+1:]] = sd[k].clone()
+                print("Add key {} from sd".format(k))
+        self.load_state_dict(weight,strict=False)
+        print(f"Resotred from {path}")
 
     def init_from_ckpt(self,path,ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
@@ -1186,7 +1200,8 @@ class Autoencoder_Lidar2(pl.LightningModule):
                  train_downsample=False,
                  trainable=False,
                  safetensor_path=None,
-                 img_size=[128,256]):
+                 img_size=[128,256],
+                 load_from_AECombine=False,):
         super().__init__()
         self.image_key = image_key
         self.gt_image_key = gt_image_key
@@ -1205,14 +1220,30 @@ class Autoencoder_Lidar2(pl.LightningModule):
             self.register_buffer("colorize", torch.randn(3, colorize_nlabels, 1, 1))
         if monitor is not None:
             self.monitor = monitor
-        if ckpt_path is not None:
-            self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+        if load_from_AECombine:
+            self.load_from_AECombine(ckpt_path)
+        else:
+            if ckpt_path is not None:
+                self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
         self.use_finetune = use_finetune
         self.img_size = img_size
         self.theta_up = torch.pi / 12
         self.theta_down = -torch.pi / 6
         self.theta_res = (self.theta_up - self.theta_down) / self.img_size[0] / 2
         self.phi_res = (torch.pi / 3) / self.img_size[1] / 2
+
+    def load_from_AECombine(self,path):
+        sd = torch.load(path,map_location='cpu')["state_dict"]
+        keys = list(sd.keys())
+        weight = dict()
+        for k in keys:
+            if 'lidar_model' in k:
+                weight[k[len('lidar_model')+1:]] = sd[k].clone()
+                print("Add key {} from sd".format(k))
+        self.load_state_dict(weight,strict=False)
+        print(f"Resotred from {path}")
+
+
     def calc_3D_point_loss(self,inputs,reconstructions):
         reconstructions = (torch.clip(reconstructions,-1,1) + 1.) / 2.
         mask = reconstructions >= 0.05

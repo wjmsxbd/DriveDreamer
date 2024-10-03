@@ -1677,6 +1677,7 @@ class VideoUNet(nn.Module):
         ckpt_path: str=None,
         class_embed_dim = 4,
         ignore_keys=None,
+        use_multimodal=False,
     ):
         super().__init__()
         assert context_dim is not None
@@ -1749,6 +1750,7 @@ class VideoUNet(nn.Module):
                 disabled_sa=False,
                 add_lora=False,
                 action_control=False,
+                use_multimodal=False,
         ):
             return SpatialVideoTransformer(
                 ch,
@@ -1769,7 +1771,8 @@ class VideoUNet(nn.Module):
                 disable_temporal_crossattention=disable_temproal_crossattention,
                 max_time_embed_period=max_ddpm_temb_period,
                 add_lora=add_lora,
-                action_control=action_control
+                action_control=action_control,
+                use_multimodal=use_multimodal
             )
         
         def get_resblock(
@@ -1834,7 +1837,8 @@ class VideoUNet(nn.Module):
                             use_checkpoint=use_checkpoint,
                             disabled_sa=False,
                             add_lora=add_lora,
-                            action_control=action_control
+                            action_control=action_control,
+                            use_multimodal=use_multimodal
                         )
                     )
                 self.input_blocks.append(TimestepEmbedSequential_Video(*layers))
@@ -1894,6 +1898,7 @@ class VideoUNet(nn.Module):
                 use_checkpoint=use_checkpoint,
                 add_lora=add_lora,
                 action_control=action_control,
+                use_multimodal=use_multimodal
             ),
             get_resblock(
                 merge_factor=merge_factor,
@@ -1946,7 +1951,8 @@ class VideoUNet(nn.Module):
                             use_checkpoint=use_checkpoint,
                             disabled_sa=False,
                             add_lora=add_lora,
-                            action_control=action_control
+                            action_control=action_control,
+                            use_multimodal=use_multimodal
                         )
                     )
                 if level and i == num_res_blocks:

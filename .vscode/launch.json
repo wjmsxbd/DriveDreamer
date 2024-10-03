@@ -10,10 +10,11 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
+            "justMyCode": true,
             "args": [
-                // "--base","configs/svd.yaml",
+                // "--base","configs/svd_debug.yaml",
                 // "--train","True"
-                // "--device","cpu","--video"
+                "--device","cpu","--train"
             ]
         }
     ]

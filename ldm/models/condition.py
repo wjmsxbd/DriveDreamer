@@ -48,17 +48,21 @@ class GlobalCondition(pl.LightningModule):
             for param in self.image_model.parameters():
                 param.requires_grad = False
         else:
-            self.image_model.optimizer,_ = self.image_model.configure_optimizers()
+            # self.image_model.optimizer,_ = self.image_model.configure_optimizers()
+            for param in self.image_model.encoder.parameters():
+                param.requires_grad = False
         
         if not self.lidar_model.trainable:
             self.lidar_model = self.lidar_model.eval()
             for param in self.lidar_model.parameters():
                 param.requires_grad = False
         else:
-            self.lidar_model.optimizer,_ = self.lidar_model.configure_optimizers()
-            for name,param in self.lidar_model.named_parameters():
-                if 'encoder' in name or ('quant_conv' in name and not 'post_quant_conv' in name):
-                    param.requires_grad=False
+            for param in self.image_model.encoder.parameters():
+                param.requires_grad = False
+            # self.lidar_model.optimizer,_ = self.lidar_model.configure_optimizers()
+            # for name,param in self.lidar_model.named_parameters():
+            #     if 'encoder' in name or ('quant_conv' in name and not 'post_quant_conv' in name):
+            #         param.requires_grad=False
         self.box_encoder = instantiate_from_config(box_config)
         if split_input_params:
             self.split_input_params = split_input_params
@@ -77,20 +81,27 @@ class GlobalCondition(pl.LightningModule):
             raise NotImplementedError(f"encoder_posterior of type '{type(encoder_posterior)}'")
         return z
     
-    def get_parameters(self):
+    def get_parameters(self,training_strategy='full'):
         param = list()
-        if self.lidar_model.trainable:
-            param = param + self.lidar_model.get_parameters()
-        if self.image_model.trainable:
-            param = param + self.image_model.get_parameters()
-        if self.box_encoder.trainable:
-            param = param + list(self.box_encoder.parameters())
-        if not self.action_encoder is None and self.action_encoder.trainable:
-            print("add action_encoder parameters")
-            param = param + list(self.action_encoder.parameters())
+        if training_strategy == 'full':
+            if self.lidar_model.trainable:
+                param = param + list(self.lidar_model.decoder.parameters())
+            if self.image_model.trainable:
+                param = param + list(self.image_model.decoder.parameters())
+            if self.box_encoder.trainable:
+                param = param + list(self.box_encoder.parameters())
+            if not self.action_encoder is None and self.action_encoder.trainable:
+                print("add action_encoder parameters")
+                param = param + list(self.action_encoder.parameters())
+        elif 'multimodal' in training_strategy:
+            #TODO: trainable False -> True
+            param = param + list(self.lidar_model.decoder.parameters())
+            param = param + list(self.image_model.decoder.parameters())
+        else:
+            raise NotImplementedError
         return param
 
-    def encode_first_stage(self,x,encoder):
+    def encode_first_stage(self,x,encoder,return_temp_output=False):
         if hasattr(self,'split_input_params'):
             if self.split_input_params['patch_distributed_vq']:
                 ks = self.split_input_params["ks_enc"] #eg. (128,128)
@@ -121,9 +132,9 @@ class GlobalCondition(pl.LightningModule):
                 decoded = decoded / normalization
                 return decoded
             else:
-                return encoder.encode(x)
+                return encoder.encode(x,return_temp_output)
         else:
-            return encoder.encode(x)
+            return encoder.encode(x,return_temp_output)
         
     def get_fold_unfold(self,x,kernel_size,stride,uf=1,df=1):# todo load once not every time, shorten code
         """
@@ -209,13 +220,13 @@ class GlobalCondition(pl.LightningModule):
         arr = torch.cat([y,x],dim=-1)
         return arr
     
-    def decode_first_stage_interface(self,model_name,z,predict_cids=False,force_not_quantize=False):
+    def decode_first_stage_interface(self,model_name,z,predict_cids=False,force_not_quantize=False,calc_decoder_loss=False):
         if model_name == "reference_image":
-            return self.decode_first_stage(self.image_model,z,predict_cids,force_not_quantize)
+            return self.decode_first_stage(self.image_model,z,predict_cids,force_not_quantize,calc_decoder_loss)
         elif model_name == "lidar":
-            return self.decode_first_stage(self.lidar_model,z,predict_cids,force_not_quantize)
+            return self.decode_first_stage(self.lidar_model,z,predict_cids,force_not_quantize,calc_decoder_loss)
     
-    def decode_first_stage(self,model,z,predict_cids=False,force_not_quantize=False):
+    def decode_first_stage(self,model,z,predict_cids=False,force_not_quantize=False,calc_decoder_loss=False):
         if predict_cids:
             if z.dim() == 4:
                 z = torch.argmax(z.exp(), dim=1).long()
@@ -259,13 +270,16 @@ class GlobalCondition(pl.LightningModule):
             if isinstance(model,VQModelInterface):
                 return model.decode(z,force_not_quantize=predict_cids or force_not_quantize)
             else:
-                return model.decode(z)
+                return model.decode(z,return_temp_output=calc_decoder_loss)
             
-    def get_conditions(self,batch):
+    def get_conditions(self,batch,calc_decoder_loss=False):
         condition_keys = batch.keys()
         out = {}
         ref_image = batch['reference_image']
-        z = self.encode_first_stage(ref_image,self.image_model)
+        z = self.encode_first_stage(ref_image,self.image_model,calc_decoder_loss)
+        if calc_decoder_loss:
+            z,cam_enc = z
+            out['cam_enc'] = cam_enc
         ref_image = self.get_first_stage_encoding(z)
         out['ref_image'] = ref_image
         if 'HDmap' in condition_keys:
@@ -274,7 +288,10 @@ class GlobalCondition(pl.LightningModule):
             out['hdmap'] = hdmap
         if 'range_image' in condition_keys:
             range_image = batch['range_image']
-            lidar_z = self.encode_first_stage(range_image,self.lidar_model)
+            lidar_z = self.encode_first_stage(range_image,self.lidar_model,calc_decoder_loss)
+            if calc_decoder_loss:
+                lidar_z,lidar_enc = lidar_z
+                out['lidar_enc'] = lidar_enc
             range_image = self.get_first_stage_encoding(lidar_z)
             out['range_image'] = range_image
         if 'dense_range_image' in condition_keys:
@@ -302,6 +319,42 @@ class GlobalCondition(pl.LightningModule):
             out['bev_images'] = bev_image
         return out
     
+    def calc_single_similarity(self,cam_enc,lidar_enc,use_similar):
+        eps = 1e-7
+        data = torch.tensor([0.],dtype=torch.float32,device=cam_enc[0].device)
+        if use_similar == 'JS':
+            for i in range(len(cam_enc)):
+                min_value = cam_enc[i].min()
+                max_value = cam_enc[i].max()
+                cam_enc[i] = (cam_enc[i] - min_value) / (max_value - min_value)
+                _,_,h,w = cam_enc[i].shape
+                l = h * w
+                cam_enc[i] = rearrange(cam_enc[i],'b c h w -> (b h w) c')
+                min_value = lidar_enc[i].min()
+                max_value = lidar_enc[i].max()
+                lidar_enc[i] = (lidar_enc[i] - min_value) / (max_value - min_value)
+                JS =  torch.tensor([0.],device=cam_enc[i].device)
+                for j in range(cam_enc[i].shape[1]):
+                    xx = torch.histc(cam_enc[i][:,j],bins=256)
+                    lidar_xx = torch.histc(lidar_enc[i][:,j],bins=256)
+                    lidar_xx = lidar_xx / l + eps
+                    xx = xx / l + eps
+                    m = (xx + lidar_xx) * 0.5
+                    kl_pm = torch.sum((torch.kl_div(xx,m)))
+                    kl_qm = torch.sum((torch.kl_div(lidar_xx,m)))
+                    js = 0.5 * (kl_pm + kl_qm)
+                    JS += js
+                data += JS
+        return data
+        
+
+    def calc_similarity_loss(self,cam_enc,cam_dec,lidar_enc,lidar_dec,use_similar='JS'):
+        if use_similar == "JS":
+            gt = self.calc_single_similarity(cam_enc,lidar_enc,use_similar)
+            rec = self.calc_single_similarity(cam_dec,lidar_dec,use_similar)
+            similarity = (gt - rec).mean()
+            return similarity
+
     def get_losses(self,batch):
         losses = 0
         log_dict = {}
@@ -385,6 +438,5 @@ class GlobalCondition(pl.LightningModule):
         if self.lidar_model.trainable:
             self.lidar_model.learning_rate = learning_rate
         
-
 
 

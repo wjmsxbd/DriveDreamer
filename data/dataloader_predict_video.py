@@ -136,9 +136,10 @@ class dataloader(data.Dataset):
                         select_can_bus_frames.append(pos-1)
                         frames.append(i)
                 frames = torch.tensor(frames)
-                chunks = frames.unfold(dimension=0,size=self.movie_len,step=1)
+                frame_id = torch.arange(len(select_can_bus_frames))
+                chunks = frame_id.unfold(dimension=0,size=self.movie_len,step=1)
                 for ch_id,ch in enumerate(chunks):
-                    video_infos[idx] = [value[id] for id in ch]
+                    video_infos[idx] = [value[frames[id]] for id in ch]
                     action_infos[idx] = torch.tensor([pose[select_can_bus_frames[id]]['orientation'] + pose[select_can_bus_frames[id]]['vel'] for id in ch])
                     idx+=1
             else:

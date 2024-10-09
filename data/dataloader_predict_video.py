@@ -117,6 +117,30 @@ class dataloader(data.Dataset):
                     video_infos[idx] = [value[id] for id in ch]
                     action_infos[idx] = torch.tensor([pose[select_can_bus_frames[id]]['orientation'] + pose[select_can_bus_frames[id]]['vel'] for id in ch])
                     idx+=1
+            elif self.camera_frequency == 3:
+                camera_frequency,nusc_canbus_frequecy = self.camera_frequency * 2,self.nusc_canbus_frequecy * 2
+                pose = self.nusc_can.get_messages(key,'pose')
+                can_bus_frames = torch.arange(len(pose)).to(torch.float16)
+                can_bus_frames = can_bus_frames / nusc_canbus_frequecy
+                value = sorted(value,key=lambda e:e['timestamp'])
+                camera_frames = torch.arange(len(value)).to(torch.float16) / 12
+                select_can_bus_frames = []
+                pos = 0
+                frames = []
+                for i in range(0,len(camera_frames),2):
+                    while pos < len(can_bus_frames) and can_bus_frames[pos] <= camera_frames[i]:
+                        pos+=1
+                    if abs(camera_frames[i] - can_bus_frames[pos-1]) > 0.1:
+                        continue
+                    else:
+                        select_can_bus_frames.append(pos-1)
+                        frames.append(i)
+                frames = torch.tensor(frames)
+                chunks = frames.unfold(dimension=0,size=self.movie_len,step=1)
+                for ch_id,ch in enumerate(chunks):
+                    video_infos[idx] = [value[id] for id in ch]
+                    action_infos[idx] = torch.tensor([pose[select_can_bus_frames[id]]['orientation'] + pose[select_can_bus_frames[id]]['vel'] for id in ch])
+                    idx+=1
             else:
                 raise NotImplementedError
         self.video_infos = video_infos

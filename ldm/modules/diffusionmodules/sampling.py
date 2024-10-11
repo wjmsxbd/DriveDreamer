@@ -29,7 +29,7 @@ class BaseDiffusionSampler:
 
     def prepare_sampling_loop(self, x, cond, uc=None, num_steps=None):
         sigmas = self.discretization(
-            self.num_steps if num_steps is None else num_steps, device=self.device
+            self.num_steps if num_steps is None else num_steps, device=x.device
         )
         uc = default(uc, cond)
 

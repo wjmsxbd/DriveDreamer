@@ -76,6 +76,7 @@ class Denoiser(nn.Module):
                 if 'hdmap' in condition_keys and 'dense_range_image' in condition_keys:
                     if self.use_actionformer:
                         dense_range_image = cond['dense_range_image']
+                        actions = cond['actions']
                         hdmap = cond['hdmap'].reshape((b,self.movie_len)+cond['hdmap'].shape[1:])[:,0]
                         dense_range_image = dense_range_image.reshape((b,movie_len)+dense_range_image.shape[1:])[:,0]
                         h = action_former(hdmap,boxes_emb,actions,dense_range_image)
@@ -119,12 +120,18 @@ class Denoiser(nn.Module):
                     text_emb = None
                 actions = cond['actions']
                 if 'hdmap' in condition_keys:
-                    # hdmap = cond['hdmap'].reshape((b,self.movie_len)+cond['hdmap'].shape[1:])[:,0]
-                    # h = action_former(hdmap,boxes_emb,actions)
-                    # latent_hdmap = torch.stack([h[id][0] for id in range(len(h))]).reshape(cond['hdmap'].shape)
-                    # latent_boxes = torch.stack([h[id][1] for id in range(len(h))]).reshape(cond['boxes_emb'].shape)
-                    latent_hdmap = cond['hdmap']
-                    latent_boxes = cond['boxes_emb']
+                    if self.use_actionformer:
+                        hdmap = cond['hdmap'].reshape((b,self.movie_len)+cond['hdmap'].shape[1:])[:,0]
+                        h = action_former(hdmap,boxes_emb,actions)
+                        latent_hdmap = torch.stack([h[id][0] for id in range(len(h))]).reshape(cond['hdmap'].shape)
+                        latent_boxes = torch.stack([h[id][1] for id in range(len(h))]).reshape(cond['boxes_emb'].shape)
+                    else:
+                        # hdmap = cond['hdmap'].reshape((b,self.movie_len)+cond['hdmap'].shape[1:])[:,0]
+                        # h = action_former(hdmap,boxes_emb,actions)
+                        # latent_hdmap = torch.stack([h[id][0] for id in range(len(h))]).reshape(cond['hdmap'].shape)
+                        # latent_boxes = torch.stack([h[id][1] for id in range(len(h))]).reshape(cond['boxes_emb'].shape)
+                        latent_hdmap = cond['hdmap']
+                        latent_boxes = cond['boxes_emb']
                     z = torch.cat([x,latent_hdmap],dim=1)
                     boxes_emb = latent_boxes
                     lidar_z = None

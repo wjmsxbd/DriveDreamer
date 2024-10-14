@@ -94,6 +94,7 @@ class DDPM(pl.LightningModule):
         self.use_ema = use_ema
         if self.use_ema:
             self.model_ema = LitEma(self.model)
+            print(self.model_ema.m_name2s_name)
             print(f"Keeping EMAs of {len(list(self.model_ema.buffers()))}")
 
         self.use_scheduler = scheduler_config is not None
@@ -187,10 +188,21 @@ class DDPM(pl.LightningModule):
                 if context is not None:
                     print(f"{context}: Restored training weights")
     
-    def init_from_ckpt(self,path,ignore_keys=list(),only_model=False):
+    def init_from_ckpt(self,path,ignore_keys=list(),only_model=False,load_from_ema=False):
         sd = torch.load(path,map_location='cpu')
         if "state_dict" in list(sd.keys()):
             sd = sd["state_dict"]
+        if load_from_ema:
+            s_name2m_name = dict(zip(self.model_ema.m_name2s_name.values(),self.model_ema.m_name2s_name.keys()))
+            for k in list(sd.keys()):
+                if k.startswith('model_ema'):
+                    print(k)
+                    v = sd[k]
+                    k = k[len('model_ema.'):]
+                    if k in s_name2m_name.keys():
+                        k = 'model.' + s_name2m_name[k]
+                        # print(f"after:{k}")
+                        sd[k] = v
         keys = list(sd.keys())
         for k in keys:
             for ik in ignore_keys:

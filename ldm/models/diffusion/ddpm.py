@@ -196,7 +196,7 @@ class DDPM(pl.LightningModule):
             s_name2m_name = dict(zip(self.model_ema.m_name2s_name.values(),self.model_ema.m_name2s_name.keys()))
             for k in list(sd.keys()):
                 if k.startswith('model_ema'):
-                    print(k)
+                    # print(k)
                     v = sd[k]
                     k = k[len('model_ema.'):]
                     if k in s_name2m_name.keys():
@@ -3706,6 +3706,7 @@ class AutoDM_GlobalCondition2(DDPM):
                  calc_decoder_loss=False,
                  use_similar="JS",
                  training_strategy='full',
+                 load_from_ema=False,
                  *args,**kwargs):
         self.num_timesteps_cond = default(num_timesteps_cond,1)
         self.scale_by_std = scale_by_std
@@ -3750,6 +3751,7 @@ class AutoDM_GlobalCondition2(DDPM):
         self.loss_fn = instantiate_from_config(loss_fn_config)
         self.calc_decoder_loss = calc_decoder_loss
         self.use_similar = use_similar
+        self.load_from_ema = load_from_ema
         if unet_config['params']['ckpt_path'] is not None:
             # self.model.from_pretrained_model(unet_config['params']['ckpt_path'])
             if self.init_from_video_model:
@@ -3786,7 +3788,15 @@ class AutoDM_GlobalCondition2(DDPM):
         if not os.path.exists(model_path):
             raise RuntimeError(f'{model_path} does not exist')
         sd = torch.load(model_path,map_location='cpu')['state_dict']
-        my_model_state_dict = self.state_dict()
+        if self.load_from_ema:
+            s_name2name = dict(zip(self.model_ema.m_name2s_name.values(),self.model_ema.m_name2s_name.keys()))
+            for k in list(sd.keys()):
+                if k.startswith('model_ema'):
+                    v = sd[k]
+                    k = k[len('model_ema.'):]
+                    if k in s_name2name.keys():
+                        k = 'model.' + s_name2name[k]
+                        sd[k] = v
         keys = list(sd.keys())
         # for param in state_dict.keys():
         #     if param not in my_model_state_dict.keys():

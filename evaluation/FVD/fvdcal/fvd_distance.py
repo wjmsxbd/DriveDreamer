@@ -58,7 +58,7 @@ class FVDCalculation:
         if self.method == 'videogpt':
             model = InceptionI3d(num_classes, in_channels=3).to(device)
             i3d_path = os.path.join('evaluation/FVD',model_path, "videogpt", "i3d_pretrained_400.pt")
-            model.load_state_dict(torch.load(i3d_path, map_location=device))
+            model.load_state_dict(torch.load(i3d_path, map_location=device,weights_only=True))
             model.eval()
         elif self.method == 'stylegan':
             detector_kwargs = dict(rescale=False, resize=True, return_features=True)
@@ -142,5 +142,4 @@ class FVDCalculation:
         # real, samples are (N, T, C, H, W) tensors in torch.float
         first_embed = self._get_logits(i3d_model, real, device)
         second_embed = self._get_logits(i3d_model, samples, device)
-
         return self._frechet_distance(first_embed, second_embed)

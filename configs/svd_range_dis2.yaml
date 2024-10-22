@@ -1,0 +1,264 @@
+model:
+  base_learning_rate: 5e-5
+  target: ldm.models.diffusion.ddpm.AutoDM_GlobalCondition2
+  params:
+    base_learning_rate: 1e-7
+    linear_start: 0.0015
+    linear_end: 0.0155
+    num_timesteps_cond: 1
+    log_every_t: 200
+    timesteps: 1000
+    loss_type: l1
+    image_size: [16,32]
+    channels: 4
+    cond_stage_trainable: True
+    scale_by_std: True
+    monitor: 'val/loss'
+    unet_trainable: True
+    learn_logvar: True
+    downsample_img_size: [16,32]
+    init_from_video_model: False
+    movie_len: 5
+    predict: True
+    use_additional_loss: True
+    replace_cond_frames: True
+    calc_decoder_loss: False
+    fixed_cond_frames: [0]
+    training_strategy: full
+    sampler_config:
+      target: ldm.modules.diffusionmodules.sampling.EulerEDMSampler
+      params:
+        num_steps: 15
+
+        discretization_config:
+          target: ldm.modules.diffusionmodules.discretizer.EDMDiscretization
+          params:
+            sigma_max: 700.0
+
+        guider_config:
+          target: ldm.modules.diffusionmodules.guiders.IdentityGuider
+    denoiser_config:
+      target: ldm.modules.diffusionmodules.denoiser.Denoiser
+      params:
+        movie_len: 5
+
+        scaling_config:
+          target: ldm.modules.diffusionmodules.denoiser_scaling.VScalingWithEDMcNoise
+
+    loss_fn_config:
+      target: ldm.modules.diffusionmodules.loss.StandardDiffusionLoss
+      params:
+        use_additional_loss: False
+        offset_noise_level: 0.02
+        additional_loss_weight: 0.1
+        movie_len: 5
+        replace_cond_frames: true
+        cond_frames_choices:
+          - [ ]
+          - [ 0 ]
+          - [ 0, 1 ]
+          - [ 0, 1, 2 ]
+        discriminator_config:
+          target: ldm.modules.losses.discriminator.CRLayerDiscriminator
+          params:
+            in_channels: 8
+            context_dim:
+        sigma_sampler_config:
+          target: ldm.modules.diffusionmodules.sigma_sampling.EDMSampling
+          params:
+            p_mean: 1.0
+            p_std: 1.6
+            num_frames: 5
+
+        loss_weighting_config:
+          target: ldm.modules.diffusionmodules.loss_weighting.VWeighting
+
+    cond_stage_config: 
+      target: ldm.models.autoencoder.FrozenCLIPTextEmbedder
+    scheduler_config: #10000 warmup steps
+      target: ldm.lr_scheduler.LambdaLinearScheduler
+      params:
+        warm_up_steps: [10000]
+        cycle_lengths: [10000000000000]
+        f_start: [1.e-6]
+        f_max: [1.]
+        f_min: [1.]
+    unet_config:
+      target: ldm.modules.diffusionmodules.openaimodel.VideoUNet
+      params:
+        in_channels: 8
+        use_checkpoint: True
+        out_channels: 4
+        model_channels: 320
+        attention_resolutions: [4,2,1]
+        num_res_blocks: 2
+        num_classes: 2
+        channel_mult: [1,2,4,4]
+        num_head_channels: 64
+        use_linear_in_transformer: True
+        transformer_depth: 1
+        context_dim: 1024
+        spatial_transformer_attn_type: softmax
+        extra_ff_mix_layer: True
+        use_spatial_context: True
+        merge_strategy: learned_with_images
+        video_kernel_size: [3,1,1]
+        add_lora: False
+        action_control: False
+        use_multimodal: True
+        # safetensor_path: stable_diffusion/svd_xt.safetensors
+        ckpt_path: logs/2024-10-02T23-19-07_svd_range_ca/checkpoints/epoch=000039.ckpt
+        # ckpt_path: logs/2024-09-21T18-04-18_svd/checkpoints/last.ckpt
+        ignore_keys: []
+
+    actionformer_config:
+      target: ldm.models.actionformer.ActionFormer4
+      params:
+        latent_range_image_dims: 4
+        latent_hdmap_dims: 4
+        latent_boxes_dims: 1024
+        latent_dims: 4
+        heads: 8
+        dim_head: 64
+        embed_dims: 2048
+        action_dims: 128
+            
+        decoder_config:
+          target: ldm.models.actionformer.ActionDecoder4
+          params:
+            in_channels: 2176
+            ch: [512,1024,2048]
+            num_boxes: 70
+            out_latent_hdmap_channel: 2048
+            out_latent_boxes_channel: 768
+            num_heads: 8
+            dim_head: 64
+            height: 16
+            width: 32
+        gru_blocks_config:
+          target: ldm.models.actionformer.GRU_Blocks
+          params:
+            hidden_state_channels: 2048
+            in_channels: 2048
+
+    global_condition_config:
+      target: ldm.models.condition.GlobalCondition
+      params:
+        image_config:
+          target: ldm.models.autoencoder.AutoencoderKL_Temporal
+          params:
+            embed_dim: 4
+            monitor: val/rec_loss
+            ckpt_path: stable_diffusion/kl-f8.ckpt
+            safetensor_path: stable_diffusion/vista.safetensors
+            trainable: False
+            ddconfig:
+              double_z: true
+              z_channels: 4
+              resolution: 256
+              in_channels: 3
+              out_ch: 3
+              ch: 128
+              ch_mult:
+              - 1
+              - 2
+              - 4
+              - 4
+              num_res_blocks: 2
+              attn_resolutions: []
+              dropout: 0.0
+              num_groups: 32
+              movie_len: 5
+            lossconfig:
+              target: torch.nn.Identity
+
+        lidar_config:
+          target: ldm.models.autoencoder.Autoencoder_Lidar2
+          params:
+            embed_dim: 4
+            monitor: "val/rec_loss"
+            ckpt_path: logs/2024-08-02T21-23-17_autoencoder_lidar/checkpoints/last.ckpt
+            trainable: False
+            image_key: 'range_image'
+            ignore_keys: []
+            ddconfig:
+              double_z: True
+              z_channels: 4
+              resolution: 256
+              in_channels: 3
+              out_ch: 3
+              ch: 128
+              ch_mult: [1,2,4,4] #num_down=len(ch_mult)-1
+              num_res_blocks: 2
+              attn_resolutions: [16]
+              dropout: 0.0
+              num_groups: 32
+              
+            lossconfig:
+              target: ldm.modules.losses.LPIPSWithDiscriminator
+              params:
+                disc_start: 1
+                kl_weight: 0.000001
+                disc_weight: 0.5
+        box_config:
+          target: ldm.models.autoencoder.Fourier_Embedding
+          params:
+            in_channels: 16
+            ch: [256,512,768]
+            out_channels: 1024
+            context_dims: 768
+            sigma: 1
+            trainable: True
+
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 2
+    wrap: False
+    num_workers: 1
+    train:
+      target: data.dataloader_predict_video.dataloader
+      params:
+        cfg:
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
+          img_size: [256,128]
+          nusc_canbus_frequency: 50
+          camera_frequency: 12
+        num_boxes: 70
+        movie_len: 5
+        split_name: train
+        collect_condition: ['reference_image','HDmap','3Dbox','actions','range_image','dense_range_image']
+  
+    validation:
+      target: data.dataloader_predict_video.dataloader
+      params:
+        cfg:
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
+          img_size: [256,128]
+          nusc_canbus_frequency: 50
+          camera_frequency: 12
+        num_boxes: 70
+        movie_len: 5
+        split_name: val
+        collect_condition: ['reference_image','HDmap','3Dbox','actions','range_image','dense_range_image']
+
+
+lightning:
+  callbacks:
+    video_logger:
+      target: main.VideoLogger
+      params:
+        batch_frequency: 1000
+        max_videos: 8
+        fps: 5
+        increase_log_steps: False
+
+  trainer:
+    benchmark: True
+    gpus: 0,1
+    # device: 1
+    # gpus: 0,
+    # num_nodes: 1
+    distributed_backend: ddp

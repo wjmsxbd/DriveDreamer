@@ -32,6 +32,7 @@ from ldm.models.attention import PositionalEncoder
 from ldm.modules.diffusionmodules.util import extract_into_tensor
 import omegaconf
 import time
+from typing import Iterable,List,Union,Optional
 from ldm.modules.diffusionmodules.openaimodel import UNetModel,VideoUNet
 
 __conditioning_keys__ = {'concat':'c_concat',
@@ -46,6 +47,32 @@ def disabled_train(self,mode=True):
 def uniform_on_device(r1,r2,shape,device):
     return (r1-r2) * torch.rand(*shape,device=device) + r2
 
+
+class DiffusionWrapper(pl.LightningModule):
+    def __init__(self,model_config):
+        super().__init__()
+        self.model = instantiate_from_config(model_config)
+
+    def get_last_layer(self):
+        return self.model.get_last_layer()
+
+    def forward(self,
+            x:torch.Tensor,
+            timesteps:torch.Tensor,
+            context: Optional[torch.Tensor]=None,
+            y:Optional[torch.Tensor]=None,
+            time_context:Optional[torch.Tensor]=None,
+            cond_mask:Optional[torch.Tensor] = None,
+            num_frames: Optional[int] = None,
+            x_0 = None,
+            range_image_0=None,):
+        x_0 = x_0.unsqueeze(1).repeat(1,num_frames,1,1,1)
+        range_image_0 = range_image_0.unsqueeze(1).repeat(1,num_frames,1,1,1)
+        x_0 = torch.cat([x_0,range_image_0],dim=0)
+        x_0 = rearrange(x_0,'b n c h w -> (b n) c h w').contiguous()
+        x[:,4:] += x_0
+        return self.model(x,timesteps,context,y,time_context,cond_mask,num_frames)
+        
 
 class DDPM(pl.LightningModule):
     # classic DDPM with Gaussian diffusion, in image space
@@ -89,7 +116,6 @@ class DDPM(pl.LightningModule):
         self.channels = channels
         self.use_positional_encodings = use_positional_encodings
         self.model = instantiate_from_config(unet_config)#.eval()
-
         count_params(self.model,verbose=True)
         self.use_ema = use_ema
         if self.use_ema:
@@ -501,6 +527,7 @@ class AutoDM(DDPM):
             self.restarted_from_ckpt = True
 
     def from_pretrained_model(self,model_path,ignore_keys):
+        print("now from pretrained model")
         if not os.path.exists(model_path):
             raise RuntimeError(f'{model_path} does not exist')
         sd = torch.load(model_path,map_location='cpu')['state_dict']
@@ -3707,6 +3734,7 @@ class AutoDM_GlobalCondition2(DDPM):
                  use_similar="JS",
                  training_strategy='full',
                  load_from_ema=False,
+                 data_type='mini',
                  *args,**kwargs):
         self.num_timesteps_cond = default(num_timesteps_cond,1)
         self.scale_by_std = scale_by_std
@@ -3761,8 +3789,15 @@ class AutoDM_GlobalCondition2(DDPM):
             self.restarted_from_ckpt = True
         if 'safetensor_path' in unet_config['params'].keys() and unet_config['params']['safetensor_path'] is not None:
             self.restarted_from_ckpt = True
+        if data_type=='mini':
+            self.category_name = ['None','human.pedestrian.adult', 'human.pedestrian.child', 'human.pedestrian.wheelchair', 'human.pedestrian.stroller', 'human.pedestrian.personal_mobility', 'human.pedestrian.police_officer', 'human.pedestrian.construction_worker', 'animal', 'vehicle.car', 'vehicle.motorcycle', 'vehicle.bicycle', 'vehicle.bus.bendy', 'vehicle.bus.rigid', 'vehicle.truck', 'vehicle.construction', 'vehicle.emergency.ambulance', 'vehicle.emergency.police', 'vehicle.trailer', 'movable_object.barrier', 'movable_object.trafficcone', 'movable_object.pushable_pullable', 'movable_object.debris', 'static_object.bicycle_rack']
+        else:
+            self.category_name = ['noise', 'animal', 'human.pedestrian.adult', 'human.pedestrian.child', 'human.pedestrian.construction_worker', 'human.pedestrian.personal_mobility', 'human.pedestrian.police_officer', 'human.pedestrian.stroller', 'human.pedestrian.wheelchair', 'movable_object.barrier', 'movable_object.debris', 'movable_object.pushable_pullable', 'movable_object.trafficcone', 'static_object.bicycle_rack', 'vehicle.bicycle', 'vehicle.bus.bendy', 'vehicle.bus.rigid', 'vehicle.car', 'vehicle.construction', 'vehicle.emergency.ambulance', 'vehicle.emergency.police', 'vehicle.motorcycle', 'vehicle.trailer', 'vehicle.truck', 'flat.driveable_surface', 'flat.other', 'flat.sidewalk', 'flat.terrain', 'static.manmade', 'static.other', 'static.vegetation', 'vehicle.ego','None']
+        self.category = {}
+        for name in self.category_name:
+            self.category[name] = self.clip(name).cpu().detach().numpy()
+        del self.clip
 
-        self.clipped_category = {}
         self.clipped_text = {}
 
     def from_video_model(self,model_path,ignore_keys,modify_keys):
@@ -3896,16 +3931,20 @@ class AutoDM_GlobalCondition2(DDPM):
         return weighting
 
     #TODO:add lidar_model loss
-    def training_step(self,batch,batch_idx):
+    def training_step(self,batch,batch_idx,optimizer_idx=None):
 
-        loss,loss_dict = self.shared_step(batch)
+        loss,loss_dict = self.shared_step(batch,optimizer_idx)
 
         self.log_dict(loss_dict,prog_bar=True,logger=True,on_step=True,on_epoch=True)
 
         self.log("global_step",self.global_step,prog_bar=True,logger=True,on_step=True,on_epoch=False)
 
         if self.use_scheduler:
-            lr = self.optimizers().param_groups[0]['lr']
+            opt = self.optimizers()
+            if isinstance(opt,list):
+                lr = opt[0].param_groups[0]['lr']
+            else:
+                lr = opt.param_groups[0]['lr']
             self.log('lr_abs',lr,prog_bar=True,logger=True,on_step=True,on_epoch=False)
 
         # if self.calc_decoder_loss:
@@ -3972,9 +4011,7 @@ class AutoDM_GlobalCondition2(DDPM):
             for i in range(len(batch['category'])):
                 for j in range(self.movie_len):
                     for k in range(len(batch['category'][0][0])):
-                        if not batch['category'][i][j][k] in self.clipped_category.keys():
-                            self.clipped_category[batch['category'][i][j][k]] = self.clip(batch['category'][i][j][k]).cpu().detach().numpy()
-                        boxes_category[i][j][k] = self.clipped_category[batch['category'][i][j][k]]
+                        boxes_category[i][j][k] = self.category[batch['category'][i][j][k]]
             boxes_category = boxes_category.reshape(b*self.movie_len,len(batch['category'][0][0]),768)
             boxes_category = torch.tensor(boxes_category).to(self.device)
             batch['3Dbox'] = boxes
@@ -4019,6 +4056,8 @@ class AutoDM_GlobalCondition2(DDPM):
             c['cam_enc'] = out['cam_enc']
         if 'lidar_enc' in condition_keys:
             c['lidar_enc'] = out['lidar_enc']
+        c['origin_x'] = condition_out['ref_image'][::self.movie_len]
+        c['origin_range'] = condition_out['range_image'][::self.movie_len]
         if return_first_stage_outputs:
             x_rec = self.global_condition.decode_first_stage_interface("reference_image",z)
             if lidar_z is None:
@@ -4030,7 +4069,7 @@ class AutoDM_GlobalCondition2(DDPM):
         return out
         
     # c = {'hdmap':...,"boxes":...,'category':...,"text":...}
-    def shared_step(self,batch,**kwargs):
+    def shared_step(self,batch,optimizer_idx=None,**kwargs):
         condition_keys = batch.keys()
         b = batch['reference_image'].shape[0]
         ref_img = super().get_input(batch,'reference_image') # (b n c h w)
@@ -4053,9 +4092,7 @@ class AutoDM_GlobalCondition2(DDPM):
             for i in range(len(batch['category'])):
                 for j in range(self.movie_len):
                     for k in range(len(batch['category'][0][0])):
-                        if not batch['category'][i][j][k] in self.clipped_category.keys():
-                            self.clipped_category[batch['category'][i][j][k]] = self.clip(batch['category'][i][j][k]).cpu().detach().numpy()
-                        boxes_category[i][j][k] = self.clipped_category[batch['category'][i][j][k]]
+                        boxes_category[i][j][k] = self.category[batch['category'][i][j][k]]
             boxes_category = boxes_category.reshape(b*self.movie_len,len(batch['category'][0][0]),768)
             boxes_category = torch.tensor(boxes_category).to(self.device)
             batch['3Dbox'] = boxes
@@ -4098,25 +4135,42 @@ class AutoDM_GlobalCondition2(DDPM):
         if 'lidar_enc' in condition_keys:
             c['lidar_enc'] = out['lidar_enc']
         c['origin_range_image'] = range_image
+        c['origin_x'] = out['ref_image'][::self.movie_len]
+        c['origin_range'] = out['range_image'][::self.movie_len]
         if self.calc_decoder_loss:
             x_rec,cam_dec = self.global_condition.decode_first_stage_interface("reference_image",x,calc_decoder_loss=self.calc_decoder_loss)
             lidar_rec,lidar_dec = self.global_condition.decode_first_stage_interface('lidar',range_image,calc_decoder_loss=self.calc_decoder_loss)
             c['cam_dec'] = cam_dec
             c['lidar_dec'] = lidar_dec
-        loss,loss_dict = self(x,range_image,c)
+        if not hasattr(self.loss_fn,'discriminator'):
+            loss,loss_dict = self(x,range_image,c)
+        else:
+            loss,loss_dict = self(x,range_image,c,optimizer_idx)
         return loss,loss_dict
 
 
-    def forward(self,x,range_image,c,*args,**kwargs):
-        if self.calc_decoder_loss:
-            loss,camera_loss,range_image_loss,simiarity = self.loss_fn(self.model,self.denoiser,c,x,range_image,self.action_former,self.calc_decoder_loss,self.use_similar)
-            log_prefix = "train" if self.training else 'val'
-            loss_dict = {f"{log_prefix}/loss":camera_loss + range_image_loss + simiarity,f"{log_prefix}/camera_loss":camera_loss,f"{log_prefix}/range_loss":range_image_loss,f"{log_prefix}/similarity":simiarity}
-        else:    
-            loss,camera_loss,range_image_loss = self.loss_fn(self.model,self.denoiser,c,x,range_image,self.action_former,self.calc_decoder_loss,self.use_similar)
-            # loss_mean = loss.mean()
-            log_prefix = "train" if self.training else 'val'
-            loss_dict = {f"{log_prefix}/loss":camera_loss + range_image_loss,f"{log_prefix}/camera_loss":camera_loss,f"{log_prefix}/range_loss":range_image_loss}
+    def forward(self,x,range_image,c,optimizer_idx=None,*args,**kwargs):
+        if not optimizer_idx is None:
+            if optimizer_idx == 0:
+                loss,camera_loss,range_image_loss,g_loss = self.loss_fn(self.model,self.denoiser,c,x,range_image,self.action_former,self.global_step,self.calc_decoder_loss,self.use_similar,optimizer_idx,self.model.get_last_layer())
+                log_prefix = "train" if self.training else 'val'
+                loss_dict = {f"{log_prefix}/loss":camera_loss + range_image_loss,f"{log_prefix}/camera_loss":camera_loss,f"{log_prefix}/range_loss":range_image_loss,f"{log_prefix}/g_loss":g_loss}
+            else:
+                loss,logits_real,logits_fake = self.loss_fn(self.model,self.denoiser,c,x,range_image,self.action_former,self.global_step,self.calc_decoder_loss,self.use_similar,optimizer_idx)
+                log_prefix = "train" if self.training else 'val'
+                loss_dict = {f"{log_prefix}/d_loss":loss.clone().detach().mean(),f"{log_prefix}/logits_real":logits_real.detach().mean(),f"{log_prefix}/logits_fake":logits_fake.detach().mean()}
+            return loss,loss_dict
+        else:
+            if self.calc_decoder_loss:
+                loss,camera_loss,range_image_loss,simiarity = self.loss_fn(self.model,self.denoiser,c,x,range_image,self.action_former,self.global_step,self.calc_decoder_loss,self.use_similar)
+                log_prefix = "train" if self.training else 'val'
+                loss_dict = {f"{log_prefix}/loss":camera_loss + range_image_loss + simiarity,f"{log_prefix}/camera_loss":camera_loss,f"{log_prefix}/range_loss":range_image_loss,f"{log_prefix}/similarity":simiarity}
+            else:    
+                # loss,camera_loss,range_image_loss = self.loss_fn(self.model,self.denoiser,c,x,range_image,self.action_former,self.global_step,self.calc_decoder_loss,self.use_similar)
+                # loss_mean = loss.mean()
+                loss,camera_loss,range_image_loss = self.loss_fn(self.model,self.denoiser,c,x,range_image,self.action_former,self.global_step,self.calc_decoder_loss,self.use_similar)
+                log_prefix = "train" if self.training else 'val'
+                loss_dict = {f"{log_prefix}/loss":camera_loss + range_image_loss,f"{log_prefix}/camera_loss":camera_loss,f"{log_prefix}/range_loss":range_image_loss}
         return loss,loss_dict
 
     def apply_model(self,x_noisy,t,cond,range_image_noisy=None,x_start=None,return_ids=False):
@@ -4395,6 +4449,11 @@ class AutoDM_GlobalCondition2(DDPM):
                 if not add_transformer:
                     self.model.eval()
         opt = torch.optim.AdamW(params,lr=lr)
+        if hasattr(self.loss_fn,'discriminator'):
+            opt_disc = torch.optim.AdamW(self.loss_fn.discriminator.parameters(),lr=2e-4,betas=(0.5,0.9))
+        else:
+            opt_disc = None
+            disc_scheduler = None
         if self.use_scheduler:
             assert 'target' in self.scheduler_config
             scheduler = instantiate_from_config(self.scheduler_config)
@@ -4407,7 +4466,19 @@ class AutoDM_GlobalCondition2(DDPM):
                     'interval':'step',
                     'frequency':1
                 }]
+            if hasattr(self.loss_fn,'discriminator') and hasattr(self.loss_fn.discriminator,'scheduler'):
+                scheduler.append(
+                    {
+                        'scheduler':LambdaLR(opt_disc,lr_lambda=self.loss_fn.discriminator.scheduler.schedule),
+                        'interval':'step',
+                        'frequency':1
+                    }
+                )
+            if not opt_disc is None:
+                return [opt,opt_disc],scheduler
             return [opt],scheduler
+        if not opt_disc is None:
+            return [opt,opt_disc]
         return opt
         
     def p_mean_variance(self,x,c,t,clip_denoised:bool,return_codebook_ids=False,quantize_denoised=False,
@@ -4853,7 +4924,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/svd_debug.yaml',
+                        default='configs/svd_range_image.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
@@ -4888,24 +4959,26 @@ if __name__ == '__main__':
     #        'dense_range_image': dense_range_image,
     #        'actions':actions}
     bev_images = torch.randn((2,5,128,256,3))#.cuda()
-    out = {'text':text,
+    out = {
+        # 'text':text,
            'reference_image':x,
-        #    "range_image":range_image,
+           "range_image":range_image,
            'actions':actions,
            'HDmap':hdmap,
            '3Dbox':boxes,
            'category':box_category,
-        #    'dense_range_image':dense_range_image
+           'dense_range_image':dense_range_image
         }
     
     # network.log_video(out)
     # network.configure_optimizers()
     # loss = network.log_video(out)
     # loss.backward()
-    loss,loss_dict = network.shared_step(out)
+    # print(network.model.get_last_layer().shape)
+    # loss,loss_dict = network.shared_step(out,optimizer_idx=0)
     # print(loss)
     # loss.backward()
-    # loss,loss_dict = network.shared_step(out)
+    loss,loss_dict = network.shared_step(out)
     # network.configure_optimizers()
     # network.shared_step(out)
     # loss,loss_dict = network.validation_step(out,0)

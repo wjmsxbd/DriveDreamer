@@ -1990,6 +1990,9 @@ class VideoUNet(nn.Module):
         if safetensor_path is not None:
             self.init_from_safetensor(safetensor_path)
     
+    def get_last_layer(self):
+        return self.out[-1].weight
+
     def init_from_safetensor(self,safetensor_path):
         from safetensors import safe_open
         sd = dict()

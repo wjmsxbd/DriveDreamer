@@ -1,3 +1,6 @@
+import sys
+sys.path.append('.')
+
 import random
 from typing import Dict, List, Union
 
@@ -13,6 +16,7 @@ import numpy as np
 from pyquaternion import Quaternion
 from nuscenes.utils.data_classes import LidarPointCloud, Box
 from nuscenes.utils.geometry_utils import view_points
+from ldm.modules.losses.discriminator import hinge_d_loss,adopt_weight,new_d_loss,vanilla_new_d_loss,vanilla_d_loss
 
 class StandardDiffusionLoss(nn.Module):
     def __init__(
@@ -29,6 +33,10 @@ class StandardDiffusionLoss(nn.Module):
             img_size: tuple = (128,256),
             depth_config=None,
             w_similarity=1.,
+            discriminator_config = None,
+            disc_factor=1.,
+            disc_start=0.,
+            disc_weight=1.0,
     ):
         super().__init__()
         assert loss_type in ["l2", "l1"]
@@ -51,6 +59,12 @@ class StandardDiffusionLoss(nn.Module):
             self.phi_res = (np.pi / 3) / self.img_size[1]
         else:
             self.depth_estimator = None
+        if discriminator_config is not None:
+            self.discriminator = instantiate_from_config(discriminator_config)
+            self.disc_loss = vanilla_new_d_loss
+            self.disc_factor = disc_factor
+            self.discriminator_iter_start = disc_start
+            self.disc_weight = disc_weight
         self.w_similarity = w_similarity
     def get_noised_input(
             self,
@@ -69,11 +83,32 @@ class StandardDiffusionLoss(nn.Module):
             x:torch.Tensor,
             range_image:torch.Tensor,
             actionformer:nn.Module,
+            global_step:int,
             calc_dec_loss:bool = False,
             use_similar: str = "JS",
+            optimizer_idx: int=None,
+            last_layer=None,
     ):
-        return self._forward(network,denoiser,cond,x,range_image,actionformer,calc_dec_loss,use_similar)
+        return self._forward(network,denoiser,cond,x,range_image,actionformer,global_step,calc_dec_loss,use_similar,optimizer_idx,last_layer)
     
+    def calc_kl_distance(self,x,range_image):
+        mu1,var1 = torch.mean(x,dim=0),torch.var(x,dim=0)
+        mu2,var2 = torch.mean(range_image,dim=0),torch.var(range_image,dim=0)
+        var1 = torch.clamp(var1,min=1e-10)
+        var2 = torch.clamp(var2,min=1e-10)
+        return torch.log(var2/var1) + torch.div(torch.add(torch.square(var1),torch.square(mu1-mu2)),2*torch.square(var2)) - 0.5
+
+    def calculate_adaptive_weight(self,loss,g_loss,last_layer=None):
+        if last_layer is not None:
+            loss_grads = torch.autograd.grad(loss,last_layer,retain_graph=True)[0]
+            g_grad = torch.autograd.grad(g_loss,last_layer,retain_graph=True)[0]
+        else:
+            raise not NotImplementedError
+        d_weight = torch.norm(loss_grads) / (torch.norm(g_grad) + 1e-4)
+        d_weight = torch.clamp(d_weight,0.0,1e-4).detach()
+        d_weight = d_weight * self.disc_weight
+        return d_weight
+
     def _forward(
             self,
             network:nn.Module,
@@ -82,8 +117,11 @@ class StandardDiffusionLoss(nn.Module):
             x:torch.Tensor,
             range_image:torch.Tensor,
             actionformer:nn.Module,
+            global_step: int,
             calc_dec_loss:bool = False,
             use_similar: str = "JS",
+            optimizer_idx: int=None,
+            last_layer=None,
     ):
         sigmas = self.sigma_sampler(x.shape[0]).to(x)
         cond_mask = torch.zeros_like(sigmas)
@@ -96,6 +134,10 @@ class StandardDiffusionLoss(nn.Module):
                 if cond_indices:
                     each_cond_mask[cond_indices] = 1
             cond_mask = rearrange(cond_mask,"b t -> (b t)")
+        if calc_dec_loss:
+            gt_kl_distance = self.calc_kl_distance(x,range_image)
+        else:
+            gt_kl_distance = None
         noise = torch.randn_like(x)
         if self.offset_noise_level > 0.0:
             offset_shape = (x.shape[0],x.shape[1])
@@ -133,7 +175,43 @@ class StandardDiffusionLoss(nn.Module):
             input = torch.cat([x,range_image],dim=0)
         else:
             input = x
-        return self.get_loss(predict,input,w,cond,calc_dec_loss,use_similar,multimodal=(not range_image is None))
+        if optimizer_idx is None:
+            return self.get_loss(predict,input,w,cond,global_step,calc_dec_loss,use_similar,multimodal=(not range_image is None),gt_kl_distance=gt_kl_distance)
+        else:
+            if optimizer_idx == 0:
+                loss,camera_loss,range_image_loss = self.get_loss(predict,input,w,cond,global_step,calc_dec_loss,use_similar,multimodal=(not range_image is None),gt_kl_distance=gt_kl_distance)
+                fake_x,fake_range_image = torch.chunk(predict,2,0)
+                fake_inputs = torch.cat([fake_x,fake_range_image],dim=1)
+                logits_fake = self.discriminator(fake_inputs)
+                g_loss = -torch.mean(logits_fake)
+                disc_factor = adopt_weight(self.disc_factor,global_step,threshold=self.discriminator_iter_start)
+                d_weight = self.calculate_adaptive_weight(loss,g_loss,last_layer)
+                loss = loss + disc_factor * g_loss * d_weight
+                return loss,camera_loss,range_image_loss,g_loss
+            else:
+                if hasattr(self,'discriminator'):
+                    gt_x,gt_range_image = torch.chunk(input,2,0)
+                    inputs = torch.cat([gt_x,gt_range_image],dim=1)
+                    logits_real = self.discriminator(inputs)
+                    fake_x,fake_range_image = torch.chunk(predict,2,0)
+                    fake_inputs = torch.cat([fake_x,fake_range_image],dim=1)
+                    logits_fake = self.discriminator(fake_inputs)
+                    if self.disc_loss is new_d_loss or self.disc_loss is vanilla_new_d_loss:
+                        gt_x_fake_r = torch.cat([gt_x,fake_range_image],dim=1)
+                        fake_x_gt_r = torch.cat([fake_x,gt_range_image],dim=1)
+                        logits_fake_1 = self.discriminator(gt_x_fake_r)
+                        logits_fake_2 = self.discriminator(fake_x_gt_r)
+                        logits_fake = torch.cat([logits_fake,logits_fake_1,logits_fake_2],dim=0)
+                    disc_factor = adopt_weight(self.disc_factor,global_step,threshold=self.discriminator_iter_start)
+                    d_loss = disc_factor * self.disc_loss(logits_real,logits_fake)
+
+                    d_loss = torch.mean(d_loss)
+                    logits_fake = torch.mean(logits_fake)
+                    logits_real = torch.mean(logits_real)
+                    return d_loss,logits_real,logits_fake
+                else:
+                    assert 0,"discriminator is None"
+
     
     def calc_single_similarity(self,cam_enc,lidar_enc,use_similar):
         eps = 1e-7
@@ -174,10 +252,11 @@ class StandardDiffusionLoss(nn.Module):
             similarity = (gt - rec).mean()
             return similarity
 
-    def get_loss(self,predict,target,w,cond,calc_dec_loss=False,use_similar="JS",multimodal=True):
+    def get_loss(self,predict,target,w,cond,global_step,calc_dec_loss=False,use_similar="JS",multimodal=True,gt_kl_distance=None):
         if calc_dec_loss:
             cam_enc,cam_dec,lidar_enc,lidar_dec = cond['cam_enc'],cond['cam_dec'],cond['lidar_enc'],cond['lidar_dec']
             similarity = self.calc_similarity_loss(cam_enc,cam_dec,lidar_enc,lidar_dec,use_similar)
+
         if self.loss_type == "l2":
             if self.use_additional_loss:
                 predict_seq = rearrange(predict, "(b t) ... -> b t ...", t=self.movie_len)
@@ -204,12 +283,14 @@ class StandardDiffusionLoss(nn.Module):
             else:
                 if multimodal:
                     if calc_dec_loss:
+                        camera,range_image = torch.chunk(predict,2,0)
+                        kl_distance = self.calc_kl_distance(camera,range_image)
+                        similarity = 0.1 * torch.abs(kl_distance - gt_kl_distance)
                         camera_loss,range_image_loss = torch.mean((w*(predict - target)**2).reshape(target.shape[0],-1),1).chunk(2,0)
                         camera_loss = torch.mean(camera_loss)
                         range_image_loss = torch.mean(range_image_loss)
                         loss = camera_loss / camera_loss.detach() + range_image_loss / range_image_loss.detach() + similarity / similarity.detach()
                         return loss,camera_loss,range_image_loss,similarity
-
                     camera_loss,range_image_loss = torch.mean((w*(predict - target)**2).reshape(target.shape[0],-1),1).chunk(2,0)
                     camera_loss = torch.mean(camera_loss)
                     range_image_loss = torch.mean(range_image_loss)

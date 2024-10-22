@@ -8,6 +8,7 @@ from .denoiser_scaling import DenoiserScaling
 from .discretizer import Discretization
 from einops import rearrange
 from ldm.modules.diffusionmodules.openaimodel import VideoUNet,UNetModel
+from ldm.models.diffusion.ddpm import DiffusionWrapper
 
 
 class Denoiser(nn.Module):
@@ -161,9 +162,14 @@ class Denoiser(nn.Module):
                 + real_input * c_skip
             )
         else:
-            return (
-                network(input*c_in,c_noise,y=class_label,context=boxes_emb,cond_mask=cond_mask,num_frames=self.movie_len) * c_out + real_input * c_skip
-            )
+            if isinstance(network,DiffusionWrapper):
+                return (
+                    network(input*c_in,c_noise,y=class_label,context=boxes_emb,cond_mask=cond_mask,num_frames=self.movie_len,x_0=cond['origin_x'],range_image_0=cond['origin_range']) * c_out + real_input * c_skip
+                )
+            else:
+                return (
+                    network(input*c_in,c_noise,y=class_label,context=boxes_emb,cond_mask=cond_mask,num_frames=self.movie_len) * c_out + real_input * c_skip
+                )
 
 
 class DiscreteDenoiser(Denoiser):

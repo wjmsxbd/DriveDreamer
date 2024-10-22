@@ -31,6 +31,7 @@ from ip_basic.ip_basic.depth_map_utils import fill_in_fast,fill_in_multiscale
 from einops import rearrange
 import matplotlib
 import imageio
+from nuscenes.utils.geometry_utils import transform_matrix
 from io import BytesIO
 from einops import repeat
 from memory_profiler import profile
@@ -258,7 +259,10 @@ def get_3dbox(sample_data_token:str,nusc:NuScenes,imsize:tuple,out_path=None):
         box_xy[1] = box_xy[1] / imsize[1]
         box_xy = box_xy.flatten()
         box_list.append(box_xy)
-
+    idx = np.arange(len(box_list))
+    idx = np.array(sorted(idx,key=lambda id:np.mean(box_list[id][:8])),dtype=np.uint8)
+    box_list = [box_list[id] for id in idx]
+    box_category = [box_category[id] for id in idx]
     # ax.axis('off')
     # ax.set_aspect('equal')
     # ax.set_xlim(0, imsize[0])
@@ -419,11 +423,16 @@ def get_hdmap(sample_data_token:str,
         records_in_patch = nusc_map.get_records_in_patch(box_coords,layer_names,mode='intersect')
 
         #Init axes.
-        hdmap = np.zeros((1200,1600,3)).astype(np.uint8)
+        # hdmap = np.zeros((1200,1600,3)).astype(np.uint8)
+        # left_up_corner = Point(0,0)
+        # left_down_corner = Point(0,1200-1)
+        # right_up_corner = Point(1600-1,0)
+        # right_down_corner = Point(1600-1,1200-1)
+        hdmap = np.zeros((900,1600,3)).astype(np.uint8)
         left_up_corner = Point(0,0)
-        left_down_corner = Point(0,1200-1)
+        left_down_corner = Point(0,900-1)
         right_up_corner = Point(1600-1,0)
-        right_down_corner = Point(1600-1,1200-1)
+        right_down_corner = Point(1600-1,900-1)
         layer_color = {'ped_crossing':(0,255,0),'lane':(0,0,255),'lane_divider':(255,0,0)}
         for layer_name in layer_names:
             for token in records_in_patch[layer_name]:
@@ -638,8 +647,7 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
     cam_front_calibrated_sensor_token = nusc.get('sample_data',cam_front_token)['calibrated_sensor_token']
     pointsensor_token = sample_record['data']['LIDAR_TOP']
     pointsensor = nusc.get('sample_data',pointsensor_token)
-    # ego_pose = nusc.get('ego_pose',pointsensor['ego_pose_token'])
-    # print(ego_pose['translation'])
+    # print(f"sample_token:{sample_token},pointsensor_token:{pointsensor_token}")
     Lidar_TOP_record = nusc.get('calibrated_sensor',pointsensor['calibrated_sensor_token'])
     cam_front_record = nusc.get('calibrated_sensor',cam_front_calibrated_sensor_token)
     Lidar_TOP_poserecord = nusc.get('ego_pose',pointsensor['ego_pose_token'])
@@ -671,6 +679,7 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
         cam_front_img = mpimg.imread(cam_front_path)
         imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
         cam_front_img = Image.fromarray(cam_front_img)
+        # cam_front_img.save("gt.png")
         cam_front_img = np.array(cam_front_img.resize(img_size))
         if 'reference_image' in collect_data:
             all_data['reference_image'] = cam_front_img
@@ -688,8 +697,10 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
         all_data['category'] = box_category
     
     if 'range_image' in collect_data:
-        range_image = project_to_image(nusc,sample_token,img_size=(img_size[1],img_size[0]))
-        range_image = np.repeat(range_image[:,:,np.newaxis],3,axis=-1)
+        # range_image = project_to_image(nusc,sample_token,img_size=(img_size[1],img_size[0]))
+        # range_image = np.repeat(range_image[:,:,np.newaxis],3,axis=-1)
+        # nusc.render_pointcloud_in_image(sample_token)
+        range_image = project_to_camera(nusc,sample_token,img_size=(img_size[1],img_size[0]))
         all_data['range_image'] = range_image
     if 'dense_range_image' in collect_data:
         tmp_img = range_image[:,:,0]
@@ -909,53 +920,59 @@ def get_bev_hdmap(sample_data_token:str,
 
 
 
-def project_to_camera(range_image,point_sensor_record,cam_sensor_record,ego_pose_record_lidar,ego_pose_record_cam,img_size=(128,256),min_dist=1.0,out_path=None):
-    indices = np.nonzero(range_image)
-    points = np.zeros(len(indices),3)
-    theta_up = np.pi / 12
-    theta_down = -np.pi / 6
-    theta_res = (theta_up - theta_down) / img_size[0]
-    phi_res = (np.pi / 3) / img_size[1]
-    for idx in range(len(indices)):
-        vi,ui = indices[idx]
-        phi = ((1+ui)/img_size[1] - 1) * torch.pi / 6
-        theta = theta_up - (theta_up - theta_down) * ((vi+1) - 1./2) / img_size[0]
-        r = range_image[vi,ui]
-        point_x = r * torch.cos(theta) * torch.sin(phi)
-        point_y = r * torch.cos(theta) * torch.cos(phi)
-        point_z = r * torch.sin(theta)
-        points[idx] = np.array([point_x,point_y,point_z])
-    points = np.ascontiguousarray(points.transpose(1,0))
-    pc = LidarPointCloud(points=points)
-    pc.rotate(Quaternion(point_sensor_record['rotation']).rotation_matrix)
-    pc.translate(np.array(point_sensor_record['translation']))
+def project_to_camera(nusc,sample_token,img_size=(128,256),min_dist=1.0,out_path=None,pointsensor_channel="LIDAR_TOP",camera_channel="CAM_FRONT"):
+    sample_record = nusc.get('sample',sample_token)
+    pointsensor_token = sample_record['data'][pointsensor_channel]
+    camera_token = sample_record['data'][camera_channel]
+    cam = nusc.get('sample_data',camera_token)
+    pointsensor = nusc.get('sample_data',pointsensor_token)
+    pcl_path = osp.join(nusc.dataroot, pointsensor['filename'])
+
+    pc = LidarPointCloud.from_file(pcl_path)
+    cs_record = nusc.get('calibrated_sensor',pointsensor['calibrated_sensor_token'])
+    pc.rotate(Quaternion(cs_record['rotation']).rotation_matrix)
+    pc.translate(np.array(cs_record['translation']))
     
+    pose_record = nusc.get('ego_pose',pointsensor['ego_pose_token'])
+    pc.rotate(Quaternion(pose_record['rotation']).rotation_matrix)
+    pc.translate(np.array(pose_record['translation']))
     
-    pc.rotate(Quaternion(ego_pose_record_lidar['rotation']).rotation_matrix)
-    pc.translate(np.array(ego_pose_record_lidar['translation']))
+    pose_record = nusc.get('ego_pose',cam['ego_pose_token'])
+    pc.translate(-np.array(pose_record['translation']))
+    pc.rotate(Quaternion(pose_record['rotation']).rotation_matrix.T)
     
-    pc.translate(-np.array(ego_pose_record_cam['translation']))
-    pc.rotate(Quaternion(ego_pose_record_cam['rotation']).rotation_matrix.T)
-    
-    pc.translate(-np.array(cam_sensor_record['translation']))
-    pc.rotate(Quaternion(cam_sensor_record['rotation']).rotation_matrix.T)
+    cs_record = nusc.get('calibrated_sensor',cam['calibrated_sensor_token'])
+    pc.translate(-np.array(cs_record['translation']))
+    pc.rotate(Quaternion(cs_record['rotation']).rotation_matrix.T)
     # Take the actual picture (matrix multiplication with camera-matrix + renormalization).
-    points = view_points(pc.points[:3, :], np.array(cam_sensor_record['camera_intrinsic']), normalize=True)
-    mask = np.ones(points[2,:].shape[0], dtype=bool)
-    mask = np.logical_and(mask, points[2,:] > min_dist)
+    depth = pc.points[2,:]
+    camera_intrinsic = np.array(cs_record['camera_intrinsic'])
+    # print(camera_intrinsic)
+    camera_intrinsic[0] = (img_size[1] / 1600) * camera_intrinsic[0]
+    camera_intrinsic[1] = (img_size[0] / 900) * camera_intrinsic[1]
+
+    points = view_points(pc.points[:3, :], camera_intrinsic, normalize=True)
+    mask = np.ones(depth.shape[0], dtype=bool)
+    mask = np.logical_and(mask, depth > min_dist)
     mask = np.logical_and(mask, points[0, :] > 1)
-    mask = np.logical_and(mask, points[0, :] < 1600 - 1)
+    mask = np.logical_and(mask, points[0, :] < img_size[1] - 1)
     mask = np.logical_and(mask, points[1, :] > 1)
-    mask = np.logical_and(mask, points[1, :] < 900 - 1)
+    mask = np.logical_and(mask, points[1, :] < img_size[0] - 1)
     points = points[:, mask]
-    cam_range_image = np.zeros((900,1600,3))
-    
-    for point in points:
-        cam_range_image[point[1],point[0]] = point[2]
-    cam_range_image = Image.fromarray(cam_range_image)
+    depth = depth[mask]
+    cam_range_image = np.zeros((img_size[0],img_size[1],3))
+    points = points.transpose(1,0)
+    for idx in range(points.shape[0]):
+        u,v = int(points[idx][1]+0.5),int(points[idx][0]+0.5)
+        cam_range_image[u,v] = max(depth[idx],int(cam_range_image[u,v][0]+0.5))
+    cam_range_image = cam_range_image.astype(np.uint8)
+    # cam_range_image = Image.fromarray(cam_range_image)
+    # cam_range_image.save('test.png')
+    # cam_range_image = np.array(cam_range_image)
     if out_path is not None:
+        cam_range_image = Image.fromarray(cam_range_image)
         cam_range_image.save(out_path)
-    cam_range_image = np.array(cam_range_image.resize(img_size+(3,)))
+        cam_range_image = np.array(cam_range_image)
     return cam_range_image
 
 
@@ -1360,6 +1377,69 @@ def get_depth_min_max(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_toke
     # return cam_front_img,box_list,now_hdmap,box_category,depth_cam_front_img,range_image,dense_range_image
     return dense_range_image.max(),dense_range_image.min()
 
+def get_global_pose(sample_token,nusc,inverse=False):
+    sample_record = nusc.get('sample',sample_token)
+    lidar_data_token = sample_record['data']['LIDAR_TOP']
+    lidar_data = nusc.get('sample_data',lidar_data_token)
+    sd_egopose = nusc.get('ego_pose',lidar_data['ego_pose_token'])
+    sd_lidar = nusc.get('calibrated_sensor',lidar_data['calibrated_sensor_token'])
+    if inverse is False:
+        global_from_ego = transform_matrix(sd_egopose['translation'],Quaternion(sd_egopose['rotation']),inverse=False)
+        ego_from_sensor = transform_matrix(sd_lidar['translation'],Quaternion(sd_lidar['rotation']),inverse=False)
+        pose = global_from_ego.dot(ego_from_sensor)
+    else:
+        sensor_from_ego = transform_matrix(sd_lidar['translation'],Quaternion(sd_lidar['rotation']),inverse=True)
+        ego_from_global = transform_matrix(sd_egopose['translation'],Quaternion(sd_egopose['rotation']),inverse=True)
+        pose = sensor_from_ego.dot(ego_from_global)
+    return pose
+
+def matrix_to_rotation_6d(matrix:torch.Tensor) -> torch.Tensor:
+    """
+    Converts rotation matrices to 6D rotation representation by Zhou et al. [1]
+    by dropping the last row. Note that 6D representation is not unique.
+    Args:
+        matrix: batch of rotation matrices of size (*, 3, 3)
+
+    Returns:
+        6D rotation representation, of size (*, 6)
+
+    [1] Zhou, Y., Barnes, C., Lu, J., Yang, J., & Li, H.
+    On the Continuity of Rotation Representations in Neural Networks.
+    IEEE Conference on Computer Vision and Pattern Recognition, 2019.
+    Retrieved from http://arxiv.org/abs/1812.07035
+    """
+    batch_dim = matrix.size()[:-2]
+    return matrix[...,:2,:].clone().reshape(batch_dim+(6,))
+
+def quaternion_to_matrix(quaternions:torch.Tensor) -> torch.Tensor:
+    """
+    Convert rotations given as quaternions to rotation matrices.
+
+    Args:
+        quaternions: quaternions with real part first,
+            as tensor of shape (..., 4).
+
+    Returns:
+        Rotation matrices as tensor of shape (..., 3, 3).
+    """
+    r, i, j, k = torch.unbind(quaternions, -1)
+    # pyre-fixme[58]: `/` is not supported for operand types `float` and `Tensor`.
+    two_s = 2.0 / (quaternions * quaternions).sum(-1)
+    o = torch.stack(
+        (
+            1 - two_s * (j * j + k * k),
+            two_s * (i * j - k * r),
+            two_s * (i * k + j * r),
+            two_s * (i * j + k * r),
+            1 - two_s * (i * i + k * k),
+            two_s * (j * k - i * r),
+            two_s * (i * k - j * r),
+            two_s * (j * k + i * r),
+            1 - two_s * (i * i + j * j),
+        ),
+        -1,
+    )
+    return o.reshape(quaternions.shape[:-1] + (3, 3))
 
 if __name__ == "__main__":
     # o3d.io.read_point_cloud("/storage/group/4dvlab/datasets/nuScenes/mini/samples/LIDAR_TOP/n008-2018-08-01-15-16-36-0400__LIDAR_TOP__1533151603547590.pcd.bin  n015-2018-10-02-10-50-40+0800__LIDAR_TOP__1538448744447639.pcd.bin")

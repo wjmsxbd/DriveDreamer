@@ -46,10 +46,10 @@ def load_video(video_path: Union[str, Path], num_frames: int = 10, return_tensor
         raise NotImplementedError("Video format Not implemented yet")
 
     frames = buffer
-    # if frames.shape[0] < num_frames:
-    #     temp = frames[:1]
-    #     temp = np.repeat(temp,repeats=num_frames - frames.shape[0],axis=0)
-    #     frames = np.concatenate([temp,frames],axis=0)
+    if frames.shape[0] < num_frames:
+        temp = frames[:1]
+        temp = np.repeat(temp,repeats=num_frames - frames.shape[0],axis=0)
+        frames = np.concatenate([temp,frames],axis=0)
     if num_frames:
         frame_indices = get_frame_indices(
             num_frames, len(frames), sample=sample

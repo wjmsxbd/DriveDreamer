@@ -589,8 +589,9 @@ class FrozenCLIPTextEmbedder(nn.Module):
             param.requires_grad = False
 
     def forward(self,text):
-        tokens = clip.tokenize(text).cuda()
+        tokens = clip.tokenize(text).to(next(self.parameters()).device)
         # tokens = clip.tokenize(text)
+        # print(f"model_device:{self.model.device},text:{text.device}")
         z = self.model.encode_text(tokens)
         if self.normalize:
             z = z / torch.linalg.norm(z,dim=1,keepdim=True)
@@ -660,24 +661,36 @@ class AutoencoderKL_Diffusion(pl.LightningModule):
         self.load_state_dict(sd, strict=False)
         print(f"Restored from {path}")
     
-    def encode(self,x):
-        h = self.encoder(x)
+    def encode(self,x,return_temp_output=False):
+        h = self.encoder(x,return_temp_output=return_temp_output)
+        if return_temp_output:
+            h,temp = h
         moments = self.quant_conv(h)
         posterior = DiagonalGuassianDistribution(moments)
+        if return_temp_output:
+            return posterior,temp
         return posterior
     
-    def decode(self,z):
+    def decode(self,z,return_temp_output=False):
         z = self.post_quant_conv(z)
+        if return_temp_output:
+            dec,_ = self.decoder(z,return_temp_output)
+            return dec,_
         dec = self.decoder(z)
         return dec
     
-    def forward(self,input,sample_posterior=True):
-        posterior = self.encode(input)
+    def forward(self,input,sample_posterior=True,return_temp_output=False):
+        posterior = self.encode(input,return_temp_output=return_temp_output)
+        if return_temp_output:
+            posterior,enc_temp = posterior
         if sample_posterior:
             z = posterior.sample()
         else:
             z = posterior.mode()
-        dec = self.decode(z)
+        dec = self.decode(z,return_temp_output=return_temp_output)
+        if return_temp_output:
+            dec,dec_temp = dec
+            return dec,posterior,enc_temp,dec_temp
         return dec,posterior
 
     #TODO:conver b h w c -> b c h w

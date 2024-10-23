@@ -143,7 +143,7 @@ class VQModel(pl.LightningModule):
         x = batch[k]
         if len(x.shape) == 3:
             x = x[..., None]
-        x = x.permute(0, 3, 1, 2).to(memory_format=torch.contiguous_format).float()
+        x = x.permute(0, 3, 1, 2).float()
         if self.batch_resize_range is not None:
             lower_size = self.batch_resize_range[0]
             upper_size = self.batch_resize_range[1]
@@ -381,7 +381,7 @@ class AutoencoderKL(pl.LightningModule):
         x = batch[k]
         if len(x.shape) == 3:
             x = x[...,None]
-        x = x.permute(0,3,1,2).to(memory_format=torch.contiguous_format).float()
+        x = x.permute(0,3,1,2).float()
         return x
     
     def training_step(self,batch,batch_idx,optimizer_idx):
@@ -701,7 +701,7 @@ class AutoencoderKL_Diffusion(pl.LightningModule):
         else:
             if len(x.shape) == 3:
                 x = x[...,None]
-            x = x.permute(0,3,1,2).to(memory_format=torch.contiguous_format).float()
+            x = x.permute(0,3,1,2).float()
         return x
     
     def training_step(self,batch,batch_idx,optimizer_idx):
@@ -949,7 +949,7 @@ class AutoencoderKL_Temporal(pl.LightningModule):
         else:
             if len(x.shape) == 3:
                 x = x[...,None]
-            x = x.permute(0,3,1,2).to(memory_format=torch.contiguous_format).float()
+            x = x.permute(0,3,1,2).float()
         return x
     
     def training_step(self,batch,batch_idx,optimizer_idx):
@@ -1136,7 +1136,7 @@ class Autoencoder_Lidar(pl.LightningModule):
         x = batch[k]
         if len(x.shape) == 3:
             x = x[...,None]
-        x = x.permute(0,3,1,2).to(memory_format=torch.contiguous_format).float()
+        x = x.permute(0,3,1,2).float()
         return x
     
     def training_step(self,batch,batch_idx):
@@ -1339,7 +1339,7 @@ class Autoencoder_Lidar2(pl.LightningModule):
         else:
             if len(x.shape) == 3:
                 x = x[...,None]
-            x = x.permute(0,3,1,2).to(memory_format=torch.contiguous_format).float()
+            x = x.permute(0,3,1,2).float()
         return x
     
     def training_step(self,batch,batch_idx,optimizer_idx):
@@ -1556,7 +1556,7 @@ class Autoencoder_Lidar3(pl.LightningModule):
         else:
             if len(x.shape) == 3:
                 x = x[...,None]
-            x = x.permute(0,3,1,2).to(memory_format=torch.contiguous_format).float()
+            x = x.permute(0,3,1,2).float()
         return x
     
     def training_step(self,batch,batch_idx,optimizer_idx):

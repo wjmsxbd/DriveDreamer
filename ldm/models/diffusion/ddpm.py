@@ -4007,14 +4007,18 @@ class AutoDM_GlobalCondition2(DDPM):
             batch['bev_images'] = bev_images
         if '3Dbox' in condition_keys:
             boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d').contiguous()
+            boxes_mask = torch.ones((boxes.shape[:2]+(1,)),device=boxes.device)
             boxes_category = np.zeros((len(batch['category']),self.movie_len,len(batch['category'][0][0]),768))
             for i in range(len(batch['category'])):
                 for j in range(self.movie_len):
                     for k in range(len(batch['category'][0][0])):
+                        if batch['category'][i][j][k] == 'None':
+                            boxes_mask[b*i+j,k] = 0
                         boxes_category[i][j][k] = self.category[batch['category'][i][j][k]]
             boxes_category = boxes_category.reshape(b*self.movie_len,len(batch['category'][0][0]),768)
             boxes_category = torch.tensor(boxes_category).to(self.device)
             batch['3Dbox'] = boxes
+            batch['boxes_mask'] = boxes_mask
             batch['category'] = boxes_category
         if 'text' in condition_keys:
             text = np.zeros((len(batch['text']),self.movie_len,768))
@@ -4089,14 +4093,18 @@ class AutoDM_GlobalCondition2(DDPM):
         if '3Dbox' in condition_keys:
             boxes = rearrange(batch['3Dbox'],'b n c d -> (b n) c d').contiguous()
             boxes_category = np.zeros((len(batch['category']),self.movie_len,len(batch['category'][0][0]),768))
+            boxes_mask = torch.ones((boxes.shape[:2]+(1,)),device=boxes.device)
             for i in range(len(batch['category'])):
                 for j in range(self.movie_len):
                     for k in range(len(batch['category'][0][0])):
+                        if batch['category'][i][j][k] == 'None':
+                            boxes_mask[b*i+j,k] = 0
                         boxes_category[i][j][k] = self.category[batch['category'][i][j][k]]
             boxes_category = boxes_category.reshape(b*self.movie_len,len(batch['category'][0][0]),768)
             boxes_category = torch.tensor(boxes_category).to(self.device)
             batch['3Dbox'] = boxes
             batch['category'] = boxes_category
+            batch['boxes_mask'] = boxes_mask
         if 'text' in condition_keys:
             text = np.zeros((len(batch['text']),self.movie_len,768))
             for i in range(len(batch['text'])):

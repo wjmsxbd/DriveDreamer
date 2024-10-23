@@ -28,6 +28,11 @@ import time
 import concurrent.futures
 import threading
 
+def expand_dims_like(x,y):
+    while x.dim() != y.dim():
+        x = x.unsqueeze(-1)
+    return x
+
 class GlobalCondition(pl.LightningModule):
     def __init__(self,
                  image_config,
@@ -37,6 +42,7 @@ class GlobalCondition(pl.LightningModule):
                  scale_factor=1.,
                  learning_rate=None,
                  action_encoder_config=None,
+                 ucg_rate=0.15,
                  *args,**kwargs,
                  ):
         super().__init__()
@@ -64,6 +70,8 @@ class GlobalCondition(pl.LightningModule):
             #     if 'encoder' in name or ('quant_conv' in name and not 'post_quant_conv' in name):
             #         param.requires_grad=False
         self.box_encoder = instantiate_from_config(box_config)
+        self.ucg_rate = ucg_rate
+        self.ucg_prng = np.random.RandomState()
         if split_input_params:
             self.split_input_params = split_input_params
         self.scale_factor = scale_factor
@@ -317,6 +325,18 @@ class GlobalCondition(pl.LightningModule):
             bev_image = batch['bev_images']
             bev_image = self.get_first_stage_encoding(self.encode_first_stage(bev_image,self.image_model))
             out['bev_images'] = bev_image
+        
+        for key in out.keys():
+            if key == 'boxes_emb':
+                for i in range(out[key].shape[0]):
+                    if self.ucg_prng.choice(2,p=[1-self.ucg_rate,self.ucg_rate]):
+                        continue
+                    else:
+                        out[key][i] = torch.zeros_like(out[key][0],device=out[key].device)
+            else:
+                out[key] = expand_dims_like(torch.bernoulli((1. - self.ucg_rate) * torch.ones(out[key].shape[0],device=out[key].device)),out[key]) * out[key]
+        out['boxes_emb'] = out['boxes_emb'] * batch['boxes_mask']
+
         return out
     
     def calc_single_similarity(self,cam_enc,lidar_enc,use_similar):

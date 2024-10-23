@@ -70,4 +70,4 @@ lightning:
 
   trainer:
     benchmark: True
-    gpus: 0,1,2,3
+    gpus: 0,

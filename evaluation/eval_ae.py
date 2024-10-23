@@ -560,7 +560,7 @@ if __name__ == "__main__":
     if device == 'cuda':
         print(f"now_process:{local_rank}")
         network = network.eval().to(f'cuda:{cuda_id[local_rank]}')
-    save_path = '/storage/group/4dvlab/wangjm2024/all_pics/'
+    save_path = 'all_pics/'
     save_path = os.path.join(save_path,path_type)
 
     cam_real_save_path = save_path + '/cam_inputs/'
@@ -593,6 +593,8 @@ if __name__ == "__main__":
     for _,batch in tqdm(enumerate(data_loader_)):
         idx = batch['index']
         del batch['index']
+        if _ > 1023:
+            break
         if device == 'cuda':
             batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
         if not video_eval and not only_camera:
@@ -645,17 +647,17 @@ if __name__ == "__main__":
         # # save_tensor_as_video(logs['lidar_reconstruction'],file_path=lidar_rec_save_path+f'lidar_samples{_:02d}.gif')
         # # save_tensor_as_video(logs['lidar_inputs'],file_path=lidar_real_save_path+f'lidar_inputs{_:02d}.gif')
 
-        if not video_eval and not only_camera:
-            point_loss = calc_point_cloud_distance(gt_lidar_point,logs['lidar_inputs'],logs['lidar_reconstruction'],movie_len=data_loader.movie_len).numpy()
-            point_losses.append(point_loss)
+        # if not video_eval and not only_camera:
+        #     point_loss = calc_point_cloud_distance(gt_lidar_point,logs['lidar_inputs'],logs['lidar_reconstruction'],movie_len=data_loader.movie_len).numpy()
+        #     point_losses.append(point_loss)
 
         # if _>1:
         #     break
     dist.barrier()
     if rank==0:
-        if not video_eval and not only_camera:
-            point_losses = np.vstack(point_losses)
-            print(f"point loss mean:{np.mean(point_losses)}")
+        # if not video_eval and not only_camera:
+        #     point_losses = np.vstack(point_losses)
+        #     print(f"point loss mean:{np.mean(point_losses)}")
         if not video_eval:
             # if not only_camera:
             #     real_features = np.vstack(real_features)

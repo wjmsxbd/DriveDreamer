@@ -408,7 +408,7 @@ class PipeLineActionFormer(pl.LightningModule):
         # if len(x.shape) == 4:
         #     x = x.unsqueeze(1)
         x = rearrange(x,'b n h w c -> (b n) c h w')
-        x = x.to(memory_format=torch.contiguous_format).float()
+        x = x.float()
         return x
 
     def training_step(self,batch,batch_idx):
@@ -1094,7 +1094,7 @@ class PipeLineActionFormer5(pl.LightningModule):
         # if len(x.shape) == 4:
         #     x = x.unsqueeze(1)
         x = rearrange(x,'b n h w c -> (b n) c h w')
-        x = x.to(memory_format=torch.contiguous_format).float()
+        x = x.float()
         return x
 
     def training_step(self,batch,batch_idx):
@@ -1823,7 +1823,7 @@ class PipeLineActionFormer9(pl.LightningModule):
     def get_input(self,batch,k):
         x = batch[k]
         x = rearrange(x,'b n h w c -> (b n) c h w')
-        x = x.to(memory_format=torch.contiguous_format).float()
+        x = x.float()
         return x
     
     def init_from_ckpt(self,path,ignore_keys=list(),only_model=False):

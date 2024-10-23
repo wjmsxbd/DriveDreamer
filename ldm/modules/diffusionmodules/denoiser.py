@@ -99,7 +99,7 @@ class Denoiser(nn.Module):
 
                     boxes_emb = torch.cat([latent_boxes,latent_boxes],dim=0)
                     z = torch.cat([x,latent_hdmap],dim=1)
-                    lidar_z = torch.cat([range_image,latent_dense_range_image],dim=1)
+                    lidar_z = torch.cat([range_image,latent_hdmap],dim=1)
                     actions = None
                 elif not 'hdmap' in condition_keys and not 'dense_range_image' in condition_keys:
                     z = x

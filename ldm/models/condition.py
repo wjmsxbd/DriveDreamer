@@ -336,8 +336,10 @@ class GlobalCondition(pl.LightningModule):
             else:
                 out[key] = expand_dims_like(torch.bernoulli((1. - self.ucg_rate) * torch.ones(out[key].shape[0],device=out[key].device)),out[key]) * out[key]
         out['boxes_emb'] = out['boxes_emb'] * batch['boxes_mask']
-
-        return out
+        if 'range_image' in condition_keys:
+            return ref_image,range_image,out
+        else:
+            return ref_image,out
     
     def calc_single_similarity(self,cam_enc,lidar_enc,use_similar):
         eps = 1e-7
@@ -429,7 +431,7 @@ class GlobalCondition(pl.LightningModule):
         print("### USING STD-RESCALING ###")
         ref_img = batch['reference_image']
         ref_img = rearrange(ref_img,'b n h w c -> (b n) c h w')
-        ref_img = ref_img.to(memory_format=torch.contiguous_format).float()
+        ref_img = ref_img.float()
         z = self.get_first_stage_encoding(self.encode_first_stage(ref_img,self.image_model)).detach()
         del self.scale_factor
         self.register_buffer('scale_factor',1. / z.flatten().std())
@@ -459,4 +461,129 @@ class GlobalCondition(pl.LightningModule):
             self.lidar_model.learning_rate = learning_rate
         
 
+
+
+class AR_Condition(pl.LightningModule):
+    def __init__(self,
+                 image_config,
+                 lidar_config,
+                 box_config,
+                 scale_factor=1.,
+                 ucg_rate=0.15,
+                 action_encoder_config=None,):
+        super().__init__()
+        self.image_model = instantiate_from_config(image_config)
+        self.lidar_model = instantiate_from_config(lidar_config)
+        if not self.image_model.trainable:
+            self.image_model = self.image_model.eval()
+            for param in self.image_model.parameters():
+                param.requires_grad = False
+        else:
+            assert 0,'image model not trainable'
+
+        if not self.lidar_model.trainable:
+            self.lidar_model = self.lidar_model.eval()
+            for param in self.lidar_model.parameters():
+                param.requires_grad = False
+        else:
+            assert 0,'lidar model not trainable'
+        
+        self.box_encoder = instantiate_from_config(box_config)
+        self.scale_factor = scale_factor
+        self.ucg_rate = ucg_rate
+        self.ucg_prng = np.random.RandomState()
+        if not action_encoder_config is None:
+            self.action_encoder = instantiate_from_config(action_encoder_config)
+        else:
+            self.action_encoder = None
+
+    def get_first_stage_encoding(self,encoder_posterior):
+        if isinstance(encoder_posterior,DiagonalGuassianDistribution):
+            z = encoder_posterior.sample()
+        elif isinstance(encoder_posterior,torch.Tensor):
+            z = encoder_posterior
+        else:
+            raise NotImplementedError(f"encoder_posterior of type '{type(encoder_posterior)}'")
+        return z
+    
+    def get_parameters(self):
+        param = list()
+        if self.lidar_model.trainable:
+            param = param + list(self.lidar_model.decoder.parameters())
+        if self.image_model.trainable:
+            param = param + list(self.image_model.decoder.parameters())
+        if self.box_encoder.trainable:
+            param = param + list(self.box_encoder.parameters())
+        if not self.action_encoder is None and self.action_encoder.trainable:
+            print("add action encoder paramters")
+            param = param + list(self.action_encoder.parameters())
+        
+        return param
+
+    def encode_first_stage(self,x,encoder):
+        return encoder.encode(x)
+    
+    def decode_first_stage_interface(self,model_name,z,predict_cids=False,force_not_quantize=False):
+        if model_name == 'reference_image':
+            return self.decode_first_stage(self.image_model,z,predict_cids,force_not_quantize)
+        elif model_name == 'lidar':
+            return self.decode_first_stage(self.lidar_model,z,predict_cids,force_not_quantize)
+        else:
+            raise NotImplementedError
+        
+    def decode_first_stage(self,model,z,predict_cids=False,force_not_quantize=False):
+        if predict_cids:
+            if z.dim() == 4:
+                z = torch.argmax(z.exp(),dim=1).long()
+            z = model.quantize.get_codebook_entry(z, shape=None)
+            z = rearrange(z, 'b h w c -> b c h w').contiguous()
+        z = 1. / self.scale_factor * z
+
+    def get_conditions(self,batch):
+        condition_keys = batch.keys()
+        out = {}
+        ref_image = batch['reference_image']
+        z = self.encode_first_stage(ref_image,self.image_model)
+        ref_image = self.get_first_stage_encoding(z)
+        out['ref_image'] = ref_image
+        if 'HDmap' in condition_keys:
+            hdmap = batch['HDmap']
+            hdmap = self.encode_first_stage(self.encode_first_stage(hdmap,self.image_model))
+            out['hdmap'] = hdmap
+        if 'range_image' in condition_keys:
+            range_image = batch['range_image']
+            lidar_z = self.encode_first_stage(range_image,self.lidar_model)
+            range_image = self.get_first_stage_encoding(lidar_z)
+            out['range_image'] = range_image
+        if 'dense_range_image' in condition_keys:
+            dense_range_image = batch['dense_range_image']
+            dense_range_image = self.get_first_stage_encoding(self.encode_first_stage(dense_range_image,self.lidar_model))
+            out['dense_range_image'] = dense_range_image
+        if '3Dbox' in condition_keys:
+            boxes = batch['3Dbox']
+            box_category = batch['category']
+            boxes_emb = self.box_encoder(boxes,box_category)
+            out['boxes_emb'] = boxes_emb
+        if 'text' in condition_keys:
+            text_emb = batch['text']
+            out['text_emb'] = text_emb
+        if 'actions' in condition_keys:
+            actions = batch['actions']
+            if not self.action_encoder is None:
+                actions_embed = self.action_encoder(actions)
+            else:
+                actions_embed = actions
+            out['actions'] = actions_embed
+        for key in out.keys():
+            if key == 'boxes_emb':
+                for i in range(out[key].shape[0]):
+                    if self.ucg_prng.choice(2,p=[1-self.ucg_rate,self.ucg_rate]):
+                        continue
+                    else:
+                        out[key] = torch.zeros_like(out[key][0],device=out[key].device)
+            else:
+                out[key] = expand_dims_like(torch.bernoulli((1. - self.ucg_rate) * torch.ones(out[key].shape[0],device=out[key].device)),out[key]) * out[key]
+        if 'boxes_mask' in condition_keys:
+            out['boxes_emb'] = out['boxes_emb'] * batch['boxes_mask']
+        return out
 

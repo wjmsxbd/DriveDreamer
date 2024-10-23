@@ -12,9 +12,9 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-                // "--base","configs/svd_debug.yaml",
+                // "--base","configs/svd_range_ca.yaml",
                 // "--train","True"
-                "--device","cpu","--train"
+                // "--device","cpu","--train"
             ]
         }
     ]

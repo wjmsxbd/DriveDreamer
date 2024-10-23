@@ -964,7 +964,7 @@ def project_to_camera(nusc,sample_token,img_size=(128,256),min_dist=1.0,out_path
     points = points.transpose(1,0)
     for idx in range(points.shape[0]):
         u,v = int(points[idx][1]+0.5),int(points[idx][0]+0.5)
-        cam_range_image[u,v] = max(depth[idx],int(cam_range_image[u,v][0]+0.5))
+        cam_range_image[u,v] = max(int(depth[idx]+0.5),cam_range_image[u,v][0])
     cam_range_image = cam_range_image.astype(np.uint8)
     # cam_range_image = Image.fromarray(cam_range_image)
     # cam_range_image.save('test.png')

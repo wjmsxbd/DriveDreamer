@@ -17,6 +17,9 @@ from pyquaternion import Quaternion
 from nuscenes.utils.data_classes import LidarPointCloud, Box
 from nuscenes.utils.geometry_utils import view_points
 from ldm.modules.losses.discriminator import hinge_d_loss,adopt_weight,new_d_loss,vanilla_new_d_loss,vanilla_d_loss
+from ldm.modules.diffusionmodules.util import make_beta_schedule,extract_into_tensor
+from functools import partial
+from ldm.util import exists,default
 
 class StandardDiffusionLoss(nn.Module):
     def __init__(
@@ -326,5 +329,6 @@ class StandardDiffusionLoss(nn.Module):
             raise NotImplementedError(f"Unknown loss type {self.loss_type}")
             
 
+        
 
 

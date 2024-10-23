@@ -32,6 +32,7 @@ from ldm.models.attention import PositionalEncoder
 from ldm.modules.diffusionmodules.util import extract_into_tensor
 import omegaconf
 import time
+import copy
 from typing import Iterable,List,Union,Optional
 from ldm.modules.diffusionmodules.openaimodel import UNetModel,VideoUNet
 
@@ -366,7 +367,7 @@ class DDPM(pl.LightningModule):
         # if len(x.shape) == 4:
         #     x = x.unsqueeze(1)
         x = rearrange(x,'b n h w c -> (b n) c h w')
-        x = x.to(memory_format=torch.contiguous_format).float()
+        x = x.float()
         return x
     
     def shared_step(self,batch):
@@ -4034,14 +4035,12 @@ class AutoDM_GlobalCondition2(DDPM):
             batch['actions'] = batch['actions']
         batch = {k:v.to(torch.float32) for k,v in batch.items()}
 
-        condition_out = self.global_condition.get_conditions(batch)
-        condition_keys = condition_out.keys()
-        z = condition_out['ref_image']
         if 'range_image' in condition_keys:
-            lidar_z = condition_out['range_image']
+            z,lidar_z,condition_out = self.global_condition.get_conditions(batch)
         else:
+            z,out = self.global_condition.get_conditions(batch)
             lidar_z = None
-        
+        condition_keys = condition_out.keys()
         out = [z,lidar_z]
         c = {}
         if 'hdmap' in condition_keys:
@@ -4060,8 +4059,8 @@ class AutoDM_GlobalCondition2(DDPM):
             c['cam_enc'] = out['cam_enc']
         if 'lidar_enc' in condition_keys:
             c['lidar_enc'] = out['lidar_enc']
-        c['origin_x'] = condition_out['ref_image'][::self.movie_len]
-        c['origin_range'] = condition_out['range_image'][::self.movie_len]
+        c['origin_x'] = copy.deepcopy(condition_out['ref_image'][::self.movie_len])
+        c['origin_range'] = copy.deepcopy(condition_out['range_image'][::self.movie_len])
         if return_first_stage_outputs:
             x_rec = self.global_condition.decode_first_stage_interface("reference_image",z)
             if lidar_z is None:
@@ -4118,13 +4117,12 @@ class AutoDM_GlobalCondition2(DDPM):
         if 'actions' in condition_keys:
             batch['actions'] = batch['actions']
         batch = {k:v.to(torch.float32) for k,v in batch.items()}
-        out = self.global_condition.get_conditions(batch,self.calc_decoder_loss)
-        condition_keys = out.keys()
-        if 'range_image' in out.keys():
-            range_image = out['range_image']
+        if 'range_image' in condition_keys:
+            x,range_image,out = self.global_condition.get_conditions(batch)
         else:
+            x,out = self.global_condition.get_conditions(batch)
             range_image = None
-        x = out['ref_image'].to(torch.float32)
+        condition_keys = out.keys()
         c = {}
         if 'hdmap' in condition_keys:
             c['hdmap'] = out['hdmap'].to(torch.float32)
@@ -4143,8 +4141,8 @@ class AutoDM_GlobalCondition2(DDPM):
         if 'lidar_enc' in condition_keys:
             c['lidar_enc'] = out['lidar_enc']
         c['origin_range_image'] = range_image
-        c['origin_x'] = out['ref_image'][::self.movie_len]
-        c['origin_range'] = out['range_image'][::self.movie_len]
+        c['origin_x'] = copy.deepcopy(out['ref_image'][::self.movie_len])
+        c['origin_range'] = copy.deepcopy(out['range_image'][::self.movie_len])
         if self.calc_decoder_loss:
             x_rec,cam_dec = self.global_condition.decode_first_stage_interface("reference_image",x,calc_decoder_loss=self.calc_decoder_loss)
             lidar_rec,lidar_dec = self.global_condition.decode_first_stage_interface('lidar',range_image,calc_decoder_loss=self.calc_decoder_loss)
@@ -4927,6 +4925,8 @@ class AutoDM_GlobalCondition2(DDPM):
         log['samples'] = x_samples.reshape((b,-1)+x_samples.shape[1:])
         log['lidar_samples'] = lidar_sample.reshape((b,-1)+lidar_sample.shape[1:])
         return log
+
+
 
 if __name__ == '__main__':
     import argparse

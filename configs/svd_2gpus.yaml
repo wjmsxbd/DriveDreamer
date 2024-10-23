@@ -1,5 +1,5 @@
 model:
-  base_learning_rate: 1.e-6
+  base_learning_rate: 5e-6
   target: ldm.models.diffusion.ddpm.AutoDM_GlobalCondition2
   params:
     base_learning_rate: 1e-7
@@ -46,7 +46,7 @@ model:
     loss_fn_config:
       target: ldm.modules.diffusionmodules.loss.StandardDiffusionLoss
       params:
-        use_additional_loss: True
+        use_additional_loss: False
         offset_noise_level: 0.02
         additional_loss_weight: 0.1
         movie_len: 5
@@ -92,7 +92,7 @@ model:
         use_linear_in_transformer: True
         transformer_depth: 1
         context_dim: 1024
-        spatial_transformer_attn_type: softmax_xformers
+        spatial_transformer_attn_type: softmax
         extra_ff_mix_layer: True
         use_spatial_context: True
         merge_strategy: learned_with_images
@@ -100,7 +100,8 @@ model:
         add_lora: False
         action_control: False
         # safetensor_path: stable_diffusion/svd_xt.safetensors
-        ckpt_path: logs/2024-09-21T18-04-18_svd/checkpoints/last.ckpt
+        ckpt_path: logs/2024-09-29T18-44-15_svd_2gpus/checkpoints/epoch=000010.ckpt
+        # ckpt_path: logs/2024-09-21T18-04-18_svd/checkpoints/last.ckpt
         ignore_keys: []
 
     actionformer_config:
@@ -212,8 +213,8 @@ data:
       target: data.dataloader_predict_video.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
           img_size: [256,128]
           nusc_canbus_frequency: 50
           camera_frequency: 12
@@ -226,8 +227,8 @@ data:
       target: data.dataloader_predict_video.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
           img_size: [256,128]
           nusc_canbus_frequency: 50
           camera_frequency: 12
@@ -242,7 +243,7 @@ lightning:
     video_logger:
       target: main.VideoLogger
       params:
-        batch_frequency: 2000
+        batch_frequency: 1000
         max_videos: 8
         fps: 5
         increase_log_steps: False
@@ -250,7 +251,8 @@ lightning:
   trainer:
     benchmark: True
     # gpus: 0,1,2,3
-    device: 8
-    gpus: 0,1,2,3
-    num_nodes: 2
+    # device: 8
+    # gpus: 0,1,2,3
+    # num_nodes: 2
+    gpus: 0,
     distributed_backend: ddp

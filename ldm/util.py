@@ -13,6 +13,11 @@ from PIL import Image,ImageDraw,ImageFont
 
 to_cpu = lambda tensor: tensor.detach().cpu().numpy()
 
+def disabled_train(self,mode=True):
+    """Overwrite model.train with this function to make sure train/eval mode
+    does not change anymore."""
+    return self
+
 def append_zero(x):
     return torch.cat((x, x.new_zeros([1])))
 

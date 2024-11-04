@@ -24,7 +24,7 @@ from torchvision.utils import make_grid
 from pytorch_lightning.utilities.distributed import rank_zero_only
 from ldm.util import log_txt_as_img,exists,default,ismap,isimage,mean_flat, count_params, instantiate_from_config,to_cpu
 from ldm.modules.ema import LitEma
-from ldm.modules.distributions.distributions import normal_kl, DiagonalGuassianDistribution
+from ldm.modules.distributions.distributions import normal_kl, DiagonalGaussianDistribution
 from ldm.models.autoencoder import AutoencoderKL,VQModelInterface
 from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
 from ldm.models.diffusion.ddim import DDIMSampler
@@ -733,7 +733,7 @@ class AutoDM(DDPM):
         return fold,unfold,normalization,weighting
     
     def get_first_stage_encoding(self,encoder_posterior):
-        if isinstance(encoder_posterior,DiagonalGuassianDistribution):
+        if isinstance(encoder_posterior,DiagonalGaussianDistribution):
             z = encoder_posterior.sample()
         elif isinstance(encoder_posterior,torch.Tensor):
             z = encoder_posterior

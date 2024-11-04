@@ -7,7 +7,7 @@ import functools
 import torch.nn as nn
 import torch
 from ldm.modules.attention import CrossAttention
-from taming.modules.util import ActNorm
+# from taming.modules.util import ActNorm
 from einops import rearrange
 from ldm.util import instantiate_from_config
 from torch.optim.lr_scheduler import LambdaLR

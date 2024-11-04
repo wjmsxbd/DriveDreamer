@@ -39,8 +39,8 @@ class BaseDiffusionSampler:
         s_in = x.new_ones([x.shape[0]])
         return x, s_in, sigmas, num_sigmas, cond, uc
 
-    def denoise(self, cond_x,cond_range_image, denoiser, sigma, cond, cond_mask, uc):
-        denoised = denoiser(*self.guider.prepare_inputs(cond_x,cond_range_image, sigma, cond, cond_mask, uc))
+    def denoise(self, x, denoiser, sigma, cond, uc):
+        denoised = denoiser(*self.guider.prepare_inputs(x, sigma, cond, uc))
         denoised = self.guider(denoised, sigma)
         return denoised
 
@@ -75,26 +75,14 @@ class EulerEDMSampler(SingleStepDiffusionSampler):
         self.s_tmax = s_tmax
         self.s_noise = s_noise
 
-    def sampler_step(self, sigma, next_sigma, denoiser, cond_x,cond_range_image, cond, cond_mask=None, uc=None, gamma=0.0):
+    def sampler_step(self, sigma, next_sigma, denoiser, x, cond, uc=None, gamma=0.0):
         sigma_hat = sigma * (gamma + 1.0)
         if gamma > 0:
-            eps = torch.randn_like(cond_x) * self.s_noise
-            if cond_range_image is None:
-                cond_x = cond_x + eps * append_dims(sigma_hat ** 2 - sigma ** 2,cond_x.ndim) ** 0.5
-            else:
-                cond_x = cond_x + eps * append_dims(sigma_hat ** 2 - sigma ** 2,cond_x.ndim) ** 0.5
-                cond_range_image = cond_range_image + eps * append_dims(sigma_hat ** 2 - sigma ** 2,cond_range_image.ndim) ** 0.5
+            eps = torch.randn_like(x) * self.s_noise
+            x = x + eps * append_dims(sigma_hat**2 - sigma**2,x.ndim) ** 0.5
+            
 
-        denoised = self.denoise(cond_x,cond_range_image, denoiser, sigma_hat, cond, cond_mask, uc)
-        if not cond_range_image is None:
-            x = torch.cat([cond_x,cond_range_image],dim=0)
-            sigma_hat = torch.cat([sigma_hat,sigma_hat],dim=0)
-            next_sigma = torch.cat([next_sigma,next_sigma],dim=0)
-        else:
-            x = cond_x
-        
-        # sigma_hat = torch.cat([sigma_hat,sigma_hat],dim=0)
-        # next_sigma = torch.cat([next_sigma,next_sigma],dim=0)
+        denoised = self.denoise(x, denoiser, sigma_hat, cond, uc)
         d = to_d(x, sigma_hat, denoised)
         dt = append_dims(next_sigma - sigma_hat, x.ndim)
 
@@ -107,21 +95,10 @@ class EulerEDMSampler(SingleStepDiffusionSampler):
             x,  # x is randn
             cond,
             uc=None,
-            cond_x=None,
-            cond_range_image=None,
-            cond_mask=None,
-            num_steps=None
+            num_steps=None,
     ):
         x, s_in, sigmas, num_sigmas, cond, uc = self.prepare_sampling_loop(x, cond, uc, num_steps)
-        replace_cond_frames = cond_mask is not None and cond_mask.any()
-        x_x,range_x = x,x
         for i in self.get_sigma_gen(num_sigmas):
-            if replace_cond_frames:
-                cond_x = x_x * append_dims(1 - cond_mask, x.ndim) + cond_x * append_dims(cond_mask, cond_x.ndim)
-                if not cond_range_image is None:
-                    cond_range_image = range_x * append_dims(1 - cond_mask,x.ndim) + cond_range_image * append_dims(cond_mask,cond_range_image.ndim)
-                else:
-                    cond_range_image = None
             gamma = (
                 min(self.s_churn / (num_sigmas - 1), 2 ** 0.5 - 1)
                 if self.s_tmin <= sigmas[i] <= self.s_tmax
@@ -131,26 +108,9 @@ class EulerEDMSampler(SingleStepDiffusionSampler):
                 s_in * sigmas[i],
                 s_in * sigmas[i + 1],
                 denoiser,
-                cond_x,
-                cond_range_image,
+                x,
                 cond,
-                cond_mask,
                 uc,
                 gamma
             )
-            if not cond_range_image is None:
-                x_x,range_x = torch.chunk(x,2,0)
-            else:
-                x_x = x
-        if replace_cond_frames:
-            # assert cond_range_image is None
-            if cond_range_image is None:
-                x_rec = x
-                x_rec = x_rec * append_dims(1-cond_mask,x_rec.ndim) + cond_x * append_dims(cond_mask,cond_x.ndim)
-                x = x_rec
-            else:
-                x_rec,range_rec = torch.chunk(x,2,dim=0)
-                x_rec = x_rec * append_dims(1-cond_mask,x_rec.ndim) + cond_x * append_dims(cond_mask,cond_x.ndim)
-                range_rec = range_rec * append_dims(1-cond_mask,range_rec.ndim) + cond_range_image * append_dims(cond_mask,range_rec.ndim)
-                x = torch.cat([x_rec,range_rec],dim=0)
         return x

@@ -89,6 +89,7 @@ def make_beta_schedule(schedule, n_timestep, linear_start=1e-4, linear_end=2e-2,
         raise ValueError(f"schedule '{schedule}' unknown.")
     return betas.numpy()
 
+
 def make_ddim_timesteps(ddim_discr_method, num_ddim_timesteps, num_ddpm_timesteps, verbose=True):
     if ddim_discr_method == 'uniform':
         c = num_ddpm_timesteps // num_ddim_timesteps
@@ -105,6 +106,7 @@ def make_ddim_timesteps(ddim_discr_method, num_ddim_timesteps, num_ddpm_timestep
         print(f'Selected timesteps for ddim sampler: {steps_out}')
     return steps_out
 
+
 def make_ddim_sampling_parameters(alphacums, ddim_timesteps, eta, verbose=True):
     # select alphas for computing the variance schedule
     alphas = alphacums[ddim_timesteps]
@@ -118,17 +120,33 @@ def make_ddim_sampling_parameters(alphacums, ddim_timesteps, eta, verbose=True):
               f'this results in the following sigma_t schedule for ddim sampler {sigmas}')
     return sigmas, alphas, alphas_prev
 
-def extract_into_tensor(a,t,x_shape):
-    b,*_ = t.shape
-    out = a.gather(-1,t)
-    return out.reshape(b,*((1,) * (len(x_shape) - 1)))
 
-def noise_like(shape,device,repeat=False):
-    repeat_noise = lambda: torch.randn((1,*shape[1:]),device=device).repeat(shape[0],*((1,) * (len(shape) - 1)))
-    noise = lambda: torch.randn(shape,device=device)
-    return repeat_noise() if repeat else noise()
+def betas_for_alpha_bar(num_diffusion_timesteps, alpha_bar, max_beta=0.999):
+    """
+    Create a beta schedule that discretizes the given alpha_t_bar function,
+    which defines the cumulative product of (1-beta) over time from t = [0,1].
+    :param num_diffusion_timesteps: the number of betas to produce.
+    :param alpha_bar: a lambda that takes an argument t from 0 to 1 and
+                      produces the cumulative product of (1-beta) up to that
+                      part of the diffusion process.
+    :param max_beta: the maximum beta to use; use values lower than 1 to
+                     prevent singularities.
+    """
+    betas = []
+    for i in range(num_diffusion_timesteps):
+        t1 = i / num_diffusion_timesteps
+        t2 = (i + 1) / num_diffusion_timesteps
+        betas.append(min(1 - alpha_bar(t2) / alpha_bar(t1), max_beta))
+    return np.array(betas)
 
-def checkpoint(func,inputs,params,flag):
+
+def extract_into_tensor(a, t, x_shape):
+    b, *_ = t.shape
+    out = a.gather(-1, t)
+    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+
+
+def checkpoint(func, inputs, params, flag):
     """
     Evaluate a function without caching intermediate activations, allowing for
     reduced memory at the expense of extra compute in the backward pass.
@@ -140,10 +158,11 @@ def checkpoint(func,inputs,params,flag):
     """
     if flag:
         args = tuple(inputs) + tuple(params)
-        return CheckpointFunction.apply(func,len(inputs),*args)
+        return CheckpointFunction.apply(func, len(inputs), *args)
     else:
         return func(*inputs)
-    
+
+
 class CheckpointFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, run_function, length, *args):
@@ -157,22 +176,13 @@ class CheckpointFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, *output_grads):
-        # print("input tensors:")
-        # print(ctx.input_tensors)
-        # input_tensor_shape = [x.shape for x in ctx.input_tensors if not x is None]
-        # print(input_tensor_shape)
-        # print("input params")
-        # print(ctx.input_params)
-        # param_shape = [x.shape for x in ctx.input_params]
-        # print(param_shape)
-        ctx.input_tensors = [x.detach().requires_grad_(True) if not x is None else None for x in ctx.input_tensors]
+        ctx.input_tensors = [x.detach().requires_grad_(True) for x in ctx.input_tensors]
         with torch.enable_grad():
             # Fixes a bug where the first op in run_function modifies the
             # Tensor storage in place, which is not allowed for detach()'d
             # Tensors.
-            shallow_copies = [x.view_as(x) if not x is None else None for x in ctx.input_tensors]
+            shallow_copies = [x.view_as(x) for x in ctx.input_tensors]
             output_tensors = ctx.run_function(*shallow_copies)
-        ctx.input_tensors = [x if not x is None else torch.tensor([0.],requires_grad=True) for x in ctx.input_tensors]
         input_grads = torch.autograd.grad(
             output_tensors,
             ctx.input_tensors + ctx.input_params,
@@ -183,9 +193,9 @@ class CheckpointFunction(torch.autograd.Function):
         del ctx.input_params
         del output_tensors
         return (None, None) + input_grads
-    
 
-def timestep_embedding(timesteps,dim,max_period=10000,repeat_only=False,):
+
+def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):
     """
     Create sinusoidal timestep embeddings.
     :param timesteps: a 1-D Tensor of N indices, one per batch element.
@@ -197,15 +207,16 @@ def timestep_embedding(timesteps,dim,max_period=10000,repeat_only=False,):
     if not repeat_only:
         half = dim // 2
         freqs = torch.exp(
-            -math.log(max_period) * torch.arange(start=0,end=half,dtype=torch.float32) / half
+            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
         ).to(device=timesteps.device)
-        args = timesteps[:,None].float() * freqs[None]
-        embedding = torch.cat([torch.cos(args),torch.sin(args)],dim=-1)
+        args = timesteps[:, None].float() * freqs[None]
+        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
         if dim % 2:
-            embedding = torch.cat([embedding,torch.zeros_like(embedding[:,:1])],dim=-1)
+            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
     else:
-        embedding = repeat(timesteps,'b -> b d ',d=dim)
+        embedding = repeat(timesteps, 'b -> b d', d=dim)
     return embedding
+
 
 def zero_module(module):
     """
@@ -215,7 +226,8 @@ def zero_module(module):
         p.detach().zero_()
     return module
 
-def scale_module(module,scale):
+
+def scale_module(module, scale):
     """
     Scale the parameters of a module and return it.
     """
@@ -223,11 +235,13 @@ def scale_module(module,scale):
         p.detach().mul_(scale)
     return module
 
+
 def mean_flat(tensor):
     """
     Take the mean over all non-batch dimensions.
     """
-    return tensor.mean(dim=list(range(1,len(tensor.shape))))
+    return tensor.mean(dim=list(range(1, len(tensor.shape))))
+
 
 def normalization(channels):
     """
@@ -235,53 +249,40 @@ def normalization(channels):
     :param channels: number of input channels.
     :return: an nn.Module for normalization.
     """
-    return GroupNorm32(32,channels)
+    return GroupNorm32(32, channels)
 
+
+# PyTorch 1.7 has SiLU, but we support PyTorch 1.5.
 class SiLU(nn.Module):
-    def forward(self,x):
+    def forward(self, x):
         return x * torch.sigmoid(x)
-    
+
+
 class GroupNorm32(nn.GroupNorm):
-    def forward(self,x):
+    def forward(self, x):
         return super().forward(x.float()).type(x.dtype)
 
-class CausalConv3d(nn.Conv3d):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, **kwargs):
-        super().__init__(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=0)
-
-        # make causal padding
-        assert isinstance(kernel_size, Iterable) and len(kernel_size) == 3 and kernel_size[-1] == kernel_size[-2]
-        temporal_padding = [kernel_size[0] - 1, 0]  # causal padding on temporal dimension
-        spatial_padding = [kernel_size[-1] // 2] * 4  # keep padding on spatial dimension
-        causal_padding = tuple(spatial_padding + temporal_padding)  # starting from the last dimension
-        self.causal_padding = causal_padding
-
-    def forward(self, x):
-        x = F.pad(x, self.causal_padding)
-        x = super().forward(x)
-        return x
-
-def conv_nd(dims,*args,causal=False,**kwargs):
+def conv_nd(dims, *args, **kwargs):
     """
     Create a 1D, 2D, or 3D convolution module.
     """
-    if dims==1:
-        return nn.Conv1d(*args,**kwargs)
-    elif dims==2:
-        return nn.Conv2d(*args,**kwargs)
+    if dims == 1:
+        return nn.Conv1d(*args, **kwargs)
+    elif dims == 2:
+        return nn.Conv2d(*args, **kwargs)
     elif dims == 3:
-        if causal:
-            return CausalConv3d(*args,**kwargs)
-        return nn.Conv3d(*args,**kwargs)
+        return nn.Conv3d(*args, **kwargs)
     raise ValueError(f"unsupported dimensions: {dims}")
 
-def linear(*args,**kwargs):
+
+def linear(*args, **kwargs):
     """
     Create a linear module.
     """
-    return nn.Linear(*args,**kwargs)
+    return nn.Linear(*args, **kwargs)
 
-def avg_pool_nd(dims,*args,**kwargs):
+
+def avg_pool_nd(dims, *args, **kwargs):
     """
     Create a 1D, 2D, or 3D average pooling module.
     """
@@ -293,45 +294,21 @@ def avg_pool_nd(dims,*args,**kwargs):
         return nn.AvgPool3d(*args, **kwargs)
     raise ValueError(f"unsupported dimensions: {dims}")
 
-class AlphaBlender(nn.Module):
-    strategies = ["learned", "fixed", "learned_with_images"]
 
-    def __init__(
-            self,
-            alpha: float,
-            merge_strategy: str,
-            rearrange_pattern: str
-    ):
+class HybridConditioner(nn.Module):
+
+    def __init__(self, c_concat_config, c_crossattn_config):
         super().__init__()
-        self.merge_strategy = merge_strategy
-        self.rearrange_pattern = rearrange_pattern
+        self.concat_conditioner = instantiate_from_config(c_concat_config)
+        self.crossattn_conditioner = instantiate_from_config(c_crossattn_config)
 
-        assert merge_strategy in self.strategies, f"merge_strategy needs to be in {self.strategies}"
+    def forward(self, c_concat, c_crossattn):
+        c_concat = self.concat_conditioner(c_concat)
+        c_crossattn = self.crossattn_conditioner(c_crossattn)
+        return {'c_concat': [c_concat], 'c_crossattn': [c_crossattn]}
 
-        if self.merge_strategy == "fixed":
-            self.register_buffer("mix_factor", torch.Tensor([alpha]))
-        elif self.merge_strategy == "learned" or self.merge_strategy == "learned_with_images":
-            self.register_parameter("mix_factor", torch.nn.Parameter(torch.Tensor([alpha])))
-        else:
-            raise ValueError(f"Unknown merge strategy {self.merge_strategy}")
 
-    def get_alpha(self) -> torch.Tensor:
-        if self.merge_strategy == "fixed":
-            alpha = self.mix_factor
-        elif self.merge_strategy == "learned":
-            alpha = torch.sigmoid(self.mix_factor)
-        elif self.merge_strategy == "learned_with_images":
-            alpha = rearrange(torch.sigmoid(self.mix_factor), "... -> ... 1")
-            alpha = rearrange(alpha, self.rearrange_pattern)
-        else:
-            raise NotImplementedError
-        return alpha
-
-    def forward(
-            self,
-            x_spatial: torch.Tensor,
-            x_temporal: torch.Tensor
-    ) -> torch.Tensor:
-        alpha = self.get_alpha()
-        x = alpha.to(x_spatial.dtype) * x_spatial + (1.0 - alpha).to(x_spatial.dtype) * x_temporal
-        return x
+def noise_like(shape, device, repeat=False):
+    repeat_noise = lambda: torch.randn((1, *shape[1:]), device=device).repeat(shape[0], *((1,) * (len(shape) - 1)))
+    noise = lambda: torch.randn(shape, device=device)
+    return repeat_noise() if repeat else noise()

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from taming.modules.losses.vqperceptual import *  # TODO: taming dependency yes/no?
+# from taming.modules.losses.vqperceptual import *  # TODO: taming dependency yes/no?
 
 
 class LPIPSWithDiscriminator(nn.Module):
@@ -61,35 +61,33 @@ class LPIPSWithDiscriminator(nn.Module):
 
         # now the GAN part
         if optimizer_idx == 0:
-        #     # generator update
-        #     if cond is None:
-        #         assert not self.disc_conditional
-        #         logits_fake = self.discriminator(reconstructions.contiguous())
-        #     else:
-        #         assert self.disc_conditional
-        #         logits_fake = self.discriminator(torch.cat((reconstructions.contiguous(), cond), dim=1))
-        #     g_loss = -torch.mean(logits_fake)
+            # generator update
+            if cond is None:
+                assert not self.disc_conditional
+                logits_fake = self.discriminator(reconstructions.contiguous())
+            else:
+                assert self.disc_conditional
+                logits_fake = self.discriminator(torch.cat((reconstructions.contiguous(), cond), dim=1))
+            g_loss = -torch.mean(logits_fake)
 
-        #     if self.disc_factor > 0.0:
-        #         try:
-        #             d_weight = self.calculate_adaptive_weight(nll_loss, g_loss, last_layer=last_layer)
-        #         except RuntimeError:
-        #             assert not self.training
-        #             d_weight = torch.tensor(0.0)
-        #     else:
-        #         d_weight = torch.tensor(0.0)
+            if self.disc_factor > 0.0:
+                try:
+                    d_weight = self.calculate_adaptive_weight(nll_loss, g_loss, last_layer=last_layer)
+                except RuntimeError:
+                    assert not self.training
+                    d_weight = torch.tensor(0.0)
+            else:
+                d_weight = torch.tensor(0.0)
 
             disc_factor = adopt_weight(self.disc_factor, global_step, threshold=self.discriminator_iter_start)
-            # loss = weighted_nll_loss + self.kl_weight * kl_loss + d_weight * disc_factor * g_loss
-            loss = weighted_nll_loss + self.kl_weight * kl_loss
-            if loss < 0:
-                print("now:weighted_nll_loss:{weighted_nll_loss},kl_loss:{kl_loss},g_loss:{}")
+            loss = weighted_nll_loss + self.kl_weight * kl_loss + d_weight * disc_factor * g_loss
+
             log = {"{}/total_loss".format(split): loss.clone().detach().mean(), "{}/logvar".format(split): self.logvar.detach(),
                    "{}/kl_loss".format(split): kl_loss.detach().mean(), "{}/nll_loss".format(split): nll_loss.detach().mean(),
                    "{}/rec_loss".format(split): rec_loss.detach().mean(),
-                #    "{}/d_weight".format(split): d_weight.detach(),
+                   "{}/d_weight".format(split): d_weight.detach(),
                    "{}/disc_factor".format(split): torch.tensor(disc_factor),
-                #    "{}/g_loss".format(split): g_loss.detach().mean(),
+                   "{}/g_loss".format(split): g_loss.detach().mean(),
                    }
             return loss, log
 
@@ -110,4 +108,3 @@ class LPIPSWithDiscriminator(nn.Module):
                    "{}/logits_fake".format(split): logits_fake.detach().mean()
                    }
             return d_loss, log
-

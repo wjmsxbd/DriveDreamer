@@ -25,7 +25,7 @@ class VanillaCFG(Guider):
         x_pred = x_u + self.scale * (x_c - x_u)
         return x_pred
 
-    def prepare_inputs(self, x, s, c, cond_mask, uc):
+    def prepare_inputs(self, x, s, c, uc):
         c_out = dict()
         for k in c:
             if k in ["vector", "crossattn", "concat"]:
@@ -33,18 +33,18 @@ class VanillaCFG(Guider):
             else:
                 assert c[k] == uc[k]
                 c_out[k] = c[k]
-        return torch.cat([x] * 2), torch.cat([s] * 2), c_out, torch.cat([cond_mask] * 2)
+        return torch.cat([x] * 2), torch.cat([s] * 2), c_out
 
 
 class IdentityGuider(Guider):
     def __call__(self, x: torch.Tensor, sigma: float) -> torch.Tensor:
         return x
 
-    def prepare_inputs(self, x,range_image, s, c, cond_mask, uc):
+    def prepare_inputs(self, x, s, c, uc):
         c_out = dict()
         for k in c:
             c_out[k] = c[k]
-        return x,range_image, s, c_out, cond_mask
+        return x, s, c_out
 
 
 class LinearPredictionGuider(Guider):

@@ -7,31 +7,145 @@ sys.path.append('...')
 import torch
 import torch.nn as nn
 import numpy as np
+from contextlib import nullcontext
 import pytorch_lightning as pl
 from torch.optim.lr_scheduler import LambdaLR
 from einops import rearrange,repeat
 from contextlib import contextmanager
 from functools import partial
 from tqdm import tqdm
+from omegaconf import ListConfig
 from torchvision.utils import make_grid
 from pytorch_lightning.utilities.distributed import rank_zero_only
 from ldm.util import log_txt_as_img,exists,default,ismap,isimage,mean_flat, count_params, instantiate_from_config,to_cpu
 from ldm.modules.ema import LitEma
-from ldm.modules.distributions.distributions import normal_kl, DiagonalGuassianDistribution
+from ldm.modules.distributions.distributions import normal_kl, DiagonalGaussianDistribution
 from ldm.models.autoencoder import AutoencoderKL,VQModelInterface
 from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
 from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.attention import PositionalEncoder
 from ldm.modules.diffusionmodules.util import extract_into_tensor
-import omegaconf
-import time
-import concurrent.futures
-import threading
+from typing import Union,List,Optional,Dict
+from transformers import CLIPTokenizer, CLIPTextModel
+from ldm.util import disabled_train
+import clip
 
 def expand_dims_like(x,y):
     while x.dim() != y.dim():
         x = x.unsqueeze(-1)
     return x
+
+class AbstractEmbModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self._is_trainable = None
+        self._ucg_rate = None
+        self._input_key = None
+
+    @property
+    def is_trainable(self) -> bool:
+        return self._is_trainable
+
+    @property
+    def ucg_rate(self) -> Union[float, torch.Tensor]:
+        return self._ucg_rate
+
+    @property
+    def input_key(self) -> str:
+        return self._input_key
+
+    @is_trainable.setter
+    def is_trainable(self, value: bool):
+        self._is_trainable = value
+
+    @ucg_rate.setter
+    def ucg_rate(self, value: Union[float, torch.Tensor]):
+        self._ucg_rate = value
+
+    @input_key.setter
+    def input_key(self, value: str):
+        self._input_key = value
+
+    @is_trainable.deleter
+    def is_trainable(self):
+        del self._is_trainable
+
+    @ucg_rate.deleter
+    def ucg_rate(self):
+        del self._ucg_rate
+
+    @input_key.deleter
+    def input_key(self):
+        del self._input_key
+
+class FrozenCLIPTextEmbedder(AbstractEmbModel):
+    """
+    Uses the CLIP transformer encoder for text.
+    """
+    def __init__(self,version='ViT-L/14',device='cuda',max_length=77,n_repeat=1,normalize=True):
+        super().__init__()
+        self.model,_ = clip.load(version,jit=False,device='cpu')
+        self.device = device
+        self.max_length = max_length
+        self.n_repeat = n_repeat
+        self.normalize = normalize
+        
+
+    def freeze(self):
+        self.model = self.model.eval()
+        for param in self.parameters():
+            param.requires_grad = False
+
+    def forward(self,text):
+        tokens = clip.tokenize(text).to(next(self.parameters()).device)
+        # tokens = clip.tokenize(text)
+        # print(f"model_device:{self.model.device},text:{text.device}")
+        z = self.model.encode_text(tokens)
+        if self.normalize:
+            z = z / torch.linalg.norm(z,dim=1,keepdim=True)
+        return z
+    
+    def encode(self,text):
+        z = self(text)
+        if z.ndim == 2:
+            z = z[:,None,:]
+        z = repeat(z,'b 1 d -> b k d',k = self.n_repeat)
+        return z
+
+class FrozenCLIPTextWrapper(AbstractEmbModel):
+    def __init__(self,clip_config):
+        super().__init__()
+        self.clip = instantiate_from_config(clip_config)
+    def forward(self,x):
+        output = []
+        for bs in range(len(x)):
+            batch = []
+            for box_id in range(len(x[0])):
+                text = x[bs][box_id]
+                if text == "None":
+                    batch.append(torch.zeros(1,768).to(next(self.parameters()).device))
+                else:
+                    batch.append(self.clip(text))
+            batch = torch.vstack(batch)
+            output.append(batch)
+        output = torch.stack(output)
+        return output
+        
+
+    
+class ImageEmbedder(AbstractEmbModel):
+    def __init__(
+            self,
+            encoder_config,
+            scale_factor=1.0):
+        super().__init__()
+        self.encoder = instantiate_from_config(encoder_config)
+        self.scale_factor = scale_factor
+
+
+    def forward(self,x):
+        x = self.encoder(x)
+        return x
 
 class GlobalCondition(pl.LightningModule):
     def __init__(self,
@@ -81,7 +195,7 @@ class GlobalCondition(pl.LightningModule):
             self.action_encoder = None
 
     def get_first_stage_encoding(self,encoder_posterior):
-        if isinstance(encoder_posterior,DiagonalGuassianDistribution):
+        if isinstance(encoder_posterior,DiagonalGaussianDistribution):
             z = encoder_posterior.sample()
         elif isinstance(encoder_posterior,torch.Tensor):
             z = encoder_posterior
@@ -461,129 +575,118 @@ class GlobalCondition(pl.LightningModule):
             self.lidar_model.learning_rate = learning_rate
         
 
-
-
-class AR_Condition(pl.LightningModule):
-    def __init__(self,
-                 image_config,
-                 lidar_config,
-                 box_config,
-                 scale_factor=1.,
-                 ucg_rate=0.15,
-                 action_encoder_config=None,):
+class StreamingSDCondition(nn.Module):
+    OUTPUT_DIM2KEYS = {2:"vector",3:"crossattn",4:"concat",5:"concat"}
+    KEY2CATDIM = {"vector":1,"crossattn":2,"concat":1}
+    def __init__(self,emb_models:Union[List,ListConfig]):
         super().__init__()
-        self.image_model = instantiate_from_config(image_config)
-        self.lidar_model = instantiate_from_config(lidar_config)
-        if not self.image_model.trainable:
-            self.image_model = self.image_model.eval()
-            for param in self.image_model.parameters():
-                param.requires_grad = False
-        else:
-            assert 0,'image model not trainable'
+        embedders = []
+        for n,emb_config in enumerate(emb_models):
+            embedder = instantiate_from_config(emb_config)
+            assert isinstance(
+                embedder,AbstractEmbModel
+            ),f"embedder model {embedder.__class__.__name__} has to inherit from AbstractEmbModel"
+            embedder.is_trainable = emb_config.get("is_trainable", False)
+            embedder.ucg_rate = emb_config.get("ucg_rate", 0.0)
+            if not embedder.is_trainable:
+                embedder.train = disabled_train
+                for param in embedder.parameters():
+                    param.require_grad = False
+                embedder.eval()
+            print(
+                f"Initialized embedder #{n}: {embedder.__class__.__name__} "
+                f"with {count_params(embedder, False)} params. Trainable: {embedder.is_trainable}"
+            )
 
-        if not self.lidar_model.trainable:
-            self.lidar_model = self.lidar_model.eval()
-            for param in self.lidar_model.parameters():
-                param.requires_grad = False
-        else:
-            assert 0,'lidar model not trainable'
-        
-        self.box_encoder = instantiate_from_config(box_config)
-        self.scale_factor = scale_factor
-        self.ucg_rate = ucg_rate
-        self.ucg_prng = np.random.RandomState()
-        if not action_encoder_config is None:
-            self.action_encoder = instantiate_from_config(action_encoder_config)
-        else:
-            self.action_encoder = None
-
-    def get_first_stage_encoding(self,encoder_posterior):
-        if isinstance(encoder_posterior,DiagonalGuassianDistribution):
-            z = encoder_posterior.sample()
-        elif isinstance(encoder_posterior,torch.Tensor):
-            z = encoder_posterior
-        else:
-            raise NotImplementedError(f"encoder_posterior of type '{type(encoder_posterior)}'")
-        return z
-    
-    def get_parameters(self):
-        param = list()
-        if self.lidar_model.trainable:
-            param = param + list(self.lidar_model.decoder.parameters())
-        if self.image_model.trainable:
-            param = param + list(self.image_model.decoder.parameters())
-        if self.box_encoder.trainable:
-            param = param + list(self.box_encoder.parameters())
-        if not self.action_encoder is None and self.action_encoder.trainable:
-            print("add action encoder paramters")
-            param = param + list(self.action_encoder.parameters())
-        
-        return param
-
-    def encode_first_stage(self,x,encoder):
-        return encoder.encode(x)
-    
-    def decode_first_stage_interface(self,model_name,z,predict_cids=False,force_not_quantize=False):
-        if model_name == 'reference_image':
-            return self.decode_first_stage(self.image_model,z,predict_cids,force_not_quantize)
-        elif model_name == 'lidar':
-            return self.decode_first_stage(self.lidar_model,z,predict_cids,force_not_quantize)
-        else:
-            raise NotImplementedError
-        
-    def decode_first_stage(self,model,z,predict_cids=False,force_not_quantize=False):
-        if predict_cids:
-            if z.dim() == 4:
-                z = torch.argmax(z.exp(),dim=1).long()
-            z = model.quantize.get_codebook_entry(z, shape=None)
-            z = rearrange(z, 'b h w c -> b c h w').contiguous()
-        z = 1. / self.scale_factor * z
-
-    def get_conditions(self,batch):
-        condition_keys = batch.keys()
-        out = {}
-        ref_image = batch['reference_image']
-        z = self.encode_first_stage(ref_image,self.image_model)
-        ref_image = self.get_first_stage_encoding(z)
-        out['ref_image'] = ref_image
-        if 'HDmap' in condition_keys:
-            hdmap = batch['HDmap']
-            hdmap = self.encode_first_stage(self.encode_first_stage(hdmap,self.image_model))
-            out['hdmap'] = hdmap
-        if 'range_image' in condition_keys:
-            range_image = batch['range_image']
-            lidar_z = self.encode_first_stage(range_image,self.lidar_model)
-            range_image = self.get_first_stage_encoding(lidar_z)
-            out['range_image'] = range_image
-        if 'dense_range_image' in condition_keys:
-            dense_range_image = batch['dense_range_image']
-            dense_range_image = self.get_first_stage_encoding(self.encode_first_stage(dense_range_image,self.lidar_model))
-            out['dense_range_image'] = dense_range_image
-        if '3Dbox' in condition_keys:
-            boxes = batch['3Dbox']
-            box_category = batch['category']
-            boxes_emb = self.box_encoder(boxes,box_category)
-            out['boxes_emb'] = boxes_emb
-        if 'text' in condition_keys:
-            text_emb = batch['text']
-            out['text_emb'] = text_emb
-        if 'actions' in condition_keys:
-            actions = batch['actions']
-            if not self.action_encoder is None:
-                actions_embed = self.action_encoder(actions)
+            if "input_key" in emb_config:
+                embedder.input_key = emb_config['input_key']
+            elif "input_keys" in emb_config:
+                embedder.input_keys = emb_config['input_keys']
             else:
-                actions_embed = actions
-            out['actions'] = actions_embed
-        for key in out.keys():
-            if key == 'boxes_emb':
-                for i in range(out[key].shape[0]):
-                    if self.ucg_prng.choice(2,p=[1-self.ucg_rate,self.ucg_rate]):
-                        continue
-                    else:
-                        out[key] = torch.zeros_like(out[key][0],device=out[key].device)
-            else:
-                out[key] = expand_dims_like(torch.bernoulli((1. - self.ucg_rate) * torch.ones(out[key].shape[0],device=out[key].device)),out[key]) * out[key]
-        if 'boxes_mask' in condition_keys:
-            out['boxes_emb'] = out['boxes_emb'] * batch['boxes_mask']
-        return out
+                raise KeyError(
+                    f"need either 'input_key' or 'input_keys' for embedder {embedder.__class__.__name__}"
+                )
+            embedder.legacy_ucg_val = emb_config.get("legacy_ucg_value",None)
+            if embedder.legacy_ucg_val is not None:
+                embedder.ucg_prng = np.random.RandomState()
+            embedders.append(embedder)
+        self.embedders = nn.ModuleList(embedders)
+
+    def possibly_get_ucg_val(self,embedder:AbstractEmbModel,batch:Dict) -> Dict:
+        assert embedder.legacy_ucg_val is not None
+        p = embedder.ucg_rate
+        val = embedder.legacy_ucg_val
+        for i in range(len(batch[embedder.input_key])):
+            if embedder.ucg_prng.choise(2,p=[1-p,p]):
+                batch[embedder.input_key][i] = val
+        return batch
+    
+    def forward(
+            self,
+            batch:Dict,
+            force_zero_embeddings:Optional[List]=None,
+    ) -> Dict:
+        output = dict()
+        if force_zero_embeddings is None:
+            force_zero_embeddings = []
+        for embedder in self.embedders:
+            embedding_context = nullcontext if embedder.is_trainable else torch.no_grad
+            with embedding_context():
+                if hasattr(embedder,"input_key") and (embedder.input_key is not None):
+                    if embedder.legacy_ucg_val is not None:
+                        batch = self.possibly_get_ucg_val(embedder,batch)
+                    emb_out = embedder(batch[embedder.input_key])
+                elif hasattr(embedder,"input_keys"):
+                    emb_out = [embedder(batch[k]) for k in embedder.input_keys]
+            assert isinstance(
+                emb_out, (torch.Tensor, list, tuple)
+            ), f"encoder outputs must be tensors or a sequence, but got {type(emb_out)}"
+            if not isinstance(emb_out,(list,tuple)):
+                emb_out = [emb_out]
+            for emb in emb_out:
+                out_key = self.OUTPUT_DIM2KEYS[emb.dim()]
+                if embedder.ucg_rate > 0.0 and embedder.legacy_ucg_val is None:
+                    emb = (
+                        expand_dims_like(
+                            torch.bernoulli(
+                                (1.0 - embedder.ucg_rate)
+                                * torch.ones(emb.shape[0],device=emb.device)
+                            ),
+                            emb,
+                        )
+                        * emb
+                    )
+                if (
+                    hasattr(embedder,"input_key")
+                    and embedder.input_key in force_zero_embeddings
+                ):
+                    emb = torch.zeros_like(emb)
+                if out_key in output:
+                    #print(f"Embedder {embedder.input_key} -> {out_key}")
+                    output[out_key] = torch.cat(
+                        (output[out_key], emb), self.KEY2CATDIM[out_key]
+                    )
+                else:
+                    output[out_key] = emb
+        return output
+    
+    def get_unconditional_conditioning(
+            self,
+            batch_c:Dict,
+            batch_uc:Optional[Dict] = None,
+            force_uc_zero_embeddings:Optional[List[str]] = None,
+            force_cond_zero_embeddings: Optional[List[str]] = None,
+    ):
+        if force_uc_zero_embeddings is None:
+            force_uc_zero_embeddings = []
+        ucg_rates = list()
+        for embedder in self.embedders:
+            ucg_rates.append(embedder.ucg_rate)
+            embedder.ucg_rate = 0.0
+        c = self(batch_c,force_cond_zero_embeddings)
+        uc = self(batch_c if batch_uc is None else batch_uc,force_uc_zero_embeddings)
+
+        for embedder,rate in zip(self.embedders,ucg_rates):
+            embedder.ucg_rate = rate
+        return c,uc
 

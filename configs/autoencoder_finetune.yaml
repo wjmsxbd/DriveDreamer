@@ -1,0 +1,78 @@
+model:
+  base_learning_rate: 4.5e-06
+  target: ldm.models.autoencoder.AutoencoderKL
+  params:
+    monitor: val/rec_loss
+    embed_dim: 4
+    ckpt_path: stable_diffusion/kl-f8.ckpt
+    ignore_keys: ['quant_conv','post_quant_conv']
+    lossconfig:
+      target: ldm.modules.losses.contperceptual.LPIPSWithDiscriminator
+      params:
+        disc_start: 50001
+        kl_weight: 1.0e-06
+        disc_weight: 0.5
+    ddconfig:
+      double_z: true
+      z_channels: 4
+      resolution: 256
+      in_channels: 3
+      out_ch: 3
+      ch: 128
+      ch_mult:
+      - 1
+      - 2
+      - 4
+      - 4
+      num_res_blocks: 2
+      attn_resolutions: []
+      dropout: 0.0
+      num_groups: 32
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 2
+    num_workers: 0
+    use_distributed_scene_sampler: true
+    wrap: False
+    train:
+      target: data.dataloader_streamingSD_sampler.dataloader
+      params:
+        cfg:
+          version: advanced_12Hz_trainval
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          img_size: [256,128]
+          nusc_canbus_frequency: 50
+          camera_frequency: 2
+        movie_len: 1
+        num_boxes: 30
+        split_name: train
+        collect_condition: ['reference_image','HDmap','3Dbox']
+    validation:
+      target: data.dataloader_streamingSD_sampler.dataloader
+      params:
+        cfg:
+          version: advanced_12Hz_trainval
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          img_size: [256,128]
+          nusc_canbus_frequency: 50
+          camera_frequency: 2
+        movie_len: 1
+        split_name: val
+        num_boxes: 30
+        collect_condition: ['reference_image','HDmap','3Dbox']
+
+lightning:
+  callbacks:
+    image_logger:
+      target: main.ImageLogger
+      params:
+        batch_frequency: 5000
+        max_images: 8
+        increase_log_steps: False
+    
+
+  trainer:
+    benchmark: True
+    gpus: 0,1,2
+    replace_sampler_ddp: False

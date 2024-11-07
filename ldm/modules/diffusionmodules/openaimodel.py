@@ -524,6 +524,8 @@ class UNetModel(nn.Module):
         input_block_chans = [model_channels]
         ch = model_channels
         ds = 1
+        #FX TODO: call self.register_model_cache
+        
         for level, mult in enumerate(channel_mult):
             for _ in range(num_res_blocks):
                 layers = [
@@ -691,6 +693,18 @@ class UNetModel(nn.Module):
             #nn.LogSoftmax(dim=1)  # change to cross_entropy and produce non-normalized logits
         )
 
+    #FX TODO:clear feature cache
+    def clear_model_cache(self,):
+        pass
+
+    #FX TODO:save feature cache
+    def save_model_cache(self,):
+        pass
+
+    #FX TODO:register feature cache
+    def register_model_cache(self,):
+        pass
+
     def convert_to_fp16(self):
         """
         Convert the torso of the model to float16.
@@ -728,9 +742,13 @@ class UNetModel(nn.Module):
             emb = emb + self.label_emb(y)
 
         h = x.type(self.dtype)
+        #FX TODO:Save input_blocks feature in buffers
+        buffers = []
         for module in self.input_blocks:
             h = module(h, emb, context)
             hs.append(h)
+        # FX:TODO:call self.save_model_cache() to save feature
+
         h = self.middle_block(h, emb, context)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)

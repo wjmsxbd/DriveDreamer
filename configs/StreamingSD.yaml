@@ -142,11 +142,11 @@ data:
       target: data.dataloader_streamingSD.dataloader
       params:
         cfg:
-          version: v1.0-mini
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
-          img_size: [768,512]
+          version: advanced_12Hz_trainval
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          img_size: [768,448]
           nusc_canbus_frequency: 50
-          camera_frequency: 2
+          camera_frequency: 12
         num_boxes: 70
         movie_len: 2
         split_name: train
@@ -156,11 +156,11 @@ data:
       target: data.dataloader_streamingSD.dataloader
       params:
         cfg:
-          version: v1.0-mini
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
-          img_size: [768,512]
+          version: advanced_12Hz_trainval
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          img_size: [768,448]
           nusc_canbus_frequency: 50
-          camera_frequency: 2
+          camera_frequency: 12
         num_boxes: 70
         movie_len: 2
         split_name: val
@@ -171,7 +171,7 @@ lightning:
     video_logger:
       target: main.ImageLogger
       params:
-        batch_frequency: 100
+        batch_frequency: 1000
         max_images: 8
         increase_log_steps: False
 

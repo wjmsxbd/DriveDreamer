@@ -211,6 +211,8 @@ class StreamingSD(pl.LightningModule):
             x = x[:bs]
         assert isinstance(x,torch.Tensor)
         encoder_posterior = self.encode_first_stage(x)
+        #FX TODO:call self.model.clear_model_cache() if batch['first_frame'] == 1
+
         z = self.get_first_stage_encoding(encoder_posterior).detach()
         if return_first_stage_outputs:
             x_rec = self.decode_first_stage(z)
@@ -250,6 +252,11 @@ class StreamingSD(pl.LightningModule):
             ]
             return [opt],scheduler
         return opt
+
+    #FX TODO: clear feature cache
+    def clear_model_cache(self,):
+        # call self.model.clear_model_cache()
+        pass
 
     @torch.no_grad()
     def sample(

@@ -25,3 +25,8 @@ class StreamingSDWrapper(IdentityWrapper):
             y=c.get('vector',None),
             **kwargs
         )
+    
+    #FX TODO: clear feature cache
+    def clear_model_cache(self,):
+        # call self.diffusion_model.clear_model_cache()
+        pass

@@ -1,4 +1,7 @@
 import sys
+
+import torch.distributed
+import torch.utils
 sys.path.append('.')
 sys.path.append('..')
 import argparse, os, sys, datetime, glob, importlib, csv
@@ -26,6 +29,8 @@ from typing import Any, BinaryIO, List, Optional, Tuple, Union
 from einops import rearrange
 import math
 import imageio
+from torch.utils.data import Sampler
+
 MULTINODE_HACKS = True
 def get_parser(**parser_kwargs):
     def str2bool(v):
@@ -142,11 +147,20 @@ class WrappedDataset(Dataset):
     def __init__(self, dataset):
         self.data = dataset
 
+    def get_scenes(self):
+        return self.data.scenes
+
     def __len__(self):
         return len(self.data)
 
-    def __getitem__(self, idx):
-        return self.data[idx]
+    def __getitem__(self, idx:Union[int,List[int]]):
+        if isinstance(idx,List):
+            data = []
+            for i in idx:
+                data.append(self.data[i])
+            return data
+        else:
+            return self.data[idx]
 
 
 def worker_init_fn(_):
@@ -164,14 +178,177 @@ def worker_init_fn(_):
     # else:
     return np.random.seed(np.random.get_state()[1][0] + worker_id)
 
+class DistributedSceneSampler(Sampler):
+    def __init__(self,
+                 dataset,
+                 samples_per_gpu=1,
+                 num_replicas=None,
+                 rank=None,
+                 shuffle=False,
+                 train=True,
+                 seed=0):
+        rank = int(os.environ.get("RANK", 0)) 
+        world_size = int(os.environ.get("WORLD_SIZE", 1)) 
+
+        print(f"Global rank (RANK): {rank}")
+        print(f"World size (WORLD_SIZE): {world_size}")
+        _rank,_num_replicas = rank,world_size
+        if num_replicas is None:
+            num_replicas = _num_replicas
+        if rank is None:
+            rank = _rank
+        self.dataset = dataset
+        self.shuffle = shuffle
+        self.samples_per_gpu = samples_per_gpu
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.epoch = 0
+        self.seed = seed if seed is not None else 0
+        self.train = train
+
+        assert hasattr(dataset,'scenes')
+        self.scenes = dataset.scenes
+        self.max_scene_len = np.bincount(dataset.scenes).max()
+        self.len2idx = {}
+        pre = 0
+        for i in range(1,self.scenes.shape[0]):
+            if self.scenes[i] != self.scenes[i-1]:
+                scene_len = i - pre
+                if not scene_len in self.len2idx.keys():
+                    self.len2idx[scene_len] = []
+                self.len2idx[scene_len].append(pre)
+                pre=i
+        if pre != self.scenes.shape[0] - 1:
+            scene_len = self.scenes.shape[0] - pre
+            if not scene_len in self.len2idx.keys():
+                self.len2idx[scene_len] = []
+            self.len2idx[scene_len].append(pre)
+
+        self.total_samples = 0
+        for scene_len,indices in self.len2idx.items():
+            self.total_samples += math.ceil(len(indices) / self.samples_per_gpu)
+        self.num_batch = math.ceil(self.total_samples / self.num_replicas)
+        for key in self.len2idx.keys():
+            self.len2idx[key] = np.array(self.len2idx[key],dtype=np.int32)
+
+        self.up_len = self.num_batch * self.max_scene_len
+        
+    
+    def __iter__(self):
+        g = torch.Generator()
+        g.manual_seed(self.epoch + self.seed)
+        #shuffle len
+        if self.shuffle:
+            scene_lens = torch.randperm(len(self.len2idx.keys())).tolist()
+        else:
+            scene_lens = torch.arange(0,len(self.len2idx.keys()),1).tolist()
+        scene_lens = [list(self.len2idx.keys())[idx] for idx in scene_lens]
+        # padding len indices
+        len2idx = self.len2idx.copy()
+        for scene_len in scene_lens:
+            indices = len2idx[scene_len]
+            extra = int(math.ceil(indices.shape[0] / self.samples_per_gpu) * self.samples_per_gpu - indices.shape[0])
+
+            if extra:
+                if self.shuffle:
+                    permutation = torch.randperm(indices.shape[0],generator=g).tolist()
+                else:
+                    permutation = torch.arange(0,indices.shape[0],1).tolist()
+                padding_idx = []
+                while extra:
+                    if extra < indices.shape[0]:
+                        padding_idx.extend([permutation[i] for i in range(extra)])
+                        break
+                    else:
+                        padding_idx.extend([permutation[i] for i in range(indices.shape[0])])
+                        extra -= indices.shape[0]
+                choose_idx = indices[padding_idx]
+                indices = np.concatenate([indices,choose_idx])
+            len2idx[scene_len] = indices
+            
+        # choose interval
+        interval_l = self.rank * self.num_batch 
+        
+
+        total_samples = 0
+        interval_start_len = -1
+        i = 0
+        while total_samples <= interval_l:
+            scene_len = scene_lens[i]
+            indices = len2idx[scene_len]
+            total_samples += math.ceil(indices.shape[0] / self.samples_per_gpu)
+            if total_samples > interval_l:
+                interval_start_len = i
+                break
+            i += 1
+            if i == len(scene_lens):
+                i = 0
+        
+        now_batch = 0
+        now_scene_len_idx = interval_start_len
+        scene_indices = len2idx[scene_lens[now_scene_len_idx]]
+        now_idx = scene_indices.shape[0] + (interval_l - total_samples) * self.samples_per_gpu
+        assert now_idx >= 0
+        indices = []
+        while now_batch < self.num_batch * self.samples_per_gpu:
+            indices.append([i+scene_indices[now_idx] for i in range(scene_lens[now_scene_len_idx])])
+            now_idx += 1
+            if now_idx == scene_indices.shape[0]:
+                now_scene_len_idx += 1
+                if now_scene_len_idx == len(scene_lens):
+                    now_scene_len_idx = 0
+                now_idx = 0
+            scene_indices = len2idx[scene_lens[now_scene_len_idx]]
+            now_batch +=1
+
+
+        iter_indices = []
+        for i in range(self.num_batch):
+            batch_indices = indices[i*self.samples_per_gpu:(i+1)*self.samples_per_gpu]
+            batch_indices = torch.tensor(batch_indices)
+            batch_indices = rearrange(batch_indices,'b n -> n b')
+            iter_indices.extend(batch_indices.tolist())
+        if self.train:
+            while len(iter_indices) < self.up_len:
+                if len(iter_indices) + scene_lens[now_scene_len_idx] < self.up_len:
+                    batch_indices = [[i+scene_indices[now_idx+j] for j in range(self.samples_per_gpu)] for i in range(scene_lens[now_scene_len_idx])]
+                    iter_indices.extend(batch_indices)
+                else:
+                    batch_indices = [[i+scene_indices[now_idx+j] for j in range(self.samples_per_gpu)] for i in range(self.up_len - len(iter_indices))]
+                    iter_indices.extend(batch_indices)
+                now_idx += self.samples_per_gpu
+                if now_idx == scene_indices.shape[0]:
+                    now_scene_len_idx += 1
+                    if now_scene_len_idx == len(scene_lens):
+                        now_scene_len_idx = 0
+                    now_idx = 0
+                scene_indices = len2idx[scene_lens[now_scene_len_idx]]
+
+        return iter(iter_indices)
+
+    
+    def __len__(self):
+        if self.train:
+            return len(list(self.__iter__()))
+        else:
+            return self.up_len
+    
+    def set_epoch(self,epoch):
+        self.epoch = epoch
+
+
 
 class DataModuleFromConfig(pl.LightningDataModule):
-    def __init__(self, batch_size, train=None, validation=None, test=None, predict=None,
+    def __init__(self, batch_size, use_distributed_scene_sampler=False,samples_per_gpu=None,train=None, validation=None, test=None, predict=None,
                  wrap=False, num_workers=None, shuffle_test_loader=False, use_worker_init_fn=False,
                  shuffle_val_dataloader=False):
         super().__init__()
+        if use_distributed_scene_sampler:
+            self.samples_per_gpu = batch_size
+            batch_size = 1
         self.batch_size = batch_size
         self.dataset_configs = dict()
+        self.use_distributed_scene_sampler = use_distributed_scene_sampler
         self.num_workers = num_workers if num_workers is not None else batch_size * 2
         self.use_worker_init_fn = use_worker_init_fn
         if train is not None:
@@ -196,12 +373,23 @@ class DataModuleFromConfig(pl.LightningDataModule):
         self.datasets = dict(
             (k, instantiate_from_config(self.dataset_configs[k]))
             for k in self.dataset_configs)
+        self.samplers = dict()
         if self.wrap:
             for k in self.datasets:
                 self.datasets[k] = WrappedDataset(self.datasets[k])
+                self.samplers[k] = DistributedSceneSampler(self.datasets[k],self.samples_per_gpu,seed=23)
+        else:
+            if self.use_distributed_scene_sampler:
+                for k in self.datasets:
+                    self.samplers[k] = DistributedSceneSampler(self.datasets[k],self.samples_per_gpu,seed=23,shuffle=True if k=='train' else False)
+            else:
+                for k in self.datasets:
+                    self.samplers[k] = None
 
     def collate_fn(self,batch):
         out = {}
+        if self.use_distributed_scene_sampler:
+            batch = batch[0]
         for i in range(len(batch)):
             for key,value in batch[i].items():
                 if isinstance(value,torch.Tensor):
@@ -225,9 +413,10 @@ class DataModuleFromConfig(pl.LightningDataModule):
         else:
             init_fn = None
         return DataLoader(self.datasets["train"], batch_size=self.batch_size,
-                          num_workers=self.num_workers, shuffle=False if is_iterable_dataset else True,
-                          worker_init_fn=init_fn,
-                          collate_fn=self.collate_fn
+                          num_workers=self.num_workers, shuffle=False if is_iterable_dataset or self.use_distributed_scene_sampler else True,
+                        #   worker_init_fn=init_fn,
+                          collate_fn=self.collate_fn,
+                          sampler=self.samplers['train'],
                           )
 
     def _val_dataloader(self, shuffle=False):
@@ -238,9 +427,10 @@ class DataModuleFromConfig(pl.LightningDataModule):
         return DataLoader(self.datasets["validation"],
                           batch_size=self.batch_size,
                           num_workers=self.num_workers,
-                          worker_init_fn=init_fn,
+                        #   worker_init_fn=init_fn,
                           shuffle=shuffle,
-                          collate_fn=self.collate_fn
+                          collate_fn=self.collate_fn,
+                          sampler=self.samplers['validation']
                           )
 
     def _test_dataloader(self, shuffle=False):
@@ -255,6 +445,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
 
         return DataLoader(self.datasets["test"], batch_size=self.batch_size,
                           num_workers=self.num_workers, worker_init_fn=init_fn, shuffle=shuffle,
+                          sampler=self.samplers['test']
                           )
 
     def _predict_dataloader(self, shuffle=False):

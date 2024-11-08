@@ -638,6 +638,7 @@ class StreamingSDCondition(nn.Module):
                     emb_out = embedder(batch[embedder.input_key])
                 elif hasattr(embedder,"input_keys"):
                     emb_out = [embedder(batch[k]) for k in embedder.input_keys]
+                    emb_out = [x + torch.normal(0,1,size=x.shape) for x in emb_out]
             assert isinstance(
                 emb_out, (torch.Tensor, list, tuple)
             ), f"encoder outputs must be tensors or a sequence, but got {type(emb_out)}"

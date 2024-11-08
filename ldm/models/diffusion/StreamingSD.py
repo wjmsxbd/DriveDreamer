@@ -117,7 +117,7 @@ class StreamingSD(pl.LightningModule):
                         k = 'model.' + s_name2m_name[k]
                         # print(f"after:{k}")
                         sd[k] = v
-        if self.concat_mode:
+        if self.concat_mode and path == 'stable_diffusion/sd-v1-4.ckpt':
             #TODO: modify input_block.conv value
             param = sd['model.diffusion_model.input_blocks.0.0.weight']
             param_pad = torch.zeros((param.shape[0],8)+param.shape[2:])

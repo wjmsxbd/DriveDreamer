@@ -525,6 +525,8 @@ class UNetModel(nn.Module):
         ch = model_channels
         ds = 1
         #FX TODO: call self.register_model_cache
+        self.feature_cache = []
+        self.clear_model_cache()
         
         for level, mult in enumerate(channel_mult):
             for _ in range(num_res_blocks):
@@ -694,16 +696,14 @@ class UNetModel(nn.Module):
         )
 
     #FX TODO:clear feature cache
-    def clear_model_cache(self,):
-        pass
+    def clear_model_cache(self):
+        self.feature_cache.clear()
 
     #FX TODO:save feature cache
-    def save_model_cache(self,):
-        pass
+    def save_model_cache(self,feature):
+        feature_detach = [feature.detach() for feature in feature]
+        self.feature_cache.append(feature_detach)
 
-    #FX TODO:register feature cache
-    def register_model_cache(self,):
-        pass
 
     def convert_to_fp16(self):
         """
@@ -742,11 +742,19 @@ class UNetModel(nn.Module):
             emb = emb + self.label_emb(y)
 
         h = x.type(self.dtype)
+        feature = []
+        init_h = h.shape[2]
+        init_w = h.shape[3]
         #FX TODO:Save input_blocks feature in buffers
-        buffers = []
         for module in self.input_blocks:
             h = module(h, emb, context)
+            if h.shape[2] < init_h:
+                init_h = h.shape[2]
+                init_w = h.shape[3]
+                feature.append(h)
             hs.append(h)
+
+        self.save_model_cache(feature)
         # FX:TODO:call self.save_model_cache() to save feature
 
         h = self.middle_block(h, emb, context)

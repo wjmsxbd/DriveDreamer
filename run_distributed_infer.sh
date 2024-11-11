@@ -1,0 +1,1 @@
+python -m torch.distributed.launch --nproc_per_node=3 --nnodes=1 --node_rank=0 distributed_infer.py --config configs/StreamingSD.yaml --device cuda --cuda_id 0,1,2 --type baseline_AR --model_path logs/2024-11-05T13-24-05_StreamingSD/checkpoints/epoch=000003.ckpt --samples_per_gpu 2

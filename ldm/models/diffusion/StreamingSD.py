@@ -33,7 +33,8 @@ from ldm.modules.diffusionmodules.util import extract_into_tensor
 import omegaconf
 import copy
 from typing import Iterable,List,Union,Optional,Dict,Tuple
-
+import re
+import copy
 
 def disabled_train(self,mode=True):
     """Overwrite model.train with this function to make sure train/eval mode
@@ -67,7 +68,8 @@ class StreamingSD(pl.LightningModule):
                  monitor="val/loss",
                  use_ema=False,
                  use_scheduler=True,
-                 scheduler_config=None):
+                 scheduler_config=None,
+                 copy_ca_weight=False):
         super().__init__()
         self.global_condition = instantiate_from_config(global_condition_config)
         self.model = instantiate_from_config(unet_config)
@@ -82,6 +84,7 @@ class StreamingSD(pl.LightningModule):
         self.sampler = instantiate_from_config(sampler_config)
         self.loss_fn = instantiate_from_config(loss_fn_config)
         self.use_ema = use_ema
+        self.copy_ca_weight = copy_ca_weight
         self.scheduler_config = scheduler_config
         if self.use_ema:
             self.model_ema = LitEma(self.model)
@@ -122,7 +125,25 @@ class StreamingSD(pl.LightningModule):
             param = sd['model.diffusion_model.input_blocks.0.0.weight']
             param_pad = torch.zeros((param.shape[0],8)+param.shape[2:])
             param = torch.cat([param,param_pad],dim=1)
-            sd['model.diffusion_model.input_blocks.0.0.weight'] = param
+            sd['model.diffusion_model.input_blocks.0.0.weight'] = copy.deepcopy(param)
+            if self.copy_ca_weight:
+                find_keys = ["attn2","norm2"]
+                replace_keys = ["attn3","norm4"]
+                for i in range(len(find_keys)):
+                    pattern = r"model\.diffusion_model\.[^.]+?\.\d+(\.\d+)?\.transformer_blocks\.\d+\.{}\.[^\.]+".format(find_keys[i])
+                    matched_strings = [s for s in list(sd.keys()) if re.match(pattern,s)]
+                    print(matched_strings)
+                    for key in matched_strings:
+                        print("now process"+key)
+                        value = sd[key]
+                        key_split = key.split('.')
+                        if key_split[2] == 'middle_block':
+                            key_split[6] = replace_keys[i]
+                        else:
+                            key_split[7] = replace_keys[i]
+                        new_key = '.'.join(key_split)
+                        print("copy key"+new_key)
+                        sd[new_key] = copy.deepcopy(value)
 
         keys = list(sd.keys())
         for k in keys:
@@ -211,10 +232,13 @@ class StreamingSD(pl.LightningModule):
             x = x[:bs]
         assert isinstance(x,torch.Tensor)
         encoder_posterior = self.encode_first_stage(x)
-        #FX TODO:call self.model.clear_model_cache() if batch['first_frame'] == 1
-        if batch['first_frame'] == 1:
-            self.model.clear_model_cache()
-
+        #FX TODO:call self.model.clear_model_cache() if batch['first_frame'] == 1   
+        if 'first_frame' in batch.keys():
+            if batch['first_frame'][0] == [1]:
+                self.model.clear_model_cache()
+                self.model.set_model_init_feature(True)
+            else:
+                self.model.set_model_init_feature(False)
         z = self.get_first_stage_encoding(encoder_posterior).detach()
         if return_first_stage_outputs:
             x_rec = self.decode_first_stage(z)
@@ -277,7 +301,7 @@ class StreamingSD(pl.LightningModule):
     #FX TODO: clear feature cache
     def clear_model_cache(self):
         # call self.model.clear_model_cache()
-        self.model.diffusion_model.clear_model_cache()
+        self.model.clear_model_cache()
 
     @torch.no_grad()
     def sample(
@@ -387,7 +411,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/StreamingSD.yaml',
+                        default='configs/StreamingSD_cache.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
@@ -398,11 +422,13 @@ if __name__ == "__main__":
     hdmap = torch.randn((2,3,128,256))#.cuda()
     boxes = [["None" for k in range(30)] for i in range(2)]
     cond_frames = torch.randn((2,3,128,256))
+    first_frame = [1,1]
     out = {
+        'first_frame':first_frame,
         'image':x,
         'cond_frames':cond_frames,
         'HDmap':hdmap,
         '3Dbox':boxes
     }
-    # loss,loss_dict = network.shared_step(out)
-    log = network.log_images(out)
+    loss,loss_dict = network.shared_step(out)
+    # log = network.log_images(out)

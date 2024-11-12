@@ -27,4 +27,10 @@ class StreamingSDWrapper(IdentityWrapper):
         )
     
     def clear_model_cache(self):
-        self.diffusion_model.clear_model_cache()
+        if self.diffusion_model.use_cache:
+            self.diffusion_model.clear_model_cache()
+
+    def set_model_init_feature(self,flag):
+        self.diffusion_model.set_model_init_feature(flag)
+
+    

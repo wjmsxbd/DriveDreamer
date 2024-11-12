@@ -239,6 +239,7 @@ class dataloader(data.Dataset):
         
         out = {}
         out['3Dbox'] = []
+        # out['first_frame'] = (1 if idx == 0 or self.scenes[idx] != self.scenes[idx-1] else 0)
         out['cond_frames'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
         out['HDmap'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
         out['image'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))

@@ -29,6 +29,7 @@ from typing import Union,List,Optional,Dict
 from transformers import CLIPTokenizer, CLIPTextModel
 from ldm.util import disabled_train
 import clip
+import kornia
 
 def expand_dims_like(x,y):
     while x.dim() != y.dim():
@@ -117,6 +118,7 @@ class FrozenCLIPTextWrapper(AbstractEmbModel):
         super().__init__()
         self.clip = instantiate_from_config(clip_config)
     def forward(self,x):
+        # print(f"now FrozenClipTextWrapper:{self.clip.device}")
         output = []
         for bs in range(len(x)):
             batch = []
@@ -146,6 +148,42 @@ class ImageEmbedder(AbstractEmbModel):
     def forward(self,x):
         x = self.encoder(x)
         return x
+
+
+class FrozenClipImageEmbedder(AbstractEmbModel):
+    """
+        Uses the CLIP image encoder.
+    """
+    def __init__(
+        self,
+        model='ViT-L/14',
+        jit=False,
+        antialias=False,
+    ):
+        super().__init__()
+        self.model,_ = clip.load(name=model,device='cpu',jit=jit)
+        self.antialias = antialias
+
+        self.register_buffer('mean', torch.Tensor([0.48145466, 0.4578275, 0.40821073]), persistent=False)
+        self.register_buffer('std', torch.Tensor([0.26862954, 0.26130258, 0.27577711]), persistent=False)
+
+    def preprocess(self,x):
+        # normalize to [0,1]
+        x = kornia.geometry.resize(x, (224, 224),
+                                   interpolation='bicubic',align_corners=True,
+                                   antialias=self.antialias)
+        x = (x + 1.) / 2.
+        # renormalize according to clip
+        x = kornia.enhance.normalize(x, self.mean, self.std)
+        return x
+
+    def forward(self,x):
+        # x is assumed to be in range [-1,1]
+        # print(f"now frozenClipImageEmbedder:{self.model.device}")
+        x = self.model.encode_image(self.preprocess(x))
+        x = x.unsqueeze(1)
+        return x
+
 
 class GlobalCondition(pl.LightningModule):
     def __init__(self,
@@ -577,7 +615,7 @@ class GlobalCondition(pl.LightningModule):
 
 class StreamingSDCondition(nn.Module):
     OUTPUT_DIM2KEYS = {2:"vector",3:"crossattn",4:"concat",5:"concat"}
-    KEY2CATDIM = {"vector":1,"crossattn":2,"concat":1}
+    KEY2CATDIM = {"vector":1,"crossattn":1,"concat":1}
     def __init__(self,emb_models:Union[List,ListConfig]):
         super().__init__()
         embedders = []
@@ -638,7 +676,8 @@ class StreamingSDCondition(nn.Module):
                     emb_out = embedder(batch[embedder.input_key])
                 elif hasattr(embedder,"input_keys"):
                     emb_out = [embedder(batch[k]) for k in embedder.input_keys]
-                    emb_out = [x + torch.normal(0,1,size=x.shape) for x in emb_out]
+                    emb_out[0] += torch.normal(0,0.2,size=emb_out[0].shape).to(emb_out[0].device)
+                    # emb_out = [x + torch.normal(0,1,size=x.shape) for x in emb_out]
             assert isinstance(
                 emb_out, (torch.Tensor, list, tuple)
             ), f"encoder outputs must be tensors or a sequence, but got {type(emb_out)}"

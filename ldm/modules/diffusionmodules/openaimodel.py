@@ -17,7 +17,7 @@ from ldm.modules.diffusionmodules.util import (
     normalization,
     timestep_embedding,
 )
-from ldm.modules.attention import SpatialTransformer
+from ldm.modules.attention import SpatialTransformer,PixelTemporalAttention
 
 
 # dummy replace
@@ -466,6 +466,10 @@ class UNetModel(nn.Module):
         context_dim=None,                 # custom transformer support
         n_embed=None,                     # custom support for prediction of discrete ids into codebook of first stage vq model
         legacy=True,
+        use_cache=False,
+        use_image_clip=False,
+        window_size=10,
+        choose_feature_idx=[-10,-5,-1],
     ):
         super().__init__()
         if use_spatial_transformer:
@@ -502,6 +506,8 @@ class UNetModel(nn.Module):
         self.num_head_channels = num_head_channels
         self.num_heads_upsample = num_heads_upsample
         self.predict_codebook_ids = n_embed is not None
+        self.window_size = window_size
+        self.choose_feature_idx = choose_feature_idx
 
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
@@ -524,12 +530,20 @@ class UNetModel(nn.Module):
         input_block_chans = [model_channels]
         ch = model_channels
         ds = 1
-        #FX TODO: call self.register_model_cache
-        self.feature_cache = []
-        self.clear_model_cache()
-        
+        self.use_cache = use_cache
+        if self.use_cache:
+            #FX TODO: call self.register_model_cache
+            self.feature_cache = []
+            self.feature_fusion = nn.ModuleList()
+        if num_head_channels == -1:
+            dim_head = ch // num_heads
+        else:
+            num_heads = ch // num_head_channels
+            dim_head = num_head_channels
         for level, mult in enumerate(channel_mult):
             for _ in range(num_res_blocks):
+                if self.use_cache:
+                    self.feature_fusion.append(PixelTemporalAttention(ch,dim_head))
                 layers = [
                     ResBlock(
                         ch,
@@ -559,7 +573,7 @@ class UNetModel(nn.Module):
                             num_head_channels=dim_head,
                             use_new_attention_order=use_new_attention_order,
                         ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim
+                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,use_image_clip=use_image_clip,
                         )
                     )
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
@@ -585,11 +599,14 @@ class UNetModel(nn.Module):
                         )
                     )
                 )
+                if self.use_cache:
+                    self.feature_fusion.append(PixelTemporalAttention(ch,dim_head))
                 ch = out_ch
                 input_block_chans.append(ch)
                 ds *= 2
                 self._feature_size += ch
-
+        if self.use_cache:
+            self.feature_fusion.append(PixelTemporalAttention(ch,dim_head))
         if num_head_channels == -1:
             dim_head = ch // num_heads
         else:
@@ -614,7 +631,7 @@ class UNetModel(nn.Module):
                 num_head_channels=dim_head,
                 use_new_attention_order=use_new_attention_order,
             ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim
+                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,use_image_clip=use_image_clip,
                         ),
             ResBlock(
                 ch,
@@ -660,7 +677,7 @@ class UNetModel(nn.Module):
                             num_head_channels=dim_head,
                             use_new_attention_order=use_new_attention_order,
                         ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim
+                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,use_image_clip=use_image_clip,
                         )
                     )
                 if level and i == num_res_blocks:
@@ -701,9 +718,16 @@ class UNetModel(nn.Module):
 
     #FX TODO:save feature cache
     def save_model_cache(self,feature):
-        feature_detach = [feature.detach() for feature in feature]
-        self.feature_cache.append(feature_detach)
+        if len(self.feature_cache) < self.window_size:
+            self.feature_cache.append(feature)
+        else:
+            self.feature_cache.pop()
+            self.feature_cache.append(feature)
+        
 
+    def set_model_init_feature(self,flag):
+        # print(f"now:set init feature:{flag}")
+        self.init_feature = flag
 
     def convert_to_fp16(self):
         """
@@ -742,26 +766,37 @@ class UNetModel(nn.Module):
             emb = emb + self.label_emb(y)
 
         h = x.type(self.dtype)
-        feature = []
-        init_h = h.shape[2]
-        init_w = h.shape[3]
+        if self.use_cache:
+            feature = []
+            init_feature_cache = []
         #FX TODO:Save input_blocks feature in buffers
         for module in self.input_blocks:
             h = module(h, emb, context)
-            if h.shape[2] < init_h:
-                init_h = h.shape[2]
-                init_w = h.shape[3]
-                feature.append(h)
+            if self.use_cache:
+                if self.init_feature:
+                    init_feature_cache.append(th.zeros_like(h).cpu())
+                feature.append(h.clone().detach().cpu())
             hs.append(h)
 
-        self.save_model_cache(feature)
-        # FX:TODO:call self.save_model_cache() to save feature
-
+        if self.use_cache:
+            for i in range(len(hs)):
+                temp_feature = []
+                if self.init_feature:
+                    temp_feature.append(init_feature_cache[i])
+                else:
+                    for idx in self.choose_feature_idx:
+                        if idx < len(self.feature_cache):
+                            temp_feature.append(self.feature_cache[idx][i])
+                assert len(temp_feature) != 0
+                temp_feature = th.stack(temp_feature,dim=1).to(x.device)
+                hs[i] = self.feature_fusion[i](hs[i],temp_feature)
         h = self.middle_block(h, emb, context)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
             h = module(h, emb, context)
         h = h.type(x.dtype)
+        if self.use_cache:
+            self.save_model_cache(feature)
         if self.predict_codebook_ids:
             return self.id_predictor(h)
         else:

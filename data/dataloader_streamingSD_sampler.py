@@ -93,18 +93,23 @@ class dataloader(data.Dataset):
         idx = 0
         scenes_id = 0
         scenes = []
+        first_frame_idx = []
+        first_idx = 0
         for key,value in pic_infos.items():
             value = list(sorted(value,key=lambda e: e['timestamp']))
             sample_steps = 2 // self.camera_frequency if self.cfg['version'] == 'v1.0-mini' else 12 // self.camera_frequency
             assert sample_steps > 0
+            first_idx = idx
             frames = torch.arange(len(value)).to(torch.long)[::sample_steps]
             for frame in frames:
                 video_infos[idx] = value[frame]
                 scenes.append(scenes_id)
+                first_frame_idx.append(first_idx)
                 idx += 1
             scenes_id += 1
         self.video_infos = video_infos
         self.scenes = np.array(scenes)
+        self.first_frame_idx = first_frame_idx
 
     def __len__(self):
         return len(self.video_infos)
@@ -118,13 +123,29 @@ class dataloader(data.Dataset):
         else:
             return self.get_data_info(idx)
     
+    def get_cam_image_from_sample_token(self,sample_token,img_size,):
+        sample_record = self.nusc.get('sample',sample_token)
+        cam_front_token = sample_record['data']['CAM_FRONT']
+        cam_front_path = self.nusc.get('sample_data',cam_front_token)['filename']
+        cam_front_path = os.path.join(self.cfg['dataroot'],cam_front_path)
+        cam_front_img = mpimg.imread(cam_front_path)
+        cam_front_img = Image.fromarray(cam_front_img)
+        cam_front_img = cam_front_img.resize(img_size)
+        cam_front_img = np.array(cam_front_img)
+        cam_front_img = torch.from_numpy(cam_front_img / 255. * 2 - 1.).to(torch.float32)
+        cam_front_img = rearrange(cam_front_img,'h w c -> c h w').contiguous()
+        return cam_front_img
+        
+
     def get_data_info(self,idx):
         video_info = self.video_infos[idx]
         out = {}
+        out['first_frame'] = ([1] if idx == 0 or self.scenes[idx] != self.scenes[idx-1] else [0])
         out['3Dbox'] = []
         out['HDmap'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
         out['image'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
-
+        out['cond_frames'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+        out['clip_first_frame'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
         for i in range(self.movie_len):
             sample_token = video_info['token']
             scene_token = self.nusc.get('sample',sample_token)['scene_token']
@@ -159,10 +180,18 @@ class dataloader(data.Dataset):
             hdmap = collect_data['HDmap'][:,:,:3].copy()
             hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
             out['HDmap'] = rearrange(hdmap,'h w c -> c h w').contiguous()
+        if out['first_frame'][0] == 1:
+            out['cond_frames'] = out['image']
+        else:
+            sample_token = self.video_infos[idx-1]['token']
+            out['cond_frames'] = self.get_cam_image_from_sample_token(sample_token,tuple(self.cfg['img_size']))
+            sample_token = self.video_infos[self.first_frame_idx[idx]]['token']
+            out['clip_first_frame'] = self.get_cam_image_from_sample_token(sample_token,tuple(self.cfg['img_size']))
         return out
 
 def collate_fn(batch):
     out = {}
+    batch = batch[0]
     for i in range(len(batch)):
         for key,value in batch[i].items():
             if isinstance(value,torch.Tensor):
@@ -330,15 +359,16 @@ if __name__ == "__main__":
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
     data_loader = dataloader(**cfg.data.params.train.params)
     sampler = DistributedSceneSampler(data_loader,samples_per_gpu=2,seed=0)
-    print(sampler.__len__())
+    # print(sampler.__len__())
     # batch_size = 2
-    # data_loader_ = torch.utils.data.DataLoader(
-    #     data_loader,
-    #     batch_size  =   1,
-    #     num_workers =   0,
-    #     collate_fn=collate_fn,
-    #     sampler=sampler
-
-    # )
-    # for _,batch in tqdm(enumerate(data_loader_)):
-    #     pass
+    data_loader_ = torch.utils.data.DataLoader(
+        data_loader,
+        batch_size  =   1,
+        num_workers =   0,
+        collate_fn=collate_fn,
+        sampler=sampler
+    )
+    for _,batch in tqdm(enumerate(data_loader_)):
+        if _ > 1:
+            break
+        pass

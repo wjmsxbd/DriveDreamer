@@ -480,13 +480,13 @@ if __name__ == "__main__":
                 save_tensor_as_image(batch['image'][i],file_path=cam_sample_save_path,index=idx,frame=now_frames)
                 count_first_frame_idx[idx] += 1
             pre_batch = batch
-            pre_batch['samples'] = batch['image']
+            latent = network.encode_first_stage(batch['image'])
+            pre_batch['samples'] = network.get_first_stage_encoding(latent)
         else:
             batch['cond_frames'] = pre_batch['samples']
-            
             if device == 'cuda':
                 batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
-            out = network.log_images(batch)
+            out = network.log_latents(batch)
 
             for i in range(len(first_frame_idx)):
                 idx = first_frame_idx[i]
@@ -498,7 +498,7 @@ if __name__ == "__main__":
                 count_first_frame_idx[idx] += 1
             batch = {k:v.to('cpu') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
             pre_batch = batch
-            pre_batch['samples'] = out['samples']
+            pre_batch['samples'] = out['latent']
         now_frames += 1
         # print(first_frame_idx[0])
         # if now_frames == idx2len[first_frame_idx[0]]:

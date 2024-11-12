@@ -220,6 +220,25 @@ class StreamingSD(pl.LightningModule):
             x_rec = self.decode_first_stage(z)
             return z,x_rec
         return z
+    
+    # @torch.no_grad()
+    # def get_latent(self,batch,return_first_stage_outputs=False,bs=None):
+    #     x = batch[self.input_keys]
+    #     if bs is not None:
+    #         x = x[:bs]
+    #     assert isinstance(x,torch.Tensor)
+    #     encoder_posterior = x
+    #     #FX TODO:call self.model.clear_model_cache() if batch['first_frame'] == 1
+    #     if batch['first_frame'] == 1:
+    #         self.model.clear_model_cache()
+
+    #     z = self.get_first_stage_encoding(encoder_posterior).detach()
+    #     if return_first_stage_outputs:
+    #         x_rec = self.decode_first_stage(z)
+    #         return z,x_rec
+    #     return z
+    
+    
         
     def on_train_batch_end(self,*args,**kwargs):
         if self.use_ema:
@@ -313,6 +332,53 @@ class StreamingSD(pl.LightningModule):
                 samples = self.sample(
                     N,c,uc,x.shape[1:]
                 )
+                samples = self.decode_first_stage(samples)
+                log['samples'] = samples
+        return log
+    
+    @torch.no_grad()
+    def log_latents(
+        self,
+        batch,
+        N=8,
+        n_row=4,
+        sample:bool=True,
+        ucg_keys:List[str]=None,
+        **kwargs):
+        #TODO: add unconditional_sampler
+        conditioner_input_keys = [e.input_key for e in self.global_condition.embedders if e.ucg_rate>0.]
+        if ucg_keys:
+            assert all(map(lambda x: x in conditioner_input_keys, ucg_keys)), (
+                "Each defined ucg key for sampling must be in the provided conditioner input keys, "
+                f"but we have {ucg_keys} vs. {conditioner_input_keys}"
+            )
+        else:
+            ucg_keys = conditioner_input_keys
+        log = dict()
+        log['inputs'] = batch['image']
+        log['cond_frame'] = batch['cond_frames']
+        x,x_rec = self.get_input(batch,return_first_stage_outputs=True)
+        N = min(x.shape[0],N)
+        n_row = min(x.shape[0],n_row)
+        log['reconstruction'] = x_rec
+        c,uc = self.global_condition.get_unconditional_conditioning(
+            batch,
+            force_uc_zero_embeddings=ucg_keys
+            if len(self.global_condition.embedders)>0 else list()
+        )
+        c['concat'] = torch.cat((batch['cond_frames'],c['concat']), dim=1)
+        # print(c['concat'].shape)
+        # print(batch['cond_frames'].shape)
+        x = x[:N].to(self.device)
+        for k in c:
+            if isinstance(c[k],torch.Tensor):
+                c[k],uc[k] = map(lambda y:y[k][:N].to(self.device),(c,uc))
+        if sample:
+            with self.ema_scope("Plotting"):
+                samples = self.sample(
+                    N,c,uc,x.shape[1:]
+                )
+                log['latent'] = samples
                 samples = self.decode_first_stage(samples)
                 log['samples'] = samples
         return log

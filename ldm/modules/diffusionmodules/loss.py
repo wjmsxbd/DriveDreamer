@@ -31,6 +31,7 @@ class StandardDiffusionLoss(nn.Module):
             use_additional_loss: bool = False,
             offset_noise_level: float = 0.0,
             additional_loss_weight: float = 0.0,
+            disabled_sigmas_sampler=False
     ):
         super().__init__()
         assert loss_type in ["l2", "l1"]
@@ -41,6 +42,7 @@ class StandardDiffusionLoss(nn.Module):
         self.loss_weighting = instantiate_from_config(loss_weighting_config)
         self.offset_noise_level = offset_noise_level
         self.additional_loss_weight = additional_loss_weight
+        self.disabled_sigmas_sampler = disabled_sigmas_sampler
         
     def get_noised_input(
             self,
@@ -70,8 +72,10 @@ class StandardDiffusionLoss(nn.Module):
             cond:Dict,
             x:torch.Tensor,
     ):
-        sigmas = self.sigma_sampler(x.shape[0]).to(x)
-        
+        if self.disabled_sigmas_sampler:
+            sigmas = cond['sigmas']
+        else:
+            sigmas = self.sigma_sampler(x.shape[0]).to(x)
         noise = torch.randn_like(x)
         if self.offset_noise_level > 0.0:
             offset_shape = (x.shape[0],x.shape[1])

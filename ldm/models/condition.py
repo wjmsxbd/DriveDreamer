@@ -149,6 +149,12 @@ class ImageEmbedder(AbstractEmbModel):
         x = self.encoder(x)
         return x
 
+class IdentityEmbedder(AbstractEmbModel):
+    def __init__(self,):
+        super().__init__()
+    
+    def forward(self,x):
+        return x
 
 class FrozenClipImageEmbedder(AbstractEmbModel):
     """
@@ -614,8 +620,9 @@ class GlobalCondition(pl.LightningModule):
         
 
 class StreamingSDCondition(nn.Module):
-    OUTPUT_DIM2KEYS = {2:"vector",3:"crossattn",4:"concat",5:"concat"}
-    KEY2CATDIM = {"vector":1,"crossattn":1,"concat":1}
+    # VECTORKEYCHOICE = {"sigmas":"sigmas","vector":"vector"}
+    OUTPUT_DIM2KEYS = {1:"sigmas",2:"vector",3:"crossattn",4:"concat",5:"concat"}
+    KEY2CATDIM = {"vector":1,"crossattn":1,"concat":1,"sigmas":0}
     def __init__(self,emb_models:Union[List,ListConfig]):
         super().__init__()
         embedders = []

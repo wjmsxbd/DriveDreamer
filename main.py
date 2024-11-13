@@ -323,7 +323,6 @@ class DistributedSceneSampler(Sampler):
                         now_scene_len_idx = 0
                     now_idx = 0
                 scene_indices = len2idx[scene_lens[now_scene_len_idx]]
-
         return iter(iter_indices)
 
     

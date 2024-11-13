@@ -279,6 +279,14 @@ class StreamingSD(pl.LightningModule):
         params = list()
         if self.training_strategy == 'full':
             params = params + list(self.model.parameters())
+        elif self.training_strategy == 'feature':
+            for name,param in self.named_parameters():
+                if name.startswith('model.diffusion_model.input_blocks'):
+                    pass
+                elif name.startswith("model.diffusion_model"):
+                    print(f"add:{name}")
+                    params.append(param)
+
         else:
             raise NotImplementedError
         opt = torch.optim.AdamW(params,lr=lr)
@@ -430,5 +438,6 @@ if __name__ == "__main__":
         'HDmap':hdmap,
         '3Dbox':boxes
     }
-    loss,loss_dict = network.shared_step(out)
+    network.configure_optimizers()
+    # loss,loss_dict = network.shared_step(out)
     # log = network.log_images(out)

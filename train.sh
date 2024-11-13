@@ -1,1 +1,1 @@
-torchrun --nproc_per_node=4 --nnode=1 --node_rank=0 --master_addr=sist-a40-01 --master_port=5001 main.py --base configs/StreamingSD_cache.yaml --train True --logdir ~/Drivedreamer/logs
+torchrun --nproc_per_node=4 --nnode=2 --node_rank=1 --master_addr=sist-a40-03 --master_port=5001 main.py --base configs/StreamingSD_cache.yaml --train True 

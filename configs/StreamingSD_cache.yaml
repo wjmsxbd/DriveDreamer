@@ -3,9 +3,9 @@ model:
   base_learning_rate: 5e-5
   params:
     scale_factor: 0.18215
-    training_strategy: full
+    training_strategy: feature
     load_from_ema: False
-    ckpt_path: stable_diffusion/sd-v1-4.ckpt #TODO:!!!!!!!!!!!!
+    ckpt_path: logs/2024-11-05T13-24-05_StreamingSD/checkpoints/epoch=000007.ckpt #TODO:!!!!!!!!!!!!
     ignore_keys: ['cond_stage_model'] #TODO:!!!!!!!!!
     monitor: val/loss #use ema?
     use_ema: False #use ema?
@@ -158,11 +158,11 @@ data:
       target: data.dataloader_streamingSD_sampler.dataloader
       params:
         cfg:
-          version: v1.0-mini
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
+          version: advanced_12Hz_trainval
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/
           img_size: [768,448]
           nusc_canbus_frequency: 50
-          camera_frequency: 2
+          camera_frequency: 12
         num_boxes: 70
         movie_len: 1
         split_name: train
@@ -177,11 +177,11 @@ data:
       target: data.dataloader_streamingSD_sampler.dataloader
       params:
         cfg:
-          version: v1.0-mini
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
+          version: advanced_12Hz_trainval
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/
           img_size: [768,448]
           nusc_canbus_frequency: 50
-          camera_frequency: 2
+          camera_frequency: 12
         num_boxes: 70
         movie_len: 1
         split_name: val

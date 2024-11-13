@@ -1,0 +1,184 @@
+model:
+  target: ldm.models.diffusion.StreamingSD.StreamingSD
+  base_learning_rate: 5e-5
+  params:
+    scale_factor: 0.18215
+    training_strategy: full
+    load_from_ema: False
+    ckpt_path: stable_diffusion/sd-v1-4.ckpt #TODO:!!!!!!!!!!!!
+    ignore_keys: ['cond_stage_model'] #TODO:!!!!!!!!!
+    monitor: val/loss #use ema?
+    use_ema: False #use ema?
+    use_scheduler: true
+    global_condition_config:
+      target: ldm.models.condition.StreamingSDCondition
+      params:
+        emb_models:
+          - input_key: HDmap
+            is_trainable: False
+            ucg_rate: 0.15
+            target: ldm.models.condition.ImageEmbedder
+            params:
+              encoder_config:
+                target: ldm.models.autoencoder.AutoEncoderKLModeOnly
+                params:
+                  embed_dim: 4
+                  scale_factor: 0.18215
+                  ddconfig:
+                    double_z: True
+                    z_channels: 4
+                    resolution: 256
+                    in_channels: 3
+                    out_ch: 3
+                    ch: 128
+                    ch_mult:
+                      - 1
+                      - 2
+                      - 4
+                      - 4
+                    num_res_blocks: 2
+                    attn_resolutions: []
+                    dropout: 0.0
+                  lossconfig:
+                    target: torch.nn.Identity
+                  ckpt_path: stable_diffusion/first_stage_model.pt #TODO!!!!
+                  ignore_keys: ['decoder','post_quant_conv'] #TODO!!!!
+          - input_key: 3Dbox
+            is_trainable: False
+            ucg_rate: 0.15
+            target: ldm.models.condition.FrozenCLIPTextWrapper
+            params:
+              clip_config:
+                target: ldm.models.condition.FrozenCLIPTextEmbedder
+    first_stage_config:
+      target: ldm.models.autoencoder.AutoencoderKL
+      params:
+        embed_dim: 4
+        monitor: val/rec_loss
+        ddconfig:
+          double_z: true
+          z_channels: 4
+          resolution: 256
+          in_channels: 3
+          out_ch: 3
+          ch: 128
+          ch_mult:
+          - 1
+          - 2
+          - 4
+          - 4
+          num_res_blocks: 2
+          attn_resolutions: []
+          dropout: 0.0
+        lossconfig:
+          target: torch.nn.Identity
+        ckpt_path:  #TODO!!!
+        ignore_keys: [] #TODO:!!!!
+    unet_config:
+      target: ldm.models.wrapper.StreamingSDWrapper
+      params:
+        unet_config:
+          target: ldm.modules.diffusionmodules.openaimodel.UNetModel
+          params:
+            image_size: 32 #unused
+            in_channels: 12
+            out_channels: 4
+            model_channels: 320
+            attention_resolutions: [4,2,1]
+            num_res_blocks: 2
+            channel_mult: [1,2,4,4]
+            num_heads: 8
+            use_spatial_transformer: True
+            transformer_depth: 1
+            context_dim: 768
+            use_checkpoint: true
+            legacy: False
+      
+    sampler_config:
+      target: ldm.modules.diffusionmodules.sampling.EulerEDMSampler
+      params:
+        num_steps: 15
+        discretization_config:
+          target: ldm.modules.diffusionmodules.discretizer.EDMDiscretization
+          params:
+            sigma_max: 700.0
+        guider_config:
+          target: ldm.modules.diffusionmodules.guiders.IdentityGuider
+    denoiser_config:
+      target: ldm.modules.diffusionmodules.denoiser.Denoiser
+      params:
+        scaling_config:
+          target: ldm.modules.diffusionmodules.denoiser_scaling.VScalingWithEDMcNoise
+    loss_fn_config:
+      target: ldm.modules.diffusionmodules.loss.StandardDiffusionLoss
+      params:
+        use_additional_loss: True
+        offset_noise_level: 0.02
+        additional_loss_weight: 0.1
+
+        sigma_sampler_config:
+          target: ldm.modules.diffusionmodules.sigma_sampling.EDMSampling
+          params:
+            p_mean: 1.0
+            p_std: 1.6
+        loss_weighting_config:
+          target: ldm.modules.diffusionmodules.loss_weighting.VWeighting
+    scheduler_config:
+      target: ldm.lr_scheduler.LambdaLinearScheduler
+      params:
+        warm_up_steps: [10000]
+        cycle_lengths: [10000000000000]
+        f_start: [1.e-6]
+        f_max: [1.]
+        f_min: [1.]
+      
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 1
+    wrap: False
+    num_workers: 1
+    train:
+      target: data.dataloader_streamingSD.dataloader
+      params:
+        cfg:
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
+          img_size: [768,448]
+          nusc_canbus_frequency: 50
+          camera_frequency: 2
+        num_boxes: 70
+        movie_len: 2
+        split_name: train
+        collect_condition: ['reference_image','HDmap','3Dbox']
+    
+    validation:
+      target: data.dataloader_streamingSD.dataloader
+      params:
+        cfg:
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
+          img_size: [768,448]
+          nusc_canbus_frequency: 50
+          camera_frequency: 2
+        num_boxes: 70
+        movie_len: 2
+        split_name: val
+        collect_condition: ['reference_image','HDmap','3Dbox']
+
+lightning:
+  callbacks:
+    video_logger:
+      target: main.ImageLogger
+      params:
+        batch_frequency: 1000
+        max_images: 8
+        increase_log_steps: False
+
+  trainer:
+    benchmark: True
+    # gpus: 0,1,2,3,
+    # # device: 1
+    # # gpus: 0,
+    # # num_nodes: 1
+    # distributed_backend: ddp

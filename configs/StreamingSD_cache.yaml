@@ -107,7 +107,7 @@ model:
             use_cache: True
             use_image_clip: True
             window_size: 10
-            choose_feature_idx: [0,1,2]
+            choose_feature_idx: [-10,-5,-1]
       
     sampler_config:
       target: ldm.modules.diffusionmodules.sampling.EulerEDMSampler
@@ -158,11 +158,11 @@ data:
       target: data.dataloader_streamingSD_sampler.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
           img_size: [768,448]
           nusc_canbus_frequency: 50
-          camera_frequency: 12
+          camera_frequency: 2
         num_boxes: 70
         movie_len: 1
         split_name: train
@@ -177,11 +177,11 @@ data:
       target: data.dataloader_streamingSD_sampler.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
           img_size: [768,448]
           nusc_canbus_frequency: 50
-          camera_frequency: 12
+          camera_frequency: 2
         num_boxes: 70
         movie_len: 1
         split_name: val
@@ -206,6 +206,6 @@ lightning:
     gpus: 0,1,2,3
     # device: 1
     # gpus: 0,
-    # num_nodes: 1
+    num_nodes: 1
     distributed_backend: ddp
     replace_sampler_ddp: False

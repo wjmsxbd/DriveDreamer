@@ -18,7 +18,7 @@ from ldm.modules.diffusionmodules.util import (
     timestep_embedding,
 )
 from ldm.modules.attention import SpatialTransformer,PixelTemporalAttention
-
+import copy
 
 # dummy replace
 def convert_module_to_f16(x):
@@ -721,6 +721,8 @@ class UNetModel(nn.Module):
         if len(self.feature_cache) < self.window_size:
             self.feature_cache.append(feature)
         else:
+            print(f"del:{-10}")
+            print(f"add:{0}")
             self.feature_cache.pop()
             self.feature_cache.append(feature)
         
@@ -777,16 +779,14 @@ class UNetModel(nn.Module):
                     init_feature_cache.append(th.zeros_like(h).cpu())
                 feature.append(h.clone().detach().cpu())
             hs.append(h)
-
         if self.use_cache:
+            if self.init_feature:
+                for i in range(self.window_size):
+                    self.feature_cache.append(copy.deepcopy(init_feature_cache))
             for i in range(len(hs)):
                 temp_feature = []
-                if self.init_feature:
-                    temp_feature.append(init_feature_cache[i])
-                else:
-                    for idx in self.choose_feature_idx:
-                        if idx < len(self.feature_cache):
-                            temp_feature.append(self.feature_cache[idx][i])
+                for idx in self.choose_feature_idx:
+                    temp_feature.append(self.feature_cache[idx][i])
                 assert len(temp_feature) != 0
                 temp_feature = th.stack(temp_feature,dim=1).to(x.device)
                 hs[i] = self.feature_fusion[i](hs[i],temp_feature)

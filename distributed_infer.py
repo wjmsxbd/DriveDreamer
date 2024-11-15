@@ -480,8 +480,10 @@ if __name__ == "__main__":
                 save_tensor_as_image(batch['image'][i],file_path=cam_sample_save_path,index=idx,frame=now_frames)
                 count_first_frame_idx[idx] += 1
             pre_batch = batch
+            batch['image'] = batch['image'].to(f'cuda:{cuda_id[local_rank]}')
             latent = network.encode_first_stage(batch['image'])
-            pre_batch['samples'] = network.get_first_stage_encoding(latent)
+            pre_batch['samples'] = network.get_first_stage_encoding(latent).cpu()
+            batch['image'] = batch['image'].cpu()
         else:
             batch['cond_frames'] = pre_batch['samples']
             if device == 'cuda':

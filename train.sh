@@ -1,1 +1,8 @@
-torchrun --nproc_per_node=4 --nnode=2 --node_rank=1 --master_addr=sist-a40-03 --master_port=5001 main.py --base configs/StreamingSD_cache.yaml --train True 
+torchrun \
+    --nnodes=1 \
+    --nproc_per_node=4 \
+    --node_rank=0 \
+    --rdzv_backend=c10d \
+    --rdzv_endpoint=mayuexin01:5001 \
+    --node_rank=0\
+    main.py --base configs/StreamingSD_cache.yaml --train True 

@@ -43,6 +43,7 @@ class SlowLearning(nn.Module):
         super().__init__()
         
     def forward(self,model,cond):
+        print("now_in:slow learning")
         x = cond['image']
         loss = model.get_losses(x,cond)
         return loss
@@ -99,6 +100,7 @@ class FastLearning(nn.Module):
     
     @torch.no_grad()
     def forward(self,model,batch,replace=False,):
+        print("now_in:fast learning")
         sigmas = model.prepare_sigmas()
         num_sigmas = len(sigmas)
         c,uc = model.get_unconditional_conditioning(batch)
@@ -179,9 +181,8 @@ class SlowFastLearning(pl.LightningModule):
                 fast_dataset = self.generate_data
                 dataset_lengths = self.gather_dataset_len(len(fast_dataset))
                 max_length = torch.max(torch.cat([t for t in dataset_lengths])).cpu().item()
-                if len(fast_dataset) != max_length:
-                    None_padding = [None for i in range(max_length-len(fast_dataset))]
-                    fast_dataset.append(None_padding)
+                for i in range(max_length - len(fast_dataset)):
+                    fast_dataset.append(None)
                 fast_dataset = DataLoader(fast_dataset,batch_size=1,collate_fn=self.collate_fn)
                 
                 tqdm_bar = tqdm(enumerate(fast_dataset),total=len(fast_dataset))
@@ -204,7 +205,7 @@ class SlowFastLearning(pl.LightningModule):
                     if _ == 0:
                         self.model.set_model_init_feature(False)
                 self.clear_generate_data()
-            
+
             self.model.clear_model_cache()
             self.model.set_model_init_feature(True)
             batch['samples'] = self.cond_frames

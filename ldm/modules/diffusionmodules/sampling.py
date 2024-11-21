@@ -27,6 +27,12 @@ class BaseDiffusionSampler:
         self.verbose = verbose
         self.device = device
 
+    def prepare_sigmas(self,num_steps=None):
+        sigmas = self.discretization(
+            self.num_steps if num_steps is None else num_steps
+        )
+        return sigmas
+
     def prepare_sampling_loop(self, x, cond, uc=None, num_steps=None):
         sigmas = self.discretization(
             self.num_steps if num_steps is None else num_steps, device=x.device
@@ -88,6 +94,14 @@ class EulerEDMSampler(SingleStepDiffusionSampler):
 
         euler_step = self.euler_step(x, d, dt)
         return euler_step
+
+    def get_gamma(self,num_sigmas,sigma):
+        gamma = (
+            min(self.s_churn / (num_sigmas - 1),2**0.5-1)
+            if self.s_tmin <= sigma <= self.s_tmax
+            else 0.0
+        )
+        return gamma
 
     def __call__(
             self,

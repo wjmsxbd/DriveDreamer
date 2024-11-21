@@ -416,6 +416,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
                         #   worker_init_fn=init_fn,
                           collate_fn=self.collate_fn,
                           sampler=self.samplers['train'],
+                          pin_memory=True,
                           )
 
     def _val_dataloader(self, shuffle=False):
@@ -429,7 +430,8 @@ class DataModuleFromConfig(pl.LightningDataModule):
                         #   worker_init_fn=init_fn,
                           shuffle=shuffle,
                           collate_fn=self.collate_fn,
-                          sampler=self.samplers['validation']
+                          sampler=self.samplers['validation'],
+                          pin_memory=True,
                           )
 
     def _test_dataloader(self, shuffle=False):

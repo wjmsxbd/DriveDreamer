@@ -19,6 +19,7 @@ from ldm.modules.diffusionmodules.util import (
 )
 from ldm.modules.attention import SpatialTransformer,PixelTemporalAttention
 import copy
+from ldm.models.diffusion.slow_fast_learning import FeatureCache1D
 
 # dummy replace
 def convert_module_to_f16(x):
@@ -533,7 +534,7 @@ class UNetModel(nn.Module):
         self.use_cache = use_cache
         if self.use_cache:
             #FX TODO: call self.register_model_cache
-            self.feature_cache = []
+            self.feature_cache = FeatureCache1D(window_size=window_size,choose_feature_idx=choose_feature_idx)
             self.feature_fusion = nn.ModuleList()
         if num_head_channels == -1:
             dim_head = ch // num_heads
@@ -712,20 +713,18 @@ class UNetModel(nn.Module):
             #nn.LogSoftmax(dim=1)  # change to cross_entropy and produce non-normalized logits
         )
 
+    def replace_feature_cache(self,feature):
+        self.feature_cache.replace_cache(feature)
+
+    def get_feature_cache(self):
+        return self.feature_cache.get_cache()
+
     #FX TODO:clear feature cache
     def clear_model_cache(self):
-        self.feature_cache.clear()
-
-    #FX TODO:save feature cache
-    def save_model_cache(self,feature):
-        if len(self.feature_cache) < self.window_size:
-            self.feature_cache.append(feature)
-        else:
-            print(f"del:{-10}")
-            print(f"add:{0}")
-            self.feature_cache.pop()
-            self.feature_cache.append(feature)
+        self.feature_cache.clear_cache()
         
+    def get_model_cache(self):
+        return self.feature_cache.get_cache()
 
     def set_model_init_feature(self,flag):
         # print(f"now:set init feature:{flag}")
@@ -781,14 +780,11 @@ class UNetModel(nn.Module):
             hs.append(h)
         if self.use_cache:
             if self.init_feature:
-                for i in range(self.window_size):
-                    self.feature_cache.append(copy.deepcopy(init_feature_cache))
+                zero_feature_cache = [copy.deepcopy(init_feature_cache) for i in range(self.window_size)]
+                self.feature_cache.replace_cache(zero_feature_cache)
+
             for i in range(len(hs)):
-                temp_feature = []
-                for idx in self.choose_feature_idx:
-                    temp_feature.append(self.feature_cache[idx][i])
-                assert len(temp_feature) != 0
-                temp_feature = th.stack(temp_feature,dim=1).to(x.device)
+                temp_feature = self.feature_cache.get_feature(i).to(x.device)
                 hs[i] = self.feature_fusion[i](hs[i],temp_feature)
         h = self.middle_block(h, emb, context)
         for module in self.output_blocks:
@@ -796,7 +792,7 @@ class UNetModel(nn.Module):
             h = module(h, emb, context)
         h = h.type(x.dtype)
         if self.use_cache:
-            self.save_model_cache(feature)
+            self.feature_cache.update(feature)
         if self.predict_codebook_ids:
             return self.id_predictor(h)
         else:

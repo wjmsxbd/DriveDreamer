@@ -26,6 +26,12 @@ class StreamingSDWrapper(IdentityWrapper):
             **kwargs
         )
     
+    def replace_feature_cache(self,feature):
+        return self.diffusion_model.replace_feature_cache(feature)
+
+    def get_feature_cache(self):
+        return self.diffusion_model.get_feature_cache()
+
     def clear_model_cache(self):
         if self.diffusion_model.use_cache:
             self.diffusion_model.clear_model_cache()

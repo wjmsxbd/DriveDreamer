@@ -71,8 +71,10 @@ class StandardDiffusionLoss(nn.Module):
             denoiser:Denoiser,
             cond:Dict,
             x:torch.Tensor,
+            return_predict: bool=False,
     ):
         if self.disabled_sigmas_sampler:
+            assert 'sigmas' in cond.keys()
             sigmas = cond['sigmas']
         else:
             sigmas = self.sigma_sampler(x.shape[0]).to(x)
@@ -91,6 +93,8 @@ class StandardDiffusionLoss(nn.Module):
         predict = model_output
         
         input = x
+        if return_predict:
+            return self.get_loss(predict,input,w),predict
         return self.get_loss(predict,input,w)
 
     def get_loss(self,predict,target,w,):

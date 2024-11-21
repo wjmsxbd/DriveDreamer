@@ -401,7 +401,7 @@ if __name__ == "__main__":
     data_loader_ = torch.utils.data.DataLoader(
         data_loader,
         batch_size  =   1,
-        num_workers =   2,
+        num_workers =   0,
         collate_fn=collate_fn,
         sampler=sampler
     )

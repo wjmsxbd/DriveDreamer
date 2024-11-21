@@ -176,12 +176,15 @@ class StreamingSD(pl.LightningModule):
     
     @torch.no_grad()
     def validation_step(self,batch,batch_idx):
-        _,loss_dict_no_ema = self.shared_step(batch)
-        with self.ema_scope():
-            _,loss_dict_ema = self.shared_step(batch)
-            loss_dict_ema = {key+"ema":loss_dict_ema[key] for key in loss_dict_ema}
-        self.log_dict(loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
-        self.log_dict(loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
+        if self.use_ema:
+            with self.ema_scope():
+                _,loss_dict_ema = self.shared_step(batch)
+                loss_dict_ema = {key+"ema":loss_dict_ema[key] for key in loss_dict_ema}    
+                self.log_dict(loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
+        else:        
+            _,loss_dict_no_ema = self.shared_step(batch)
+            self.log_dict(loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
+        
 
     def shared_step(self,batch):
         x = self.get_input(batch)
@@ -219,6 +222,12 @@ class StreamingSD(pl.LightningModule):
         else:
             raise NotImplementedError(f"encoder_posterior of type '{type(encoder_posterior)}' not yet implemented")
         return self.scale_factor * z
+
+    def clear_model_cache(self):
+        self.model.clear_model_cache()
+
+    def set_model_init_feature(self,flag):
+        self.model.set_model_init_feature(flag)
 
     # input_shape: cond_frame tensor:(b h w c)
     #              image tensor:(b h w c)
@@ -262,8 +271,9 @@ class StreamingSD(pl.LightningModule):
     #         return z,x_rec
     #     return z
     
+    def get_losses(self,x,cond,return_predict=False):
+        return self.loss_fn._forward(self.model,self.denoiser,cond,x,return_predict)
     
-        
     def on_train_batch_end(self,*args,**kwargs):
         if self.use_ema:
             self.model_ema(self.model)
@@ -284,7 +294,7 @@ class StreamingSD(pl.LightningModule):
                 if name.startswith('model.diffusion_model.input_blocks'):
                     pass
                 elif name.startswith("model.diffusion_model"):
-                    print(f"add:{name}")
+                    # print(f"add:{name}")
                     params.append(param)
 
         else:
@@ -310,6 +320,60 @@ class StreamingSD(pl.LightningModule):
     def clear_model_cache(self):
         # call self.model.clear_model_cache()
         self.model.clear_model_cache()
+
+    @torch.no_grad()
+    def get_unconditional_conditioning(self,batch):
+        ucg_keys = [e.input_key for e in self.global_condition.embedders if e.ucg_rate>0.]
+        c,uc = self.global_condition.get_unconditional_conditioning(
+            batch,
+            force_uc_zero_embeddings=ucg_keys
+            if len(self.global_condition.embedders)>0 else list()
+        )
+        return c,uc
+    
+    def get_condition(self,batch):
+        return self.global_condition(batch)
+
+    def get_feature_cache(self):
+        return self.model.get_feature_cache()
+    
+    def replace_feature_cache(self,feature):
+        self.model.replace_feature_cache(feature)
+
+    def infer(self,batch):
+        ucg_keys = [e.input_key for e in self.global_condition.embedders if e.ucg_rate>0.]
+
+        x = self.get_input(batch)
+        c,uc = self.global_condition.get_unconditional_conditioning(
+            batch,
+            force_uc_zero_embeddings=ucg_keys
+            if len(self.global_condition.embedders)>0 else list()
+        )
+        with self.ema_scope("Plotting"):
+            samples = self.sample(x.shape[0],c,uc,x.shape[1:])
+        return samples
+
+    def prepare_sigmas(self,):
+        return self.sampler.prepare_sigmas()
+
+    def infer_step(self,x,sigmas,sigma_step,cond,uc=None):
+        uc = default(uc,cond)
+        s_in = x.new_ones([x.shape[0]])
+        num_sigmas = len(sigmas)
+        gamma = self.sampler.get_gamma(num_sigmas,sigmas[sigma_step])
+        if sigma_step == 0:
+            x *= torch.sqrt(1.0 + sigmas[0] ** 2)
+        denoiser = lambda input,sigma,c: self.denoiser(self.model,input,sigma,c)
+        x = self.sampler.sampler_step(
+            s_in * sigmas[sigma_step],
+            s_in * sigmas[sigma_step+1],
+            denoiser,
+            x,
+            cond,
+            uc,
+            gamma
+        )
+        return x
 
     @torch.no_grad()
     def sample(
@@ -388,7 +452,7 @@ class StreamingSD(pl.LightningModule):
             ucg_keys = conditioner_input_keys
         log = dict()
         log['inputs'] = batch['image']
-        log['cond_frame'] = batch['cond_frames']
+        # log['cond_frame'] = batch['cond_frames']
         x,x_rec = self.get_input(batch,return_first_stage_outputs=True)
         N = min(x.shape[0],N)
         n_row = min(x.shape[0],n_row)

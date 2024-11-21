@@ -43,7 +43,6 @@ class SlowLearning(nn.Module):
         super().__init__()
         
     def forward(self,model,cond):
-        print("now_in:slow learning")
         x = cond['image']
         loss = model.get_losses(x,cond)
         return loss
@@ -100,7 +99,6 @@ class FastLearning(nn.Module):
     
     @torch.no_grad()
     def forward(self,model,batch,replace=False,):
-        print("now_in:fast learning")
         sigmas = model.prepare_sigmas()
         num_sigmas = len(sigmas)
         c,uc = model.get_unconditional_conditioning(batch)

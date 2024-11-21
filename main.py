@@ -231,7 +231,7 @@ class DistributedSceneSampler(Sampler):
         for key in self.len2idx.keys():
             self.len2idx[key] = np.array(self.len2idx[key],dtype=np.int32)
 
-        self.up_len = self.num_batch * self.max_scene_len
+        self.up_len = self.num_batch * self.max_scene_len + 1
         
     
     def __iter__(self):

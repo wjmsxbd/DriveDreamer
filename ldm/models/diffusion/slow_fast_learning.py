@@ -272,7 +272,6 @@ class SlowFastLearning(pl.LightningModule):
                     cond = self.replace_cond_latent(cond,self.cond_frames)
                     loss,predict = self.model.get_losses(z,cond,return_predict=True)
                     self.cond_frames = predict.detach()
-                loss = loss * self.get_adaptive_weight()
                 log_prefix = "train" if self.training else "val"
                 loss_dict_ema = {f"{log_prefix}/loss":loss}
                 self.log_dict(loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
@@ -293,7 +292,6 @@ class SlowFastLearning(pl.LightningModule):
                 cond = self.replace_cond_latent(cond,self.cond_frames)
                 loss,predict = self.model.get_losses(z,cond,return_predict=True)
                 self.cond_frames = predict.detach()
-            loss = loss * self.get_adaptive_weight()
             log_prefix = "train" if self.training else "val"
             loss_dict_no_ema = {f"{log_prefix}/loss":loss}
             self.log_dict(loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)

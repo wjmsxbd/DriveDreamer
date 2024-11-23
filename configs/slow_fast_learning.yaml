@@ -11,7 +11,7 @@ model:
         scale_factor: 0.18215
         training_strategy: feature
         load_from_ema: False
-        ckpt_path: logs/2024-11-05T13-24-05_StreamingSD/checkpoints/epoch=000007.ckpt #TODO:!!!!!!!!!!!!
+        ckpt_path:  /storage/group/4dvlab/wangjm2024/last.ckpt #TODO:!!!!!!!!!!!!
         ignore_keys: ['cond_stage_model'] #TODO:!!!!!!!!!
         use_ema: False #use ema?
         use_scheduler: true
@@ -156,7 +156,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 2
+    batch_size: 4
     wrap: False
     num_workers: 0
     use_distributed_scene_sampler: true

@@ -35,6 +35,7 @@ import copy
 from typing import Iterable,List,Union,Optional,Dict,Tuple
 import re
 import copy
+from PIL import Image
 
 def disabled_train(self,mode=True):
     """Overwrite model.train with this function to make sure train/eval mode
@@ -69,7 +70,8 @@ class StreamingSD(pl.LightningModule):
                  use_ema=False,
                  use_scheduler=True,
                  scheduler_config=None,
-                 copy_ca_weight=False):
+                 copy_ca_weight=False,
+                 slow_fast_path=None):
         super().__init__()
         self.global_condition = instantiate_from_config(global_condition_config)
         self.model = instantiate_from_config(unet_config)
@@ -97,6 +99,8 @@ class StreamingSD(pl.LightningModule):
         if not ckpt_path is None:
             self.init_from_ckpt(ckpt_path,ignore_keys,load_from_ema)
             self.restart_from_ckpt = True
+        if not slow_fast_path is None:
+            self.init_from_ckpt(slow_fast_path,ignore_keys,load_from_ema,True)
 
     def init_first_stage(self,config):
         model = instantiate_from_config(config)
@@ -105,10 +109,15 @@ class StreamingSD(pl.LightningModule):
         for param in self.first_stage_model.parameters():
             param.requires_grad = False
 
-    def init_from_ckpt(self,path=None,ignore_keys=[],load_from_ema=False):
+    def init_from_ckpt(self,path=None,ignore_keys=[],load_from_ema=False,load_from_slow_fast=False):
         sd = torch.load(path,map_location='cpu')
         if 'state_dict' in list(sd.keys()):
             sd = sd['state_dict']
+        if load_from_slow_fast:
+            sd_replace = {}
+            for key,value in sd.items():
+                sd_replace[key[6:]] = value
+            sd = sd_replace
         if load_from_ema:
             s_name2m_name = dict(zip(self.model_ema.m_name2s_name.values(),self.model_ema.m_name2s_name.keys()))
             for k in list(sd.keys()):
@@ -479,6 +488,91 @@ class StreamingSD(pl.LightningModule):
                 log['samples'] = samples
         return log
     
+from ldm.models.diffusion.slow_fast_learning import FeatureCache2D
+class StreamingSDInferPipeLine(pl.LightningModule):
+    def __init__(self,model_config,num_steps,use_feature_cache=False):
+        super().__init__()
+        self.model = instantiate_from_config(model_config)
+        self.use_feature_cache= use_feature_cache
+        if use_feature_cache:
+            self.feature_cache = FeatureCache2D(num_steps)
+        self.cond_frames = None
+        
+    def save_tensor_as_image(self,tensor,file_path,index,frame):
+        if tensor.is_cuda:
+            tensor = tensor.cpu()
+        tensor = tensor.clamp(-1.,1.)
+        tensor = (tensor + 1.) / 2.
+        tensor = tensor * 255.0
+        tensor = tensor.byte()
+
+        for i in range(tensor.shape[0]):
+            img = tensor[i]
+            img = img.permute(1,2,0)
+            img = img.numpy()
+            img = Image.fromarray(img)
+            save_file_path = os.path.join(file_path,f'{index:02d}_{frame+i:02d}.png')
+            img.save(save_file_path)
+        
+
+    def decode_first_stage(self,latents,file_path,index,n_samples=8,decoder=None):
+        latents = torch.stack(latents,dim=0)
+        print(latents.shape)
+        chunk_size = (latents.shape[0] + n_samples - 1) // n_samples
+        latents_chunk = torch.chunk(latents,chunks=chunk_size,dim=0)
+        start_frame = 0
+        for chunk in latents_chunk:
+            chunk = chunk.to(self.model.device)
+            if not decoder is None:
+                output = decoder.decode_first_stage(chunk)
+            else:
+                output = self.model.decode_first_stage(chunk)
+            output = output.cpu()
+            chunk = chunk.cpu()
+            self.save_tensor_as_image(output,file_path,index,frame=start_frame)
+            start_frame += chunk.shape[0]
+        
+
+
+    def reset(self,init_feature):
+        self.model.clear_model_cache()
+        self.model.set_model_init_feature(init_feature)
+
+    def set_init_feature(self,init_feature):
+        self.model.set_model_init_feature(init_feature)
+
+    def _forward(self,batch,replace_cond_frames=False):
+        sigmas = self.model.prepare_sigmas()
+        num_sigmas = len(sigmas)
+        c,uc = self.model.get_unconditional_conditioning(batch)
+        z = self.model.get_input(batch)
+        randn = torch.randn_like(z).to(z.device)
+        z = randn
+        if replace_cond_frames:
+            c['concat'][:,:4] = self.cond_frames
+        for i in range(num_sigmas-1):
+            if self.use_feature_cache:
+                feature_cache = self.feature_cache.get_feature_in_row(i)
+                self.model.replace_feature_cache(feature_cache)
+                z = self.model.infer_step(z,sigmas,i,c,uc)
+                feature_cache = self.model.get_feature_cache()
+                self.feature_cache.update(feature_cache,i)
+            else:
+                z = self.model.infer_step(z,sigmas,i,c,uc)
+        return z
+
+    def forward(self,batch):
+        if batch['first_frame'][0] == [1]:
+            self.reset(True)
+            output = self._forward(batch,False)
+            self.cond_frames = output.detach()
+        else:
+            self.set_init_feature(False)
+            output = self._forward(batch,True)
+            self.cond_frames = output.detach()
+        return output.detach().cpu()
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')

@@ -218,8 +218,8 @@ class BasicTransformerBlock(nn.Module):
         if not self.use_image_clip:
             x = self.attn2(self.norm2(x), context=context) + x
         else:
-            x = self.attn2(self.norm2(x), context=context[:,:-1]) + x
-            x = self.attn3(self.norm4(x),context=context[:,-1:]) + x
+            x = self.attn2(self.norm2(x), context=context[:,1:]) + x
+            x = self.attn3(self.norm4(x),context=context[:,0:1]) + x
         x = self.ff(self.norm3(x)) + x
         return x
 

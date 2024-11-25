@@ -670,6 +670,7 @@ class StreamingSDCondition(nn.Module):
             self,
             batch:Dict,
             force_zero_embeddings:Optional[List]=None,
+            is_inference:bool=False,
     ) -> Dict:
         output = dict()
         if force_zero_embeddings is None:
@@ -683,7 +684,8 @@ class StreamingSDCondition(nn.Module):
                     emb_out = embedder(batch[embedder.input_key])
                 elif hasattr(embedder,"input_keys"):
                     emb_out = [embedder(batch[k]) for k in embedder.input_keys]
-                    emb_out[0] += torch.normal(0,0.2,size=emb_out[0].shape).to(emb_out[0].device)
+                    if not is_inference:
+                        emb_out[0] += torch.normal(0,0.2,size=emb_out[0].shape).to(emb_out[0].device)
                     # emb_out = [x + torch.normal(0,1,size=x.shape) for x in emb_out]
             assert isinstance(
                 emb_out, (torch.Tensor, list, tuple)
@@ -723,6 +725,7 @@ class StreamingSDCondition(nn.Module):
             batch_uc:Optional[Dict] = None,
             force_uc_zero_embeddings:Optional[List[str]] = None,
             force_cond_zero_embeddings: Optional[List[str]] = None,
+            is_inference: bool = True,
     ):
         if force_uc_zero_embeddings is None:
             force_uc_zero_embeddings = []
@@ -730,7 +733,7 @@ class StreamingSDCondition(nn.Module):
         for embedder in self.embedders:
             ucg_rates.append(embedder.ucg_rate)
             embedder.ucg_rate = 0.0
-        c = self(batch_c,force_cond_zero_embeddings)
+        c = self(batch_c,force_cond_zero_embeddings,is_inference)
         uc = self(batch_c if batch_uc is None else batch_uc,force_uc_zero_embeddings)
 
         for embedder,rate in zip(self.embedders,ucg_rates):

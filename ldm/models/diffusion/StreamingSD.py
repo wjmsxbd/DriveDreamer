@@ -331,12 +331,13 @@ class StreamingSD(pl.LightningModule):
         self.model.clear_model_cache()
 
     @torch.no_grad()
-    def get_unconditional_conditioning(self,batch):
+    def get_unconditional_conditioning(self,batch,is_inference=True):
         ucg_keys = [e.input_key for e in self.global_condition.embedders if e.ucg_rate>0.]
         c,uc = self.global_condition.get_unconditional_conditioning(
             batch,
             force_uc_zero_embeddings=ucg_keys
-            if len(self.global_condition.embedders)>0 else list()
+            if len(self.global_condition.embedders)>0 else list(),
+            is_inference=is_inference,
         )
         return c,uc
     

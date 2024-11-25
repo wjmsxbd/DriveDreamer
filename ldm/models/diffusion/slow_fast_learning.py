@@ -217,8 +217,8 @@ class SlowFastLearning(pl.LightningModule):
             self.model.set_model_init_feature(False)
             batch['samples'] = self.cond_frames
             output,cond = self.fast_learning(self.model,batch,self.num_frame%self.window_size!=0)
+            cond = self.replace_cond_latent(cond,self.cond_frames)
             self.cond_frames = output.detach()
-            cond = self.replace_cond_latent(cond,output)
             cond = {k:copy.deepcopy(v.detach().cpu()) for k,v in cond.items()}
             self.generate_data.append(cond)
             self.num_frame += 1

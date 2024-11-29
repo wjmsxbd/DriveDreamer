@@ -455,8 +455,13 @@ if __name__ == "__main__":
                         type=int,
                         help="decode n samples")
     parser.add_argument('--video_decoder',
-                        action='store_true',
+                        type=str,
+                        default=None,
                         help="use video decoder")
+    parser.add_argument('--more_frames',
+                        default=0,
+                        type=int,
+                        help="continue infer more_frames")
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
     torch.manual_seed(23)
@@ -467,11 +472,13 @@ if __name__ == "__main__":
     local_rank = cmd_args.local_rank
     samples_per_gpu = cmd_args.samples_per_gpu
     n_samples = cmd_args.n_samples
+    more_frames = cmd_args.more_frames
     video_decoder = cmd_args.video_decoder
-    if not video_decoder:
+    if video_decoder is None:
         decoder = None
     else:
-        pass
+        video_decoder_config = omegaconf.OmegaConf.load(video_decoder)
+        decoder = instantiate_from_config(video_decoder_config['model'])
 
     world_size = int(os.environ['WORLD_SIZE'])
     rank = int(os.environ['RANK'])
@@ -497,6 +504,8 @@ if __name__ == "__main__":
     if device == 'cuda':
         print(f"now_process:{local_rank}")
         network = network.eval().to(f'cuda:{cuda_id[local_rank]}')
+        if not decoder is None:
+            decoder = decoder.eval().to(f'cuda:{cuda_id[local_rank]}')
     save_path = 'all_pics/'
     save_path = os.path.join(save_path,path_type)
     cam_real_save_path = save_path + '/cam_inputs/'
@@ -521,10 +530,16 @@ if __name__ == "__main__":
     count_first_frame_idx = dict()
     collate_latent = {}
     first_frame_keys = []
+    pre_batch = None
     with torch.no_grad():
         for _,batch in tqdm(enumerate(data_loader_)):
             if batch['first_frame'][0] == 1 or batch['first_frame'][0] == [1]:
                 if first_frame_keys != []:
+                    if device == 'cuda':
+                        batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
+                    collate_latent = network.continue_infer(collate_latent,more_frames,batch,first_frame_idx)
+                    if device == 'cuda':
+                        batch = {k:v.cpu() if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
                     decoder_latent_in_dict(collate_latent,first_frame_keys,network,cam_sample_save_path,n_samples,decoder)
                     first_frame_keys = []
                 first_frame_idx = batch['idx']
@@ -555,8 +570,14 @@ if __name__ == "__main__":
                     collate_latent[idx].append(output[i])
                     count_first_frame_idx[idx] += 1
             now_frames += 1
+            pre_batch = batch
 
     if first_frame_keys != []:
+        if device == 'cuda':
+            pre_batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in pre_batch.items()}
+        collate_latent = network.continue_infer(collate_latent,more_frames,pre_batch,first_frame_idx)
+        if device == 'cuda':
+            pre_batch = {k:v.cpu() if isinstance(v,torch.Tensor) else v for k,v in pre_batch.items()}
         decoder_latent_in_dict(collate_latent,first_frame_keys,network,cam_sample_save_path,n_samples,decoder)
     # for _,batch in tqdm(enumerate(data_loader_)):
     #     if batch['first_frame'][0] == 1 or batch['first_frame'][0] == [1]:

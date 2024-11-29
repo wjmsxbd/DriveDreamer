@@ -542,6 +542,36 @@ class StreamingSDInferPipeLine(pl.LightningModule):
     def set_init_feature(self,init_feature):
         self.model.set_model_init_feature(init_feature)
 
+    def continue_infer(self,collate_latent,T,batch,first_frame_idx):
+        last_frame = torch.stack([collate_latent[idx][-1] for idx in first_frame_idx],dim=0)
+        cond_frame = last_frame.to(self.device)
+        now_frame = len(collate_latent[first_frame_idx[0]])
+        for i in range(T):
+            sigmas = self.model.prepare_sigmas()
+            num_sigmas = len(sigmas)
+            c,uc = self.model.get_unconditional_conditioning(batch)
+            z = torch.randn_like(cond_frame).to(self.device)
+            uc['concat'][:,:4] = cond_frame
+            c = uc
+            for i in range(num_sigmas-1):
+                if self.use_feature_cache:
+                    feature_cache = self.feature_cache.get_feature_in_row(i)
+                    self.model.replace_feature_cache(feature_cache)
+                    z = self.model.infer_step(z,sigmas,i,c,uc)
+                    feature_cache = self.model.get_feature_cache()
+                    self.feature_cache.update(feature_cache,i)
+                else:
+                    z = self.model.infer_step(z,sigmas,i,c,uc)
+            cond_frame = z
+            batch_index = 0
+            for idx in first_frame_idx:
+                if now_frame == len(collate_latent[idx]):
+                    collate_latent[idx].append(z[batch_index].detach().cpu())
+                batch_index += 1
+            now_frame += 1
+        return collate_latent
+
+
     def _forward(self,batch,replace_cond_frames=False):
         sigmas = self.model.prepare_sigmas()
         num_sigmas = len(sigmas)

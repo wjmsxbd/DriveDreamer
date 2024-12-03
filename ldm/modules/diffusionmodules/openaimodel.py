@@ -509,7 +509,7 @@ class UNetModel(nn.Module):
         self.predict_codebook_ids = n_embed is not None
         self.window_size = window_size
         self.choose_feature_idx = choose_feature_idx
-
+        self.zero_feature_cache = None
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
             linear(model_channels, time_embed_dim),
@@ -716,6 +716,17 @@ class UNetModel(nn.Module):
     def replace_feature_cache(self,feature):
         self.feature_cache.replace_cache(feature)
 
+    def prepare_model_setting(self,first_frame):
+        if self.zero_feature_cache is None:
+            return
+        for i in range(len(first_frame)):
+            if first_frame[i] == [1]:
+                zero_feature = [copy.deepcopy(self.zero_feature_cache) for _ in range(self.window_size)]
+                self.feature_cache.replace_cache(zero_feature,i)
+        
+    def check_cache_is_empty(self,):
+        return self.feature_cache.check_cache_is_empty()
+
     def get_feature_cache(self):
         return self.feature_cache.get_cache()
 
@@ -727,7 +738,6 @@ class UNetModel(nn.Module):
         return self.feature_cache.get_cache()
 
     def set_model_init_feature(self,flag):
-        # print(f"now:set init feature:{flag}")
         self.init_feature = flag
 
     def convert_to_fp16(self):
@@ -769,19 +779,25 @@ class UNetModel(nn.Module):
         h = x.type(self.dtype)
         if self.use_cache:
             feature = []
-            init_feature_cache = []
+            if self.zero_feature_cache is None:
+                self.zero_feature_cache = []
+                flag = True
+            else:
+                flag = False
         #FX TODO:Save input_blocks feature in buffers
         for module in self.input_blocks:
             h = module(h, emb, context)
             if self.use_cache:
-                if self.init_feature:
-                    init_feature_cache.append(th.zeros_like(h).cpu())
+                if flag:
+                    self.zero_feature_cache.append(th.zeros_like(h).cpu())
                 feature.append(h.clone().detach().cpu())
             hs.append(h)
         if self.use_cache:
-            if self.init_feature:
-                zero_feature_cache = [copy.deepcopy(init_feature_cache) for i in range(self.window_size)]
+            if flag:
+                zero_feature_cache = [copy.deepcopy(self.zero_feature_cache) for i in range(self.window_size)]
+                self.zero_feature_cache = [copy.deepcopy(cache[:1]) for cache in self.zero_feature_cache]
                 self.feature_cache.replace_cache(zero_feature_cache)
+            
 
             for i in range(len(hs)):
                 temp_feature = self.feature_cache.get_feature(i).to(x.device)

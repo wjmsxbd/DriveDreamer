@@ -484,9 +484,11 @@ if __name__ == "__main__":
     rank = int(os.environ['RANK'])
     dist.init_process_group('nccl',world_size=world_size,rank=rank)
     if use_train:
-        data_loader = dataloader(**cfg.data.params.train.params)
+        data_loader = instantiate_from_config(cfg.data.params.train)
+        # data_loader = dataloader(**cfg.data.params.train.params)
     else:
-        data_loader = dataloader(**cfg.data.params.validation.params)
+        # data_loader = dataloader(**cfg.data.params.validation.params)
+        data_loader = instantiate_from_config(cfg.data.params.validation)
     
     sampler = DistributedSceneSampler(data_loader,samples_per_gpu=samples_per_gpu,seed=0,train=False)
 

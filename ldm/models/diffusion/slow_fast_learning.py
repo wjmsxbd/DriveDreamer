@@ -44,6 +44,7 @@ class SlowLearning(nn.Module):
         
     def forward(self,model,cond):
         x = cond['image']
+        model.prepare_model_setting(cond['first_frame'])
         loss = model.get_losses(x,cond)
         return loss
 
@@ -53,8 +54,16 @@ class FeatureCache1D:
         self.choose_feature_idx = choose_feature_idx
         self.cache = []
 
-    def replace_cache(self,feature):
-        self.cache = feature
+    def replace_cache(self,feature,index=None):
+        if index is None:
+            self.cache = feature
+        else:
+            for i in range(self.window_size): # time 
+                for j in range(len(self.cache[0])): # layer
+                    self.cache[i][j][index] = feature[i][j]
+
+    def check_cache_is_empty(self,):
+        return self.cache == []
 
     def clear_cache(self):
         self.cache = []
@@ -85,7 +94,7 @@ class FeatureCache2D:
         return self.cache[row]
 
     def update(self,feature,row):
-        self.cache[row] = feature
+        self.cache[row] = copy.deepcopy(feature)
 
     def clear_feature_cache(self,):
         self.cache.clear()
@@ -110,7 +119,9 @@ class FastLearning(nn.Module):
             c['concat'][:,:4] = batch['samples']
         for i in range(num_sigmas-1):
             feature_cache = self.cache.get_feature_in_row(i)
-            model.replace_feature_cache(feature_cache)
+            if feature_cache != []:
+                model.replace_feature_cache(feature_cache)
+            model.prepare_model_setting(batch['first_frame'])
             z = model.infer_step(z,sigmas,i,c,uc)
             feature_cache = model.get_feature_cache()
             self.cache.update(feature_cache,i)
@@ -119,7 +130,7 @@ class FastLearning(nn.Module):
 
 
 class SlowFastLearning(pl.LightningModule):
-    def __init__(self,model_config,num_steps,window_size=1,monitor='val/loss',use_scheduler=False,scheduler_config=None):
+    def __init__(self,model_config,num_steps,window_size=1,monitor='val/loss',use_scheduler=False,scheduler_config=None,force_train_step=None):
         super().__init__()
         self.automatic_optimization = False
         self.model = instantiate_from_config(model_config)
@@ -136,9 +147,13 @@ class SlowFastLearning(pl.LightningModule):
         self.adaptive_point = 0
         self.num_frame = 0
         self.cond_frames = None
+        self.force_train_step = force_train_step
         
-    def replace_cond_latent(self,cond,output):
-        cond['concat'][:,:4] = output.detach()
+    def replace_cond_latent(self,cond,output,first_frame):
+        for i in range(len(first_frame)):
+            if first_frame[i] == [1]:
+                continue
+            cond['concat'][i,:4] = output[i].detach()
         return cond
 
     def clear_generate_data(self,):
@@ -163,65 +178,59 @@ class SlowFastLearning(pl.LightningModule):
             return batch
         else:
             return None
-        
+
     #TODO: choose training type and manual_backward optimizer.step() optimizer.zero_grad()
     def training_step(self,batch,batch_idx):
-        assert 'first_frame' in batch.keys()
-        b = len(batch['first_frame'])
-        if batch['first_frame'][0] == [1]:
-            self.model.clear_model_cache()
-            self.model.set_model_init_feature(True)
-            self.num_frame = 0
-            # check idx == 0? if not training slow else go on
-            # if len == window_size -> replace cond_frame
-            if len(self.generate_data) != 0:
-                # create data and slow learning
-                fast_dataset = self.generate_data
-                dataset_lengths = self.gather_dataset_len(len(fast_dataset))
-                max_length = torch.max(torch.cat([t for t in dataset_lengths])).cpu().item()
-                for i in range(max_length - len(fast_dataset)):
-                    fast_dataset.append(None)
-                fast_dataset = DataLoader(fast_dataset,batch_size=1,collate_fn=self.collate_fn)
-                
-                tqdm_bar = tqdm(enumerate(fast_dataset),total=len(fast_dataset))
-                for _,data in tqdm_bar:
-                    if data is None:
-                        self.slow_optimizer.zero_grad()
-                        self.manual_backward(None)
-                        self.slow_optimizer.step()
-                        continue
-                    for k in data.keys():
-                        data[k] = data[k].to(self.device)
-                    loss = self.slow_learning(self.model,data)
-                    log_prefix = "train" if self.training else "val"
-                    loss_dict = {f"{log_prefix}/loss":loss}
-                    tqdm_bar.set_postfix(loss=loss.item())
-                    self.log_dict(loss_dict,prog_bar=True,logger=True,on_step=True,on_epoch=True)
-                    self.slow_optimizer.zero_grad()
-                    self.manual_backward(loss)
-                    self.slow_optimizer.step()
-                    if _ == 0:
-                        self.model.set_model_init_feature(False)
-                self.clear_generate_data()
+        self.force_training_step(batch,batch_idx)
 
-            self.model.clear_model_cache()
-            self.model.set_model_init_feature(True)
+    def prepare_model_setting(self,first_frame):
+        self.model.prepare_model_setting(first_frame)
+
+    def force_training_step(self,batch,batch_idx):
+        if len(self.generate_data) == self.force_train_step:
+            # slow learning
+            assert 'first_frame' in batch.keys()
+            b = len(batch['first_frame'])
+            fast_dataset = self.generate_data
+            fast_dataset = DataLoader(fast_dataset,batch_size=1,collate_fn=self.collate_fn)
+                    
+            tqdm_bar = tqdm(enumerate(fast_dataset),total=len(fast_dataset))
+            for _,data in tqdm_bar:
+                self.prepare_model_setting(data['first_frame'])
+                for k in data.keys():
+                    if isinstance(data[k],torch.Tensor):
+                        data[k] = data[k].to(self.device)
+                loss = self.slow_learning(self.model,data)
+                log_prefix = "train" if self.training else 'val'
+                loss_dict = {f"{log_prefix}/loss":loss}
+                tqdm_bar.set_postfix(loss=loss.item())
+                self.log_dict(loss_dict,prog_bar=True,logger=True,on_step=True,on_epoch=True)
+                self.slow_optimizer.zero_grad()
+                self.manual_backward(loss)
+                self.slow_optimizer.step()
+            self.clear_generate_data()
+            # fast learning
+            self.num_frame = 0
             batch['samples'] = self.cond_frames
-            output,cond = self.fast_learning(self.model,batch,self.num_frame%self.window_size!=0)
+            output,cond = self.fast_learning(self.model,batch,self.num_frame % self.window_size!=0)
+            cond['first_frame'] = batch['first_frame']
             self.cond_frames = output.detach()
-            cond = self.replace_cond_latent(cond,output)
-            cond = {k:copy.deepcopy(v.detach().cpu()) for k,v in cond.items()}
+            cond = self.replace_cond_latent(cond,output,batch['first_frame'])
+            cond = {k:copy.deepcopy(v.detach().cpu()) if isinstance(v,torch.Tensor) else v for k,v in cond.items()}
             self.generate_data.append(cond)
             self.num_frame += 1
         else:
-            self.model.set_model_init_feature(False)
+            #fast learning
             batch['samples'] = self.cond_frames
-            output,cond = self.fast_learning(self.model,batch,self.num_frame%self.window_size!=0)
-            cond = self.replace_cond_latent(cond,self.cond_frames)
+            output,cond = self.fast_learning(self.model,batch,self.num_frame % self.window_size!=0)
+            cond['first_frame'] = batch['first_frame']
+            cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'])
             self.cond_frames = output.detach()
-            cond = {k:copy.deepcopy(v.detach().cpu()) for k,v in cond.items()}
+            cond = {k:copy.deepcopy(v.detach().cpu()) if isinstance(v,torch.Tensor) else v for k,v in cond.items()}
             self.generate_data.append(cond)
             self.num_frame += 1
+
+
         
     def manual_backward(self,loss,*args,**kwargs):
         if not loss is None:
@@ -257,41 +266,23 @@ class SlowFastLearning(pl.LightningModule):
         assert 'first_frame' in batch.keys()
         if self.model.use_ema:
             with self.model.ema_scope():
-                if batch['first_frame'][0] == [1]:
-                    self.num_frame = 0
-                    self.model.clear_model_cache()
-                    self.model.set_model_init_feature(True)
-                    z = self.model.get_input(batch)
-                    cond = self.model.get_condition(batch)
-                    loss,predict = self.model.get_losses(z,cond,return_predict=True)
-                    self.cond_frames = predict.detach()
-                else:
-                    z = self.model.get_input(batch)
-                    cond = self.model.get_condition(batch)
-                    self.model.set_model_init_feature(False)
-                    cond = self.replace_cond_latent(cond,self.cond_frames)
-                    loss,predict = self.model.get_losses(z,cond,return_predict=True)
-                    self.cond_frames = predict.detach()
+                self.prepare_model_setting(batch['first_frame'])
+                z = self.model.get_input(batch)
+                cond = self.model.get_condition(batch)
+                cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'])
+                loss,predict = self.model.get_losses(z,cond,return_predict=True)
+                self.cond_frames = predict.detach()
                 log_prefix = "train" if self.training else "val"
                 loss_dict_ema = {f"{log_prefix}/loss":loss}
                 self.log_dict(loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
                 self.num_frame += 1
         else:
-            if batch['first_frame'][0] == [1]:
-                self.num_frame = 0
-                self.model.clear_model_cache()
-                self.model.set_model_init_feature(True)
-                z = self.model.get_input(batch)
-                cond = self.model.get_condition(batch)
-                loss,predict = self.model.get_losses(z,cond,return_predict=True)
-                self.cond_frames = predict.detach()
-            else:
-                z = self.model.get_input(batch)
-                cond = self.model.get_condition(batch)
-                self.model.set_model_init_feature(False)
-                cond = self.replace_cond_latent(cond,self.cond_frames)
-                loss,predict = self.model.get_losses(z,cond,return_predict=True)
-                self.cond_frames = predict.detach()
+            self.prepare_model_setting(batch['first_frame'])
+            z = self.model.get_input(batch)
+            cond = self.model.get_condition(batch)
+            cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'])
+            loss,predict = self.model.get_losses(z,cond,return_predict=True)
+            self.cond_frames = predict.detach()
             log_prefix = "train" if self.training else "val"
             loss_dict_no_ema = {f"{log_prefix}/loss":loss}
             self.log_dict(loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)

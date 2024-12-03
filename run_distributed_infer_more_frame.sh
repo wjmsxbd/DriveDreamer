@@ -1,0 +1,1 @@
+python -m torch.distributed.launch --nproc_per_node=1 --nnodes=1 --node_rank=0 distributed_infer.py --config configs/streamingSD_cache_infer.yaml --device cuda --cuda_id 0, --type test --samples_per_gpu 1 --n_samples 8 --train --video_decoder configs/video_decoder.yaml --more_frames 24

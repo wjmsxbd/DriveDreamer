@@ -39,4 +39,5 @@ class StreamingSDWrapper(IdentityWrapper):
     def set_model_init_feature(self,flag):
         self.diffusion_model.set_model_init_feature(flag)
 
-    
+    def prepare_model_setting(self,first_frame):
+        self.diffusion_model.prepare_model_setting(first_frame)

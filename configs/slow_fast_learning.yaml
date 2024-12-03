@@ -5,6 +5,7 @@ model:
   params:
     num_steps: 15
     window_size: 10
+    force_train_step: 500
     model_config:
       target: ldm.models.diffusion.StreamingSD.StreamingSD
       params:
@@ -156,7 +157,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 4
+    batch_size: 1
     wrap: False
     num_workers: 0
     use_distributed_scene_sampler: true
@@ -209,7 +210,7 @@ lightning:
 
   trainer:
     benchmark: True
-    gpus: 0,1
+    gpus: 0,1,2,3
     # device: 1
     # gpus: 0,
     num_nodes: 1

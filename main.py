@@ -336,6 +336,95 @@ class DistributedSceneSampler(Sampler):
         self.epoch = epoch
 
 
+class DistributedSceneSampler2(Sampler):
+    def __init__(self,
+                 dataset,
+                 samples_per_gpu=1,
+                 num_replicas=None,
+                 rank=None,
+                 shuffle=False,
+                 train=True,
+                 seed=0):
+        rank = int(os.environ.get("RANK", 0)) 
+        world_size = int(os.environ.get("WORLD_SIZE", 1)) 
+
+        print(f"Global rank (RANK): {rank}")
+        print(f"World size (WORLD_SIZE): {world_size}")
+        _rank,_num_replicas = rank,world_size
+        if num_replicas is None:
+            num_replicas = _num_replicas
+        if rank is None:
+            rank = _rank
+        self.dataset = dataset
+        self.shuffle = shuffle
+        self.samples_per_gpu = samples_per_gpu
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.epoch = 0
+        self.seed = seed if seed is not None else 0
+        self.train = train
+
+        assert hasattr(dataset,'scenes')
+        self.scenes = dataset.scenes
+        self.max_scene_len = np.bincount(dataset.scenes).max()
+        self.idx2len = {}
+        pre = 0
+        for i in range(1,self.scenes.shape[0]):
+            if self.scenes[i] != self.scenes[i-1]:
+                scene_len = i - pre
+                self.idx2len[pre] = scene_len
+                pre = i
+        if pre != self.scenes.shape[0] - 1:
+            scene_len = self.scenes.shape[0] - pre
+            self.idx2len[pre] = scene_len
+        self.total_samples = (len(self.idx2len.keys()) + self.samples_per_gpu - 1) // self.samples_per_gpu
+        self.num_batch = math.ceil(self.total_samples / self.num_replicas)
+
+        self.up_len = self.num_batch * self.max_scene_len
+        
+    
+    def __iter__(self):
+        g = torch.Generator()
+        g.manual_seed(self.epoch + self.seed)
+        origin_first_frame_idx = list(self.idx2len.keys())
+        #shuffle len
+        if self.shuffle:
+            choose_idx = torch.randperm(len(origin_first_frame_idx),generator=g).tolist()
+        else:
+            choose_idx = torch.arange(0,len(origin_first_frame_idx)).tolist()
+        first_frame_idx = [origin_first_frame_idx[idx] for idx in choose_idx]
+        data_pointer = []
+        interval_l = self.rank * self.num_batch
+        for _ in range(self.samples_per_gpu):
+            data_pointer.append((interval_l + _)%len(first_frame_idx))
+        
+        indices = []
+        now_idx = [first_frame_idx[data_pointer[_]] for _ in range(self.samples_per_gpu)]
+        now_scene_len = [0 for _ in range(self.samples_per_gpu)]
+
+        while len(indices) < self.up_len:
+            idx = [now_idx[i] + now_scene_len[i] for i in range(self.samples_per_gpu)]
+            indices.append(idx)
+            for i in range(self.samples_per_gpu):
+                now_scene_len[i] += 1
+                if self.idx2len[now_idx[i]] == now_scene_len[i]:
+                    data_pointer[i] = (data_pointer[i] + self.samples_per_gpu) % len(first_frame_idx)
+                    now_idx[i] = first_frame_idx[data_pointer[i]]
+                    now_scene_len[i] = 0
+        return iter(indices)
+
+    
+    def __len__(self):
+        if self.train:
+            return len(list(self.__iter__()))
+        else:
+            return self.up_len
+    
+    def set_epoch(self,epoch):
+        self.epoch = epoch
+
+
+
 
 class DataModuleFromConfig(pl.LightningDataModule):
     def __init__(self, batch_size, use_distributed_scene_sampler=False,samples_per_gpu=None,train=None, validation=None, test=None, predict=None,
@@ -377,11 +466,11 @@ class DataModuleFromConfig(pl.LightningDataModule):
         if self.wrap:
             for k in self.datasets:
                 self.datasets[k] = WrappedDataset(self.datasets[k])
-                self.samplers[k] = DistributedSceneSampler(self.datasets[k],self.samples_per_gpu,seed=23)
+                self.samplers[k] = DistributedSceneSampler2(self.datasets[k],self.samples_per_gpu,seed=23)
         else:
             if self.use_distributed_scene_sampler:
                 for k in self.datasets:
-                    self.samplers[k] = DistributedSceneSampler(self.datasets[k],self.samples_per_gpu,seed=23,shuffle=True if k=='train' else False)
+                    self.samplers[k] = DistributedSceneSampler2(self.datasets[k],self.samples_per_gpu,seed=23,shuffle=True if k=='train' else False)
             else:
                 for k in self.datasets:
                     self.samplers[k] = None

@@ -251,12 +251,12 @@ class StreamingSD(pl.LightningModule):
         assert isinstance(x,torch.Tensor)
         encoder_posterior = self.encode_first_stage(x)
         #FX TODO:call self.model.clear_model_cache() if batch['first_frame'] == 1   
-        if 'first_frame' in batch.keys():
-            if batch['first_frame'][0] == [1]:
-                self.model.clear_model_cache()
-                self.model.set_model_init_feature(True)
-            else:
-                self.model.set_model_init_feature(False)
+        # if 'first_frame' in batch.keys():
+        #     if batch['first_frame'][0] == [1]:
+        #         self.model.clear_model_cache()
+        #         self.model.set_model_init_feature(True)
+        #     else:
+        #         self.model.set_model_init_feature(False)
         z = self.get_first_stage_encoding(encoder_posterior).detach()
         if return_first_stage_outputs:
             x_rec = self.decode_first_stage(z)
@@ -384,6 +384,9 @@ class StreamingSD(pl.LightningModule):
             gamma
         )
         return x
+
+    def prepare_model_setting(self,first_frame):
+        self.model.prepare_model_setting(first_frame)
 
     @torch.no_grad()
     def sample(
@@ -584,7 +587,9 @@ class StreamingSDInferPipeLine(pl.LightningModule):
         for i in range(num_sigmas-1):
             if self.use_feature_cache:
                 feature_cache = self.feature_cache.get_feature_in_row(i)
-                self.model.replace_feature_cache(feature_cache)
+                if feature_cache != []:
+                    self.model.replace_feature_cache(feature_cache)
+                self.model.prepare_model_setting(batch['first_frame'])
                 z = self.model.infer_step(z,sigmas,i,c,uc)
                 feature_cache = self.model.get_feature_cache()
                 self.feature_cache.update(feature_cache,i)
@@ -594,11 +599,9 @@ class StreamingSDInferPipeLine(pl.LightningModule):
 
     def forward(self,batch):
         if batch['first_frame'][0] == [1]:
-            self.reset(True)
             output = self._forward(batch,False)
             self.cond_frames = output.detach()
         else:
-            self.set_init_feature(False)
             output = self._forward(batch,True)
             self.cond_frames = output.detach()
         return output.detach().cpu()

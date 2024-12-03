@@ -9,8 +9,8 @@ model:
         scale_factor: 0.18215
         training_strategy: feature
         load_from_ema: False
-        ckpt_path: 
-        slow_fast_path: /public/home/wangjm2024/DriveDreamer/logs/2024-11-23T22-09-13_slow_fast_learning/checkpoints/last.ckpt
+        ckpt_path: #/storage/group/4dvlab/wangjm2024/last.ckpt
+        slow_fast_path: logs/2024-12-02T20-14-16_slow_fast_learning/checkpoints/last.ckpt 
         ignore_keys: ['cond_stage_model'] #TODO:!!!!!!!!!
         monitor: val/loss #use ema?
         use_ema: False #use ema?
@@ -160,7 +160,7 @@ data:
     num_workers: 0
     use_distributed_scene_sampler: true
     train:
-      target: data.dataloader_streamingSD_sampler.dataloader
+      target: distributed_infer.dataloader
       params:
         cfg:
           version: v1.0-mini
@@ -179,7 +179,7 @@ data:
             p_std: 1.6
     
     validation:
-      target: data.dataloader_streamingSD_sampler.dataloader
+      target: distributed_infer.dataloader
       params:
         cfg:
           version: v1.0-mini

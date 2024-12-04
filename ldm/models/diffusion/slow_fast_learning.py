@@ -108,7 +108,7 @@ class FastLearning(nn.Module):
         self.cache = FeatureCache2D(num_steps)
     
     @torch.no_grad()
-    def forward(self,model,batch,replace=False,):
+    def forward(self,model,batch,replace):
         sigmas = model.prepare_sigmas()
         num_sigmas = len(sigmas)
         c,uc = model.get_unconditional_conditioning(batch)
@@ -116,8 +116,9 @@ class FastLearning(nn.Module):
         c['image'] = z
         randn = torch.randn_like(z).to(z.device)
         z = randn
-        if replace:
-            c['concat'][:,:4] = batch['samples']
+        for i in range(len(replace)):
+            if replace[i]:
+                c['concat'][i,:4] = batch['samples'][i]
         for i in range(num_sigmas-1):
             feature_cache = self.cache.get_feature_in_row(i)
             if feature_cache != []:
@@ -129,9 +130,37 @@ class FastLearning(nn.Module):
         
         return z,c
 
+class FrameCounter:
+    def __init__(self):
+        self.num_frame = None
+
+    def update(self):
+        for i in range(len(self.num_frame)):
+            self.num_frame[i] += 1
+
+    def prepare(self,first_frame):
+        if self.num_frame is None:
+            self.num_frame = []
+            for i in range(len(first_frame)):
+                self.num_frame.append(0)
+        else:
+            for i in range(len(first_frame)):
+                if first_frame[i] == [1]:
+                    self.num_frame[i] = 0
+
+    def replace(self,window_size):
+        replace_flags = []
+        for i in range(len(self.num_frame)):
+            if self.num_frame[i] % window_size != 0:
+                replace_flags.append(True)
+            else:
+                replace_flags.append(False)
+        return replace_flags
+
+    
 
 class SlowFastLearning(pl.LightningModule):
-    def __init__(self,model_config,num_steps,window_size=1,monitor='val/loss',use_scheduler=False,scheduler_config=None,force_train_step=None,replace_window_size=1):
+    def __init__(self,model_config,num_steps,window_size=1,monitor='val/loss',use_scheduler=False,scheduler_config=None,force_train_step=None,replace_window_size=2):
         super().__init__()
         self.automatic_optimization = False
         self.model = instantiate_from_config(model_config)
@@ -147,7 +176,7 @@ class SlowFastLearning(pl.LightningModule):
         #TODO: adaptive window size add monitor
         self.adaptive_window_size = [1,3,5,8,21,34,55,1000]
         self.adaptive_point = 0
-        self.num_frame = 0
+        self.num_frame = FrameCounter()
         self.cond_frames = None
         self.force_train_step = force_train_step
         
@@ -189,9 +218,10 @@ class SlowFastLearning(pl.LightningModule):
         self.model.prepare_model_setting(first_frame)
 
     def force_training_step(self,batch,batch_idx):
+        assert 'first_frame' in batch.keys()
+        self.num_frame.prepare(batch['first_frame'])
         if len(self.generate_data) == self.force_train_step:
             # slow learning
-            assert 'first_frame' in batch.keys()
             b = len(batch['first_frame'])
             fast_dataset = self.generate_data
             fast_dataset = DataLoader(fast_dataset,batch_size=1,collate_fn=self.collate_fn)
@@ -212,25 +242,23 @@ class SlowFastLearning(pl.LightningModule):
                 self.slow_optimizer.step()
             self.clear_generate_data()
             # fast learning
-            self.num_frame = 0
             batch['samples'] = self.cond_frames
-            output,cond = self.fast_learning(self.model,batch,self.num_frame % self.replace_window_size!=0)
+            output,cond = self.fast_learning(self.model,batch,self.num_frame.replace(self.replace_window_size))
             cond['first_frame'] = batch['first_frame']
             self.cond_frames = output.detach()
             cond = self.replace_cond_latent(cond,output,batch['first_frame'])
             cond = {k:copy.deepcopy(v.detach().cpu()) if isinstance(v,torch.Tensor) else v for k,v in cond.items()}
             self.generate_data.append(cond)
-            self.num_frame += 1
         else:
             #fast learning
             batch['samples'] = self.cond_frames
-            output,cond = self.fast_learning(self.model,batch,self.num_frame % self.replace_window_size!=0)
+            output,cond = self.fast_learning(self.model,batch,self.num_frame.replace(self.replace_window_size))
             cond['first_frame'] = batch['first_frame']
             cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'])
             self.cond_frames = output.detach()
             cond = {k:copy.deepcopy(v.detach().cpu()) if isinstance(v,torch.Tensor) else v for k,v in cond.items()}
             self.generate_data.append(cond)
-            self.num_frame += 1
+        self.num_frame.update()
 
 
         
@@ -271,7 +299,7 @@ class SlowFastLearning(pl.LightningModule):
                 self.prepare_model_setting(batch['first_frame'])
                 z = self.model.get_input(batch)
                 cond = self.model.get_condition(batch)
-                cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'])
+                # cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'])
                 loss,predict = self.model.get_losses(z,cond,return_predict=True)
                 self.cond_frames = predict.detach()
                 log_prefix = "train" if self.training else "val"
@@ -281,7 +309,7 @@ class SlowFastLearning(pl.LightningModule):
             self.prepare_model_setting(batch['first_frame'])
             z = self.model.get_input(batch)
             cond = self.model.get_condition(batch)
-            cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'])
+            # cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'])
             loss,predict = self.model.get_losses(z,cond,return_predict=True)
             self.cond_frames = predict.detach()
             log_prefix = "train" if self.training else "val"

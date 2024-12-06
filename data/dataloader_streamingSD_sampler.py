@@ -69,6 +69,7 @@ class dataloader(data.Dataset):
             'singapore-onenorth': NuScenesMap(dataroot='.', map_name='singapore-onenorth'),
             'singapore-queenstown': NuScenesMap(dataroot='.', map_name='singapore-queenstown'),
         }
+        self.sigmas = None
         # self.nusc_can = NuScenesCanBus(dataroot='/storage/group/4dvlab/datasets/nuScenes')
         self.return_pose_info = return_pose_info
         self.collect_condition = collect_condition
@@ -91,6 +92,7 @@ class dataloader(data.Dataset):
                 pic_infos[scene['name']] = [data_infos[id]]
             else:
                 pic_infos[scene['name']].append(data_infos[id])
+        print(pic_infos.keys())
         idx = 0
         scenes_id = 0
         scenes = []
@@ -118,8 +120,12 @@ class dataloader(data.Dataset):
     def __getitem__(self,idx):
         if isinstance(idx,list):
             data = []
-            if self.check_idx_is_first_frame(idx[0]):
+            if self.sigmas is None:
                 self.sigmas = self.sigma_sampler(len(idx))
+            else:
+                for i in range(len(idx)):
+                    if self.check_idx_is_first_frame(idx[i]):
+                        self.sigmas[i] = self.sigma_sampler(1)
             for i in range(len(idx)):
                 data.append(self.get_data_info(idx[i],i))
             return data
@@ -386,18 +392,98 @@ class DistributedSceneSampler(Sampler):
     def set_epoch(self,epoch):
         self.epoch = epoch
 
+class DistributedSceneSampler2(Sampler):
+    def __init__(self,
+                 dataset,
+                 samples_per_gpu=1,
+                 num_replicas=None,
+                 rank=None,
+                 shuffle=False,
+                 train=True,
+                 seed=0):
+        rank = 2
+        world_size = 4
+
+        print(f"Global rank (RANK): {rank}")
+        print(f"World size (WORLD_SIZE): {world_size}")
+        _rank,_num_replicas = rank,world_size
+        if num_replicas is None:
+            num_replicas = _num_replicas
+        if rank is None:
+            rank = _rank
+        self.dataset = dataset
+        self.shuffle = shuffle
+        self.samples_per_gpu = samples_per_gpu
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.epoch = 0
+        self.seed = seed if seed is not None else 0
+        self.train = train
+
+        assert hasattr(dataset,'scenes')
+        self.scenes = dataset.scenes
+        self.max_scene_len = np.bincount(dataset.scenes).max()
+        self.idx2len = {}
+        pre = 0
+        for i in range(1,self.scenes.shape[0]):
+            if self.scenes[i] != self.scenes[i-1]:
+                scene_len = i - pre
+                self.idx2len[pre] = scene_len
+                pre = i
+        if pre != self.scenes.shape[0] - 1:
+            scene_len = self.scenes.shape[0] - pre
+            self.idx2len[pre] = scene_len
+        self.total_samples = (len(self.idx2len.keys()) + self.samples_per_gpu - 1) // self.samples_per_gpu
+        self.num_batch = math.ceil(self.total_samples / self.num_replicas)
+
+        self.up_len = self.num_batch * self.max_scene_len
+        print(self.num_batch)
+        
+    
+    def __iter__(self):
+        g = torch.Generator()
+        g.manual_seed(self.epoch + self.seed)
+        origin_first_frame_idx = list(self.idx2len.keys())
+        #shuffle len
+        if self.shuffle:
+            choose_idx = torch.randperm(len(origin_first_frame_idx),generator=g).tolist()
+        else:
+            choose_idx = torch.arange(0,len(origin_first_frame_idx)).tolist()
+        first_frame_idx = [origin_first_frame_idx[idx] for idx in choose_idx]
+        data_pointer = []
+        interval_l = self.rank * self.num_batch
+        for _ in range(self.samples_per_gpu):
+            data_pointer.append((interval_l + _)%len(first_frame_idx))
+        
+        indices = []
+        now_idx = [first_frame_idx[data_pointer[_]] for _ in range(self.samples_per_gpu)]
+        now_scene_len = [0 for _ in range(self.samples_per_gpu)]
+
+        while len(indices) < self.up_len:
+            idx = [now_idx[i] + now_scene_len[i] for i in range(self.samples_per_gpu)]
+            indices.append(idx)
+            for i in range(self.samples_per_gpu):
+                now_scene_len[i] += 1
+                if self.idx2len[now_idx[i]] == now_scene_len[i]:
+                    data_pointer[i] = (data_pointer[i] + self.samples_per_gpu) % len(first_frame_idx)
+                    now_idx[i] = first_frame_idx[data_pointer[i]]
+                    now_scene_len[i] = 0
+        print(len(indices))
+        return iter(indices)
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='AutoDM-training')
     parser.add_argument('--config',
-                        default='configs/StreamingSD.yaml',
+                        default='configs/StreamingSD_cache.yaml',
                         type=str,
                         help="config path")
     cmd_args = parser.parse_args()
     cfg = omegaconf.OmegaConf.load(cmd_args.config)
     data_loader = dataloader(**cfg.data.params.train.params)
-    sampler = DistributedSceneSampler(data_loader,samples_per_gpu=2,seed=0)
-    # batch_size = 2
+    sampler = DistributedSceneSampler2(data_loader,samples_per_gpu=2,seed=0,num_replicas=1,rank=0)
+    
+    batch_size = 1
     data_loader_ = torch.utils.data.DataLoader(
         data_loader,
         batch_size  =   1,
@@ -406,6 +492,4 @@ if __name__ == "__main__":
         sampler=sampler
     )
     for _,batch in tqdm(enumerate(data_loader_)):
-        if _ > 1:
-            break
         pass

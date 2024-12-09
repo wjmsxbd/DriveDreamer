@@ -154,6 +154,7 @@ data:
     wrap: False
     num_workers: 0
     use_distributed_scene_sampler: true
+    stage: stage2
     train:
       target: data.dataloader_streamingSD_sampler.dataloader
       params:
@@ -203,7 +204,7 @@ lightning:
 
   trainer:
     benchmark: True
-    gpus: 0,1,2,3
+    gpus: 0,
     # device: 1
     # gpus: 0,
     num_nodes: 1

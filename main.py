@@ -429,7 +429,7 @@ class DistributedSceneSampler2(Sampler):
 class DataModuleFromConfig(pl.LightningDataModule):
     def __init__(self, batch_size, use_distributed_scene_sampler=False,samples_per_gpu=None,train=None, validation=None, test=None, predict=None,
                  wrap=False, num_workers=None, shuffle_test_loader=False, use_worker_init_fn=False,
-                 shuffle_val_dataloader=False):
+                 shuffle_val_dataloader=False,stage="stage2"):
         super().__init__()
         if use_distributed_scene_sampler:
             self.samples_per_gpu = batch_size
@@ -452,6 +452,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
             self.dataset_configs["predict"] = predict
             self.predict_dataloader = self._predict_dataloader
         self.wrap = wrap
+        self.stage = stage
 
     def prepare_data(self):
         # for data_cfg in self.dataset_configs.values():
@@ -466,11 +467,21 @@ class DataModuleFromConfig(pl.LightningDataModule):
         if self.wrap:
             for k in self.datasets:
                 self.datasets[k] = WrappedDataset(self.datasets[k])
-                self.samplers[k] = DistributedSceneSampler2(self.datasets[k],self.samples_per_gpu,seed=23)
+                if self.stage == 'stage2':
+                    self.samplers[k] = DistributedSceneSampler(self.datasets[k],self.samples_per_gpu,seed=23)
+                elif self.stage == 'stage3':
+                    self.samplers[k] = DistributedSceneSampler2(self.datasets[k],self.samples_per_gpu,seed=23)
+                else:
+                    raise NotImplementedError
         else:
             if self.use_distributed_scene_sampler:
                 for k in self.datasets:
-                    self.samplers[k] = DistributedSceneSampler2(self.datasets[k],self.samples_per_gpu,seed=23,shuffle=True if k=='train' else False)
+                    if self.stage == "stage2":
+                        self.samplers[k] = DistributedSceneSampler(self.datasets[k],self.samples_per_gpu,seed=23,shuffle=True if k=='train' else False)
+                    elif self.stage == 'stage3':
+                        self.samplers[k] = DistributedSceneSampler2(self.datasets[k],self.samples_per_gpu,seed=23,shuffle=True if k=='train' else False)
+                    else:
+                        raise NotImplementedError
             else:
                 for k in self.datasets:
                     self.samplers[k] = None

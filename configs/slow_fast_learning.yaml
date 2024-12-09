@@ -161,6 +161,7 @@ data:
     wrap: False
     num_workers: 0
     use_distributed_scene_sampler: true
+    stage: stage3
     train:
       target: data.dataloader_streamingSD_sampler.dataloader
       params:

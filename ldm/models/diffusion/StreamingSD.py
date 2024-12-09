@@ -197,6 +197,8 @@ class StreamingSD(pl.LightningModule):
 
     def shared_step(self,batch):
         x = self.get_input(batch)
+        if 'first_frame' in batch.keys():
+            self.prepare_model_setting(batch['first_frame'])
         loss,loss_dict = self(x,batch)
         return loss,loss_dict
 
@@ -372,7 +374,7 @@ class StreamingSD(pl.LightningModule):
         num_sigmas = len(sigmas)
         gamma = self.sampler.get_gamma(num_sigmas,sigmas[sigma_step])
         if sigma_step == 0:
-            x *= torch.sqrt(1.0 + sigmas[0] ** 2)
+            x = x * torch.sqrt(1.0 + sigmas[0] ** 2)
         denoiser = lambda input,sigma,c: self.denoiser(self.model,input,sigma,c)
         x = self.sampler.sampler_step(
             s_in * sigmas[sigma_step],
@@ -501,6 +503,7 @@ class StreamingSDInferPipeLine(pl.LightningModule):
         if use_feature_cache:
             self.feature_cache = FeatureCache2D(num_steps)
         self.cond_frames = None
+        self.noise_cache = None
         
     def save_tensor_as_image(self,tensor,file_path,index,frame):
         if tensor.is_cuda:
@@ -580,7 +583,13 @@ class StreamingSDInferPipeLine(pl.LightningModule):
         num_sigmas = len(sigmas)
         c,uc = self.model.get_unconditional_conditioning(batch)
         z = self.model.get_input(batch)
-        randn = torch.randn_like(z).to(z.device)
+        if self.noise_cache is None:
+            self.noise_cache = torch.randn_like(z)
+        randn = (torch.randn_like(z).to(z.device) + self.noise_cache) / 2.
+        # randn = self.noise_cache
+        # randn = self.noise_cache.clone().to(z.device)
+        # randn = torch.randn_like(z).to(z.device)
+        # print(f"init noise:{randn}")
         z = randn
         if replace_cond_frames:
             c['concat'][:,:4] = self.cond_frames
@@ -599,6 +608,7 @@ class StreamingSDInferPipeLine(pl.LightningModule):
 
     def forward(self,batch):
         if batch['first_frame'][0] == [1]:
+            self.noise_cache = None
             output = self._forward(batch,False)
             self.cond_frames = output.detach()
         else:

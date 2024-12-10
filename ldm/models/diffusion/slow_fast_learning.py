@@ -225,7 +225,7 @@ class SlowFastLearning(pl.LightningModule):
             b = len(batch['first_frame'])
             fast_dataset = self.generate_data
             fast_dataset = DataLoader(fast_dataset,batch_size=1,collate_fn=self.collate_fn)
-                    
+            self.model.train()
             tqdm_bar = tqdm(enumerate(fast_dataset),total=len(fast_dataset))
             for _,data in tqdm_bar:
                 self.prepare_model_setting(data['first_frame'])
@@ -242,6 +242,7 @@ class SlowFastLearning(pl.LightningModule):
                 self.slow_optimizer.step()
             self.clear_generate_data()
             # fast learning
+            self.model.eval()
             batch['samples'] = self.cond_frames
             output,cond = self.fast_learning(self.model,batch,self.num_frame.replace(self.replace_window_size))
             cond['first_frame'] = batch['first_frame']

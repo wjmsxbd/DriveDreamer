@@ -245,8 +245,8 @@ class SlowFastLearning(pl.LightningModule):
             batch['samples'] = self.cond_frames
             output,cond = self.fast_learning(self.model,batch,self.num_frame.replace(self.replace_window_size))
             cond['first_frame'] = batch['first_frame']
+            cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'])
             self.cond_frames = output.detach()
-            cond = self.replace_cond_latent(cond,output,batch['first_frame'])
             cond = {k:copy.deepcopy(v.detach().cpu()) if isinstance(v,torch.Tensor) else v for k,v in cond.items()}
             self.generate_data.append(cond)
         else:

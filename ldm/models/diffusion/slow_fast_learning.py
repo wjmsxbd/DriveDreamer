@@ -42,11 +42,17 @@ class SlowLearning(nn.Module):
     def __init__(self,
                 ):
         super().__init__()
+        self.cache = FeatureCache2D(num_steps=1)
         
     def forward(self,model,cond):
         x = cond['image']
+        feature_cache = self.cache.get_feature_in_row(0)
+        if feature_cache != []:
+            model.replace_feature_cache(feature_cache)
         model.prepare_model_setting(cond['first_frame'])
         loss = model.get_losses(x,cond)
+        feature_cache = model.get_feature_cache()
+        self.cache.update(feature_cache,0)
         return loss
 
 class FeatureCache1D:
@@ -133,6 +139,12 @@ class FastLearning(nn.Module):
 class FrameCounter:
     def __init__(self):
         self.num_frame = None
+
+    def check_is_empty(self,):
+        return self.num_frame is None
+
+    def get_num_frames(self):
+        return self.num_frame
 
     def update(self):
         for i in range(len(self.num_frame)):

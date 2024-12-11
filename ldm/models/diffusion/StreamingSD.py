@@ -578,18 +578,14 @@ class StreamingSDInferPipeLine(pl.LightningModule):
         return collate_latent
 
 
-    def _forward(self,batch,replace_cond_frames=False):
+    def _forward(self,batch,replace_cond_frames=False,return_first_frame=False):
         sigmas = self.model.prepare_sigmas()
         num_sigmas = len(sigmas)
         c,uc = self.model.get_unconditional_conditioning(batch)
         z = self.model.get_input(batch)
-        if self.noise_cache is None:
-            self.noise_cache = torch.randn_like(z)
-        randn = (torch.randn_like(z).to(z.device) + self.noise_cache) / 2.
-        # randn = self.noise_cache
-        # randn = self.noise_cache.clone().to(z.device)
-        # randn = torch.randn_like(z).to(z.device)
-        # print(f"init noise:{randn}")
+        if return_first_frame:
+            z_ = z
+        randn = torch.randn_like(z).to(z.device)
         z = randn
         if replace_cond_frames:
             c['concat'][:,:4] = self.cond_frames
@@ -604,13 +600,16 @@ class StreamingSDInferPipeLine(pl.LightningModule):
                 self.feature_cache.update(feature_cache,i)
             else:
                 z = self.model.infer_step(z,sigmas,i,c,uc)
-        return z
+        if return_first_frame:
+            return z,z_
+        else:
+            return z
 
     def forward(self,batch):
         if batch['first_frame'][0] == [1]:
             self.noise_cache = None
-            output = self._forward(batch,False)
-            self.cond_frames = output.detach()
+            output,z = self._forward(batch,False,True)
+            self.cond_frames = z.detach()
         else:
             output = self._forward(batch,True)
             self.cond_frames = output.detach()

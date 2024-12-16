@@ -2,15 +2,15 @@ model:
   target: ldm.models.diffusion.StreamingSD.StreamingSDInferPipeLine
   params:
     use_feature_cache: True
-    num_steps: 15
+    num_steps: 50
     model_config:
       target: ldm.models.diffusion.StreamingSD.StreamingSD
       params:
         scale_factor: 0.18215
         training_strategy: feature
         load_from_ema: False
-        ckpt_path: #/storage/group/4dvlab/wangjm2024/last.ckpt
-        slow_fast_path: logs/2024-12-02T20-14-16_slow_fast_learning/checkpoints/last.ckpt 
+        ckpt_path: #stable_diffusion/sd-v1-4.ckpt #/storage/group/4dvlab/wangjm2024/last.ckpt
+        slow_fast_path: logs/2024-12-06T15-14-55_slow_fast_learning/checkpoints/last.ckpt #logs/2024-12-02T20-14-16_slow_fast_learning/checkpoints/last.ckpt 
         ignore_keys: ['cond_stage_model'] #TODO:!!!!!!!!!
         monitor: val/loss #use ema?
         use_ema: False #use ema?
@@ -123,7 +123,9 @@ model:
               params:
                 sigma_max: 700.0
             guider_config:
-              target: ldm.modules.diffusionmodules.guiders.IdentityGuider
+              target: ldm.modules.diffusionmodules.guiders.IdentityGuider #LinearPredictionGuider2 #IdentityGuider
+              # params:
+              #   scale: 2.5
         denoiser_config:
           target: ldm.modules.diffusionmodules.denoiser.Denoiser
           params:
@@ -202,7 +204,7 @@ lightning:
     video_logger:
       target: main.ImageLogger
       params:
-        batch_frequency: 1000
+        batch_frequency: 1000000
         max_images: 8
         increase_log_steps: False
 

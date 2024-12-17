@@ -63,11 +63,11 @@ class FeatureCache1D:
 
     def replace_cache(self,feature,index=None):
         if index is None:
-            self.cache = feature
+            self.cache = copy.deepcopy(feature)
         else:
             for i in range(self.window_size): # time 
                 for j in range(len(self.cache[0])): # layer
-                    self.cache[i][j][index] = feature[i][j]
+                    self.cache[i][j][index] = copy.deepcopy(feature[i][j])
 
     def check_cache_is_empty(self,):
         return self.cache == []
@@ -76,19 +76,19 @@ class FeatureCache1D:
         self.cache = []
 
     def get_cache(self):
-        return self.cache
+        return copy.deepcopy(self.cache)
     
     def update(self,feature):
         assert len(self.cache) == self.window_size
         self.cache.pop(0)
-        self.cache.append(feature)
+        self.cache.append(copy.deepcopy(feature))
 
     def get_feature(self,col):
         temp_feature = []
         for idx in self.choose_feature_idx:
             temp_feature.append(self.cache[idx][col])
         temp_feature = torch.stack(temp_feature,dim=1)
-        return temp_feature
+        return copy.deepcopy(temp_feature)
 
     
 
@@ -98,7 +98,7 @@ class FeatureCache2D:
         self.num_steps = num_steps
 
     def get_feature_in_row(self,row):
-        return self.cache[row]
+        return copy.deepcopy(self.cache[row])
 
     def update(self,feature,row):
         self.cache[row] = copy.deepcopy(feature)
@@ -240,7 +240,6 @@ class SlowFastLearning(pl.LightningModule):
             self.model.train()
             tqdm_bar = tqdm(enumerate(fast_dataset),total=len(fast_dataset))
             for _,data in tqdm_bar:
-                self.prepare_model_setting(data['first_frame'])
                 for k in data.keys():
                     if isinstance(data[k],torch.Tensor):
                         data[k] = data[k].to(self.device)

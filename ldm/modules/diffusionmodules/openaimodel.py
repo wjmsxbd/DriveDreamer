@@ -725,15 +725,15 @@ class UNetModel(nn.Module):
 
     def prepare_model_setting(self,first_frame):
         if self.zero_feature_cache is None:
-            self.frame_counter.prepare(first_frame)
-            self.frame_counter.update()
+            # self.frame_counter.prepare(first_frame)
+            # self.frame_counter.update()
             return
         for i in range(len(first_frame)):
             if first_frame[i] == [1]:
                 zero_feature = [copy.deepcopy(self.zero_feature_cache) for _ in range(self.window_size)]
                 self.feature_cache.replace_cache(zero_feature,i)
-        self.frame_counter.prepare(first_frame)
-        self.frame_counter.update()
+        # self.frame_counter.prepare(first_frame)
+        # self.frame_counter.update()
         
     def check_cache_is_empty(self,):
         return self.feature_cache.check_cache_is_empty()
@@ -812,7 +812,7 @@ class UNetModel(nn.Module):
 
             for i in range(len(hs)):
                 temp_feature = self.feature_cache.get_feature(i).to(x.device)
-                hs[i] = self.feature_fusion[i](hs[i],temp_feature,self.frame_counter.get_num_frames())
+                hs[i] = self.feature_fusion[i](hs[i],temp_feature,None)#self.frame_counter.get_num_frames())
         h = self.middle_block(h, emb, context)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)

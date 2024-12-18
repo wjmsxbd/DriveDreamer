@@ -108,6 +108,9 @@ model:
             use_image_clip: True
             window_size: 10
             choose_feature_idx: [-10,-5,-1]
+            # use_rope_positional_encoding: True
+            # seq_len: 256
+            attn_type: softmax-xformers
       
     sampler_config:
       target: ldm.modules.diffusionmodules.sampling.EulerEDMSampler
@@ -198,7 +201,7 @@ lightning:
     video_logger:
       target: main.ImageLogger
       params:
-        batch_frequency: 1000
+        batch_frequency: 1000000
         max_images: 8
         increase_log_steps: False
 

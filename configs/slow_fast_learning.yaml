@@ -5,7 +5,7 @@ model:
   params:
     num_steps: 15
     window_size: 10
-    force_train_step: 500
+    force_train_step: 40
     model_config:
       target: ldm.models.diffusion.StreamingSD.StreamingSD
       params:
@@ -114,6 +114,7 @@ model:
                 use_image_clip: True
                 window_size: ${model.params.window_size}
                 choose_feature_idx: [-10,-5,-1]
+                attn_type: softmax-xformers
           
         sampler_config:
           target: ldm.modules.diffusionmodules.sampling.EulerEDMSampler
@@ -211,7 +212,7 @@ lightning:
 
   trainer:
     benchmark: True
-    gpus: 0,1,2,3
+    gpus: 0,
     # device: 1
     # gpus: 0,
     num_nodes: 1

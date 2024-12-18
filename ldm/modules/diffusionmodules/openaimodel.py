@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ldm.modules.diffusionmodules.util import (
-    checkpoint,
+
     conv_nd,
     linear,
     avg_pool_nd,
@@ -17,9 +17,10 @@ from ldm.modules.diffusionmodules.util import (
     normalization,
     timestep_embedding,
 )
+from torch.utils.checkpoint import checkpoint
 from ldm.modules.attention import SpatialTransformer,PixelTemporalAttention
 import copy
-from ldm.models.diffusion.slow_fast_learning import FeatureCache1D
+from ldm.models.diffusion.slow_fast_learning import FeatureCache1D,FrameCounter
 
 # dummy replace
 def convert_module_to_f16(x):
@@ -248,9 +249,10 @@ class ResBlock(TimestepBlock):
         :param emb: an [N x emb_channels] Tensor of timestep embeddings.
         :return: an [N x C x ...] Tensor of outputs.
         """
-        return checkpoint(
-            self._forward, (x, emb), self.parameters(), self.use_checkpoint
-        )
+        # return checkpoint(
+        #     self._forward, (x, emb), self.parameters(), self.use_checkpoint
+        # )
+        return checkpoint(self._forward,x,emb,use_reentrant=False)
 
 
     def _forward(self, x, emb):
@@ -313,8 +315,9 @@ class AttentionBlock(nn.Module):
         self.proj_out = zero_module(conv_nd(1, channels, channels, 1))
 
     def forward(self, x):
-        return checkpoint(self._forward, (x,), self.parameters(), True)   # TODO: check checkpoint usage, is True # TODO: fix the .half call!!!
+        # return checkpoint(self._forward, (x,), self.parameters(), True)   # TODO: check checkpoint usage, is True # TODO: fix the .half call!!!
         #return pt_checkpoint(self._forward, x)  # pytorch
+        return checkpoint(self._forward,x,use_reentrant=False)
 
     def _forward(self, x):
         b, c, *spatial = x.shape
@@ -471,6 +474,9 @@ class UNetModel(nn.Module):
         use_image_clip=False,
         window_size=10,
         choose_feature_idx=[-10,-5,-1],
+        use_rope_positional_encoding=False,
+        seq_len=256,
+        attn_type="softmax",
     ):
         super().__init__()
         if use_spatial_transformer:
@@ -511,6 +517,7 @@ class UNetModel(nn.Module):
         self.choose_feature_idx = choose_feature_idx
         self.zero_feature_cache = None
         time_embed_dim = model_channels * 4
+        # self.frame_counter = FrameCounter()
         self.time_embed = nn.Sequential(
             linear(model_channels, time_embed_dim),
             nn.SiLU(),
@@ -544,7 +551,7 @@ class UNetModel(nn.Module):
         for level, mult in enumerate(channel_mult):
             for _ in range(num_res_blocks):
                 if self.use_cache:
-                    self.feature_fusion.append(PixelTemporalAttention(ch,dim_head))
+                    self.feature_fusion.append(PixelTemporalAttention(ch,dim_head,use_rope_positional_encoding=use_rope_positional_encoding,seq_len=seq_len,choose_feature_idx=choose_feature_idx,attn_type=attn_type))
                 layers = [
                     ResBlock(
                         ch,
@@ -574,7 +581,7 @@ class UNetModel(nn.Module):
                             num_head_channels=dim_head,
                             use_new_attention_order=use_new_attention_order,
                         ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,use_image_clip=use_image_clip,
+                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,use_image_clip=use_image_clip,attn_type=attn_type
                         )
                     )
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
@@ -601,13 +608,13 @@ class UNetModel(nn.Module):
                     )
                 )
                 if self.use_cache:
-                    self.feature_fusion.append(PixelTemporalAttention(ch,dim_head))
+                    self.feature_fusion.append(PixelTemporalAttention(ch,dim_head,use_rope_positional_encoding=use_rope_positional_encoding,seq_len=seq_len,choose_feature_idx=choose_feature_idx,attn_type=attn_type))
                 ch = out_ch
                 input_block_chans.append(ch)
                 ds *= 2
                 self._feature_size += ch
         if self.use_cache:
-            self.feature_fusion.append(PixelTemporalAttention(ch,dim_head))
+            self.feature_fusion.append(PixelTemporalAttention(ch,dim_head,use_rope_positional_encoding=use_rope_positional_encoding,seq_len=seq_len,choose_feature_idx=choose_feature_idx,attn_type=attn_type))
         if num_head_channels == -1:
             dim_head = ch // num_heads
         else:
@@ -632,7 +639,7 @@ class UNetModel(nn.Module):
                 num_head_channels=dim_head,
                 use_new_attention_order=use_new_attention_order,
             ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,use_image_clip=use_image_clip,
+                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,use_image_clip=use_image_clip,attn_type=attn_type
                         ),
             ResBlock(
                 ch,
@@ -678,7 +685,7 @@ class UNetModel(nn.Module):
                             num_head_channels=dim_head,
                             use_new_attention_order=use_new_attention_order,
                         ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,use_image_clip=use_image_clip,
+                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,use_image_clip=use_image_clip,attn_type=attn_type
                         )
                     )
                 if level and i == num_res_blocks:
@@ -718,11 +725,15 @@ class UNetModel(nn.Module):
 
     def prepare_model_setting(self,first_frame):
         if self.zero_feature_cache is None:
+            self.frame_counter.prepare(first_frame)
+            self.frame_counter.update()
             return
         for i in range(len(first_frame)):
             if first_frame[i] == [1]:
                 zero_feature = [copy.deepcopy(self.zero_feature_cache) for _ in range(self.window_size)]
                 self.feature_cache.replace_cache(zero_feature,i)
+        self.frame_counter.prepare(first_frame)
+        self.frame_counter.update()
         
     def check_cache_is_empty(self,):
         return self.feature_cache.check_cache_is_empty()
@@ -801,7 +812,7 @@ class UNetModel(nn.Module):
 
             for i in range(len(hs)):
                 temp_feature = self.feature_cache.get_feature(i).to(x.device)
-                hs[i] = self.feature_fusion[i](hs[i],temp_feature)
+                hs[i] = self.feature_fusion[i](hs[i],temp_feature,self.frame_counter.get_num_frames())
         h = self.middle_block(h, emb, context)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)

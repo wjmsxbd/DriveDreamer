@@ -93,6 +93,7 @@ model:
             context_dim: 768
             use_checkpoint: true
             legacy: False
+            attn_type: softmax-xformers
       
     sampler_config:
       target: ldm.modules.diffusionmodules.sampling.EulerEDMSampler

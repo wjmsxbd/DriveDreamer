@@ -60,6 +60,7 @@ class FeatureCache1D:
         self.window_size = window_size
         self.choose_feature_idx = choose_feature_idx
         self.cache = []
+        self.first = []
 
     def replace_cache(self,feature,index=None):
         if index is None:
@@ -87,6 +88,7 @@ class FeatureCache1D:
         temp_feature = []
         for idx in self.choose_feature_idx:
             temp_feature.append(self.cache[idx][col])
+        temp_feature.append(self.first[col])
         temp_feature = torch.stack(temp_feature,dim=1)
         return copy.deepcopy(temp_feature)
 

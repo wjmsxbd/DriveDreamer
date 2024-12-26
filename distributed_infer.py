@@ -19,7 +19,7 @@ from nuscenes.map_expansion.map_api import NuScenesMap,NuScenesMapExplorer
 from pyquaternion import Quaternion
 from nuscenes.nuscenes import NuScenes
 from torch.utils import data
-from utils.tools import get_this_scene_info,get_this_scene_info_with_lidar,get_global_pose,quaternion_to_matrix,matrix_to_rotation_6d
+from utils.tools import get_this_scene_info,get_this_scene_info_with_lidar,get_this_scene_info_with_lidar_MV,get_global_pose,quaternion_to_matrix,matrix_to_rotation_6d
 from ldm.util import instantiate_from_config
 import matplotlib.image as mpimg
 from nuscenes.eval.common.utils import quaternion_yaw
@@ -65,6 +65,7 @@ class dataloader(data.Dataset):
         # self.nusc_canbus_frequecy = nusc_canbus_frequency // ailgn_frequency
         # self.camera_frequency = camera_frequency // ailgn_frequency
         self.camera_frequency = camera_frequency
+        self.num_cameras = cfg['num_cameras']
         self.nusc_maps = {
             'boston-seaport': NuScenesMap(dataroot='.', map_name='boston-seaport'),
             'singapore-hollandvillage': NuScenesMap(dataroot='.', map_name='singapore-hollandvillage'),
@@ -140,6 +141,31 @@ class dataloader(data.Dataset):
         cam_front_img = torch.from_numpy(cam_front_img / 255. * 2 - 1.).to(torch.float32)
         cam_front_img = rearrange(cam_front_img,'h w c -> c h w').contiguous()
         return cam_front_img
+    
+    def get_cam_MVimage_from_sample_token(self,sample_token,img_size,):
+        ORI_ORDER = [
+        "CAM_FRONT",
+        "CAM_FRONT_RIGHT",
+        "CAM_FRONT_LEFT",
+        "CAM_BACK",
+        "CAM_BACK_LEFT",
+        "CAM_BACK_RIGHT",
+     ]
+        cam_MVImage  = []
+        for view in ORI_ORDER:
+            sample_record = self.nusc.get('sample',sample_token)
+            cam_front_token = sample_record['data'][view]
+            cam_front_path = self.nusc.get('sample_data',cam_front_token)['filename']
+            cam_front_path = os.path.join(self.cfg['dataroot'],cam_front_path)
+            cam_front_img = mpimg.imread(cam_front_path)
+            cam_front_img = Image.fromarray(cam_front_img)
+            cam_front_img = cam_front_img.resize(img_size)
+            cam_front_img = np.array(cam_front_img)
+            cam_front_img = torch.from_numpy(cam_front_img / 255. * 2 - 1.).to(torch.float32)
+            cam_MVImage.append(cam_front_img)
+        cam_MVImage = torch.stack(cam_MVImage, dim=0)
+        cam_MVImage = rearrange(cam_MVImage,'n h w c -> n c h w').contiguous()
+        return cam_MVImage
         
     def check_idx_is_first_frame(self,idx):
         return idx==0 or self.scenes[idx] != self.scenes[idx-1]
@@ -151,10 +177,16 @@ class dataloader(data.Dataset):
         out['first_frame'] = ([1] if idx == 0 or self.scenes[idx] != self.scenes[idx-1] else [0])
         out['3Dbox'] = []
         out['idx'] = idx
-        out['HDmap'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
-        out['image'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
-        out['cond_frames'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
-        out['clip_first_frame'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+        if self.num_cameras == 1:
+            out['HDmap'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+            out['image'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+            out['cond_frames'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+            out['clip_first_frame'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+        else:
+            out['HDmap'] = torch.zeros((self.num_cameras,3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+            out['image'] = torch.zeros((self.num_cameras,3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+            out['cond_frames'] = torch.zeros((self.num_cameras,3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+            out['clip_first_frame'] = torch.zeros((self.num_cameras,3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
         for i in range(self.movie_len):
             sample_token = video_info['token']
             scene_token = self.nusc.get('sample',sample_token)['scene_token']
@@ -164,13 +196,39 @@ class dataloader(data.Dataset):
             log = self.nusc.get('log',log_token)
             nusc_map = self.nusc_maps[log['location']]
             if self.cfg['img_size'] is not None:
-                collect_data = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=False,collect_data=self.collect_condition)
+                if self.num_cameras == 1:
+                    collect_data = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=False,collect_data=self.collect_condition)
+                    img = collect_data['reference_image'][:,:,:3].copy()
+                    img = torch.from_numpy(img / 255. * 2 - 1.).to(torch.float32)
+                    out['image'] = rearrange(img,'h w c -> c h w').contiguous()
+                    hdmap = collect_data['HDmap'][:,:,:3].copy()
+                    hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
+                    out['HDmap'] = rearrange(hdmap,'h w c -> c h w').contiguous()
+                else:
+                    collect_data = get_this_scene_info_with_lidar_MV(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=False,collect_data=self.collect_condition)
+                    img = collect_data['reference_image'][:,:,:,:3].copy()
+                    img = torch.from_numpy(img / 255. * 2 - 1.).to(torch.float32)
+                    out['image'] = rearrange(img,'n h w c -> n c h w').contiguous()
+                    hdmap = collect_data['HDmap'][:,:,:,:3].copy()
+                    hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
+                    out['HDmap'] = rearrange(hdmap,'n h w c -> n c h w').contiguous()
             else:
-                collect_data = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,return_camera_info=False,collect_data=self.collect_condition)
-            
-            img = collect_data['reference_image'][:,:,:3].copy()
-            img = torch.from_numpy(img / 255. * 2 - 1.).to(torch.float32)
-            out['image'] = rearrange(img,'h w c -> c h w').contiguous()
+                if self.num_cameras == 1:
+                    collect_data = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=False,collect_data=self.collect_condition)
+                    img = collect_data['reference_image'][:,:,:3].copy()
+                    img = torch.from_numpy(img / 255. * 2 - 1.).to(torch.float32)
+                    out['image'] = rearrange(img,'h w c -> c h w').contiguous()
+                    hdmap = collect_data['HDmap'][:,:,:3].copy()
+                    hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
+                    out['HDmap'] = rearrange(hdmap,'h w c -> c h w').contiguous()
+                else:
+                    collect_data = get_this_scene_info_with_lidar_MV(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=False,collect_data=self.collect_condition)
+                    img = collect_data['reference_image'][:,:,:,:3].copy()
+                    img = torch.from_numpy(img / 255. * 2 - 1.).to(torch.float32)
+                    out['image'] = rearrange(img,'n h w c -> n c h w').contiguous()
+                    hdmap = collect_data['HDmap'][:,:,:,:3].copy()
+                    hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
+                    out['HDmap'] = rearrange(hdmap,'n h w c -> n c h w').contiguous()
             boxes = collect_data['3Dbox']
             category = collect_data['category']
             boxes = np.array(boxes).astype(np.float32)
@@ -186,16 +244,18 @@ class dataloader(data.Dataset):
                 category = category[:self.num_boxes]
                 box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])] 
             out['3Dbox'] = box_text
-            hdmap = collect_data['HDmap'][:,:,:3].copy()
-            hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
-            out['HDmap'] = rearrange(hdmap,'h w c -> c h w').contiguous()
         if out['first_frame'][0] == 1:
             out['cond_frames'] = out['image']
         else:
             sample_token = self.video_infos[idx-1]['token']
-            out['cond_frames'] = self.get_cam_image_from_sample_token(sample_token,tuple(self.cfg['img_size']))
-            sample_token = self.video_infos[self.first_frame_idx[idx]]['token']
-            out['clip_first_frame'] = self.get_cam_image_from_sample_token(sample_token,tuple(self.cfg['img_size']))
+            if self.num_cameras == 1:
+                out['cond_frames'] = self.get_cam_image_from_sample_token(sample_token,tuple(self.cfg['img_size']))
+                sample_token = self.video_infos[self.first_frame_idx[idx]]['token']
+                out['clip_first_frame'] = self.get_cam_image_from_sample_token(sample_token,tuple(self.cfg['img_size']))
+            else :
+                out['cond_frames'] = self.get_cam_MVimage_from_sample_token(sample_token,tuple(self.cfg['img_size']))
+                sample_token = self.video_infos[self.first_frame_idx[idx]]['token']
+                out['clip_first_frame'] = self.get_cam_MVimage_from_sample_token(sample_token,tuple(self.cfg['img_size']))
         return out
 
 def collate_fn(batch):
@@ -231,6 +291,12 @@ def collate_fn(batch):
                 out[key].append(value)
             else:
                 raise NotImplementedError
+        for key, value in out.items():
+            if isinstance(value, torch.Tensor) and len(value.shape) == 5 and key != 'image':
+                # 合并多视角
+                value = rearrange(value, "b n c h w -> (b n) c h w")
+                out[key] = value
+        return out  
     return out
 
 class DistributedSceneSampler(Sampler):
@@ -406,6 +472,38 @@ def save_tensor_as_image(tensor, file_path,index,frame):
     img = Image.fromarray(img)
     img.save(save_file_path)
 
+def save_tensor_as_MVimage(tensor, file_path,index,frame):
+    if tensor.is_cuda:
+        tensor = tensor.cpu()
+        
+    tensor = tensor.clamp(-1, 1)  # 确保值在[-1, 1]之间
+    tensor = (tensor + 1.0) / 2.0  # 转换到[0, 1]
+    tensor = tensor * 255.0  # 转换到[0, 255]
+    tensor = tensor.byte()  # 转换为byte类型
+
+    # 构建保存文件的路径
+    save_file_path = os.path.join(file_path, f'{index:02d}_{frame:02d}.png')
+    # 创建一个空白图片，用于存放拼接后的大图    
+    big_image = Image.new('RGB', (3 * 256, 2 * 128), (255, 255, 255))  # 白色背景
+
+    # 将张量转换为PIL图像，并拼接
+    for i in range(tensor.shape[0]):  # 遍历6张图片
+        img = tensor[i]  # 获取单张图片的张量
+        img = img.permute(1, 2, 0)  # 调整维度为高度x宽度x通道
+        img = img.numpy()  # 转换为numpy数组
+        img = Image.fromarray(img)  # 转换为PIL图像
+
+    # 计算图片在大图中的位置
+        row = i // 3  # 行号
+        col = i % 3  # 列号
+        if row < 2:  # 只有两行
+            position = (col * 256, row * 128)  # 确定位置
+            big_image.paste(img, position)  # 粘贴图片
+
+    # 保存大图片
+    big_image.save(save_file_path)
+   
+
 def decoder_latent_in_dict(latents,keys,network,file_path,n_samples=24,decoder=None):
     print(f"now:{keys}")
     for key in keys:
@@ -413,8 +511,7 @@ def decoder_latent_in_dict(latents,keys,network,file_path,n_samples=24,decoder=N
         network.decode_first_stage(scene_latents,file_path,key,n_samples,decoder)
     for key in keys:
         del latents[key]
-
-        
+     
 
 if __name__ == "__main__":
     import argparse
@@ -442,8 +539,8 @@ if __name__ == "__main__":
                         default=None,
                         type=str,
                         help="model_path")
-    parser.add_argument('--local-rank',
-                        default=1,
+    parser.add_argument('--local_rank',
+                        default=0,
                         type=int,
                         help="local_rank")
     parser.add_argument('--samples_per_gpu',
@@ -480,9 +577,9 @@ if __name__ == "__main__":
         video_decoder_config = omegaconf.OmegaConf.load(video_decoder)
         decoder = instantiate_from_config(video_decoder_config['model'])
 
-    world_size = int(os.environ['WORLD_SIZE'])
+    # world_size = int(os.environ['WORLD_SIZE'])
     rank = int(os.environ['RANK'])
-    dist.init_process_group('nccl',world_size=world_size,rank=rank)
+    # dist.init_process_group('nccl',world_size=world_size,rank=rank)
     if use_train:
         data_loader = instantiate_from_config(cfg.data.params.train)
         # data_loader = dataloader(**cfg.data.params.train.params)
@@ -520,7 +617,7 @@ if __name__ == "__main__":
             os.makedirs(cam_rec_save_path)
         if not os.path.exists(cam_sample_save_path):
             os.makedirs(cam_sample_save_path)
-    dist.barrier()
+    # dist.barrier()
     pre_batch = None
     now_frames = 0
     len2idx = sampler.len2idx.copy()
@@ -535,6 +632,7 @@ if __name__ == "__main__":
     pre_batch = None
     with torch.no_grad():
         for _,batch in tqdm(enumerate(data_loader_)):
+            #batch = collate_fn(batch)
             if batch['first_frame'][0] == 1 or batch['first_frame'][0] == [1]:
                 if first_frame_keys != []:
                     if device == 'cuda':
@@ -549,6 +647,8 @@ if __name__ == "__main__":
                 if device == 'cuda':
                     batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
                 output = network(batch)
+                if len(batch['image'].shape) == 5: # b n c h w
+                   output = rearrange(output, "(b n) c h w -> b n c h w",n = batch['image'].shape[1])
                 for idx in batch['idx']:
                     count_first_frame_idx[idx] = 0
                 for i in range(len(first_frame_idx)):
@@ -556,7 +656,10 @@ if __name__ == "__main__":
                     if now_frames < count_first_frame_idx[idx]:
                         continue
                     first_frame_keys.append(idx)
-                    save_tensor_as_image(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
+                    if len(batch['image'].shape) == 4:
+                        save_tensor_as_image(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
+                    else :
+                        save_tensor_as_MVimage(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
                     collate_latent[idx] = []
                     collate_latent[idx].append(output[i])
                     count_first_frame_idx[idx] += 1
@@ -564,11 +667,16 @@ if __name__ == "__main__":
                 if device == 'cuda':
                     batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
                 output = network(batch)
+                if len(batch['image'].shape) == 5: # b n c h w
+                   output = rearrange(output, "(b n) c h w -> b n c h w",n = batch['image'].shape[1])
                 for i in range(len(first_frame_idx)):
                     idx = first_frame_idx[i]
                     if now_frames < count_first_frame_idx[idx]:
                         continue
-                    save_tensor_as_image(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
+                    if len(batch['image'].shape) == 4:
+                        save_tensor_as_image(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
+                    else :
+                        save_tensor_as_MVimage(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
                     collate_latent[idx].append(output[i])
                     count_first_frame_idx[idx] += 1
             now_frames += 1

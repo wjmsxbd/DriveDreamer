@@ -5,7 +5,7 @@ model:
     scale_factor: 0.18215
     training_strategy: feature
     load_from_ema: False
-    ckpt_path: logs/2024-11-05T13-24-05_StreamingSD/checkpoints/epoch=000007.ckpt #TODO:!!!!!!!!!!!!
+    ckpt_path: logs/2024-12-12T14-47-05_StreamingSD/checkpoints/last.ckpt #TODO:!!!!!!!!!!!!
     ignore_keys: ['cond_stage_model'] #TODO:!!!!!!!!!
     monitor: val/loss #use ema?
     use_ema: False #use ema?
@@ -102,6 +102,7 @@ model:
             use_spatial_transformer: True
             transformer_depth: 1
             context_dim: 768
+            num_cameras: 6
             use_checkpoint: true
             legacy: False
             use_cache: True
@@ -153,7 +154,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 2
+    batch_size: 1
     wrap: False
     num_workers: 0
     use_distributed_scene_sampler: true
@@ -164,8 +165,9 @@ data:
         cfg:
           version: v1.0-mini
           dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
-          img_size: [768,448]
+          img_size: [256,128]
           nusc_canbus_frequency: 50
+          num_cameras: 6
           camera_frequency: 2
         num_boxes: 70
         movie_len: 1
@@ -183,8 +185,9 @@ data:
         cfg:
           version: v1.0-mini
           dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
-          img_size: [768,448]
+          img_size: [256,128]
           nusc_canbus_frequency: 50
+          num_cameras: 6
           camera_frequency: 2
         num_boxes: 70
         movie_len: 1

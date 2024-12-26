@@ -477,14 +477,35 @@ class RopeMemoryEfficientCrossAttention(MemoryEfficientCrossAttention):
         return self.to_out(out)
 
 
+def _ensure_kv_is_int(view_pair: dict):
+    """yaml key can be int, while json cannot. We convert here.
+    """
+    new_dict = {}
+    for k, v in view_pair.items():
+        new_value = [int(vi) for vi in v]
+        new_dict[int(k)] = new_value
+    return new_dict
+
+
+
 class BasicTransformerBlock(nn.Module):
     ATTENTION_MODES = {
         "softmax": CrossAttention,
         "softmax-xformers": MemoryEfficientCrossAttention,
     }
-    def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, gated_ff=True, checkpoint=True,use_image_clip=False,attn_type='softmax'):
+    def __init__(self, dim, n_heads, d_head, dropout=0., context_dim=None, num_cameras=1,gated_ff=True, checkpoint=True,use_image_clip=False,attn_type='softmax'):
         super().__init__()
         attn_cls = self.ATTENTION_MODES[attn_type]
+        neighboring_view_pair = {
+                        0: [5, 1],
+                        1: [0, 2],
+                        2: [1, 3],
+                        3: [2, 4],
+                        4: [3, 5],
+                        5: [4, 0]
+                                    }
+        self.num_cameras = num_cameras
+        
         self.attn1 = attn_cls(query_dim=dim, heads=n_heads, dim_head=d_head, dropout=dropout)  # is a self-attention
         self.ff = FeedForward(dim, dropout=dropout, glu=gated_ff)
         self.attn2 = attn_cls(query_dim=dim, context_dim=context_dim,
@@ -497,7 +518,62 @@ class BasicTransformerBlock(nn.Module):
         self.norm1 = nn.LayerNorm(dim)
         self.norm2 = nn.LayerNorm(dim)
         self.norm3 = nn.LayerNorm(dim)
+        self.neighboring_view_pair = _ensure_kv_is_int(neighboring_view_pair)
+        self.neighboring_attn_type =  "add"
+        # multiview attention
+        self.norm5 = nn.LayerNorm(dim)
+        self.attn5 = CrossAttention(
+            query_dim=dim,
+            context_dim=dim,
+            heads=n_heads,
+            dim_head=d_head,
+            dropout=dropout,
+        )
+        self.connector = zero_module(nn.Linear(dim, dim))
         self.checkpoint = checkpoint
+
+    @property
+    def n_cam(self):
+        return self.num_cameras
+
+    def _construct_attn_input(self, norm_hidden_states):
+        B = len(norm_hidden_states)
+        # reshape, key for origin view, value for ref view
+        hidden_states_in1 = []
+        hidden_states_in2 = []
+        cam_order = []
+        if self.neighboring_attn_type == "add":
+            for key, values in self.neighboring_view_pair.items():
+                for value in values:
+                    hidden_states_in1.append(norm_hidden_states[:, key])
+                    hidden_states_in2.append(norm_hidden_states[:, value])
+                    cam_order += [key] * B
+            # N*2*B, H*W, head*dim
+            hidden_states_in1 = torch.cat(hidden_states_in1, dim=0)
+            hidden_states_in2 = torch.cat(hidden_states_in2, dim=0)
+            cam_order = torch.LongTensor(cam_order)
+        elif self.neighboring_attn_type == "concat":
+            for key, values in self.neighboring_view_pair.items():
+                hidden_states_in1.append(norm_hidden_states[:, key])
+                hidden_states_in2.append(torch.cat([
+                    norm_hidden_states[:, value] for value in values
+                ], dim=1))
+                cam_order += [key] * B
+            # N*B, H*W, head*dim
+            hidden_states_in1 = torch.cat(hidden_states_in1, dim=0)
+            # N*B, 2*H*W, head*dim
+            hidden_states_in2 = torch.cat(hidden_states_in2, dim=0)
+            cam_order = torch.LongTensor(cam_order)
+        elif self.neighboring_attn_type == "self":
+            hidden_states_in1 = rearrange(
+                norm_hidden_states, "b n l ... -> b (n l) ...")
+            hidden_states_in2 = None
+            cam_order = None
+        else:
+            raise NotImplementedError(
+                f"Unknown type: {self.neighboring_attn_type}")
+        return hidden_states_in1, hidden_states_in2, cam_order
+
 
     def forward(self, x, context=None):
         # return checkpoint(self._forward, (x, context), self.parameters(), self.checkpoint)
@@ -510,6 +586,38 @@ class BasicTransformerBlock(nn.Module):
         else:
             x = self.attn2(self.norm2(x), context=context[:,1:]) + x
             x = self.attn3(self.norm4(x),context=context[:,0:1]) + x
+        # multi-view cross attention
+        if self.n_cam > 1 :
+            norm_hidden_states = (
+                self.norm5(x)
+            )
+            # batch dim first, cam dim second
+            norm_hidden_states = rearrange(
+                norm_hidden_states, '(b n) ... -> b n ...', n=self.n_cam)
+            B = len(norm_hidden_states)
+            # key is query in attention; value is key-value in attention
+            hidden_states_in1, hidden_states_in2, cam_order = self._construct_attn_input(
+                norm_hidden_states, )
+            # attention
+            attn_raw_output = self.attn5(
+                hidden_states_in1,
+                context=hidden_states_in2,
+            )
+            # final output
+            if self.neighboring_attn_type == "self":
+                attn_output = rearrange(
+                    attn_raw_output, 'b (n l) ... -> b n l ...', n=self.n_cam)
+            else:
+                attn_output = torch.zeros_like(norm_hidden_states)
+                for cam_i in range(self.n_cam):
+                    attn_out_mv = rearrange(attn_raw_output[cam_order == cam_i],
+                                            '(n b) ... -> b n ...', b=B)
+                    attn_output[:, cam_i] = torch.sum(attn_out_mv, dim=1)
+            attn_output = rearrange(attn_output, 'b n ... -> (b n) ...')
+            # apply zero init connector (one layer)
+            attn_output = self.connector(attn_output)
+            # short-cut
+            x = attn_output + x
         x = self.ff(self.norm3(x)) + x
         return x
 
@@ -523,7 +631,7 @@ class SpatialTransformer(nn.Module):
     Finally, reshape to image
     """
     def __init__(self, in_channels, n_heads, d_head,
-                 depth=1, dropout=0., context_dim=None,use_image_clip=False,attn_type='softmax'):
+                 depth=1, dropout=0., context_dim=None,num_cameras=1,use_image_clip=False,attn_type='softmax'):
         super().__init__()
         self.in_channels = in_channels
         inner_dim = n_heads * d_head
@@ -536,7 +644,7 @@ class SpatialTransformer(nn.Module):
                                  padding=0)
 
         self.transformer_blocks = nn.ModuleList(
-            [BasicTransformerBlock(inner_dim, n_heads, d_head, dropout=dropout, context_dim=context_dim,use_image_clip=use_image_clip,attn_type=attn_type)
+            [BasicTransformerBlock(inner_dim, n_heads, d_head, dropout=dropout, context_dim=context_dim,num_cameras = num_cameras,use_image_clip=use_image_clip,attn_type=attn_type)
                 for d in range(depth)]
         )
 

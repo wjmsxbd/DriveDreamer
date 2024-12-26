@@ -18,7 +18,7 @@ def fourier_filter(x, scale, d_s=0.25):
     x_freq = fft.fftshift(x_freq, dim=(-2, -1))
 
     B, C, H, W = x_freq.shape
-    mask = torch.ones((B, C, H, W)).cuda()
+    mask = torch.ones((B, C, H, W))#.cuda()
 
     for h in range(H):
         for w in range(W):

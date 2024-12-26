@@ -467,7 +467,8 @@ class UNetModel(nn.Module):
         use_new_attention_order=False,
         use_spatial_transformer=False,    # custom transformer support
         transformer_depth=1,              # custom transformer support
-        context_dim=None,                 # custom transformer support
+        context_dim=None,
+        num_cameras = 1,                 # custom transformer support
         n_embed=None,                     # custom support for prediction of discrete ids into codebook of first stage vq model
         legacy=True,
         use_cache=False,
@@ -639,7 +640,7 @@ class UNetModel(nn.Module):
                 num_head_channels=dim_head,
                 use_new_attention_order=use_new_attention_order,
             ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,use_image_clip=use_image_clip,attn_type=attn_type
+                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim,num_cameras = num_cameras,use_image_clip=use_image_clip,attn_type=attn_type
                         ),
             ResBlock(
                 ch,
@@ -808,8 +809,6 @@ class UNetModel(nn.Module):
                 zero_feature_cache = [copy.deepcopy(self.zero_feature_cache) for i in range(self.window_size)]
                 self.zero_feature_cache = [copy.deepcopy(cache[:1]) for cache in self.zero_feature_cache]
                 self.feature_cache.replace_cache(zero_feature_cache)
-            
-
             for i in range(len(hs)):
                 temp_feature = self.feature_cache.get_feature(i).to(x.device)
                 hs[i] = self.feature_fusion[i](hs[i],temp_feature,None)#self.frame_counter.get_num_frames())

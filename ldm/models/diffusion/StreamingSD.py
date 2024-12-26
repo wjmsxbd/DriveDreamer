@@ -248,6 +248,10 @@ class StreamingSD(pl.LightningModule):
     @torch.no_grad()
     def get_input(self,batch,return_first_stage_outputs=False,bs=None):
         x = batch[self.input_keys]
+        n_cam = 1
+        if len(x.shape) == 5:
+            n_cam = x.shape[1]
+            x = rearrange(x, "b n c h w -> (b n) c h w")
         if bs is not None:
             x = x[:bs]
         assert isinstance(x,torch.Tensor)
@@ -260,8 +264,15 @@ class StreamingSD(pl.LightningModule):
         #     else:
         #         self.model.set_model_init_feature(False)
         z = self.get_first_stage_encoding(encoder_posterior).detach()
+        if n_cam > 1:
+            z = rearrange(z, "(b n) c h w -> b n c h w",n = n_cam)
         if return_first_stage_outputs:
-            x_rec = self.decode_first_stage(z)
+            if n_cam > 1:
+                z = rearrange(z, "b n c h w -> (b n) c h w")
+                x_rec = self.decode_first_stage(z)
+                #z = rearrange(z, "(b n) c h w -> b n c h w",n = n_cam)
+            else:
+                x_rec = self.decode_first_stage(z)
             return z,x_rec
         return z
     
@@ -408,7 +419,7 @@ class StreamingSD(pl.LightningModule):
     def log_images(
         self,
         batch,
-        N=8,
+        N=6,
         n_row=4,
         sample:bool=True,
         ucg_keys:List[str]=None,
@@ -423,11 +434,16 @@ class StreamingSD(pl.LightningModule):
         else:
             ucg_keys = conditioner_input_keys
         log = dict()
-        log['inputs'] = batch['image']
+        input = batch['image']
+        if len(input.shape) == 5:
+            input = rearrange(input, "b n c h w -> (b n) c h w")
+        log['inputs'] = input
         log['cond_frame'] = batch['cond_frames']
         x,x_rec = self.get_input(batch,return_first_stage_outputs=True)
         N = min(x.shape[0],N)
         n_row = min(x.shape[0],n_row)
+        # N = N
+        # n_row = n_row
         log['reconstruction'] = x_rec
         c,uc = self.global_condition.get_unconditional_conditioning(
             batch,
@@ -520,23 +536,66 @@ class StreamingSDInferPipeLine(pl.LightningModule):
             img = Image.fromarray(img)
             save_file_path = os.path.join(file_path,f'{index:02d}_{frame+i:02d}.png')
             img.save(save_file_path)
+    
+    def save_tensor_as_MVimage(self,tensor,file_path,index,frame):
+        if tensor.is_cuda:
+            tensor = tensor.cpu()
+            
+        tensor = tensor.clamp(-1, 1)  # 确保值在[-1, 1]之间
+        tensor = (tensor + 1.0) / 2.0  # 转换到[0, 1]
+        tensor = tensor * 255.0  # 转换到[0, 255]
+        tensor = tensor.byte()  # 转换为byte类型
+
+        # 构建保存文件的路
+        # 创建一个空白图片，用于存放拼接后的大图    
+        big_image = Image.new('RGB', (3 * 256, 2 * 128), (255, 255, 255))  # 白色背景
+
+        # 将张量转换为PIL图像，并拼接
+        for j in range(tensor.shape[0]):
+            save_file_path = os.path.join(file_path, f'{index:02d}_{frame+j:02d}.png')
+            for i in range(tensor.shape[1]):  # 遍历6张图片
+                img = tensor[j][i]  # 获取单张图片的张量
+                img = img.permute(1, 2, 0)  # 调整维度为高度x宽度x通道
+                img = img.numpy()  # 转换为numpy数组
+                img = Image.fromarray(img)  # 转换为PIL图像
+
+            # 计算图片在大图中的位置
+                row = i // 3  # 行号
+                col = i % 3  # 列号
+                if row < 2:  # 只有两行
+                    position = (col * 256, row * 128)  # 确定位置
+                    big_image.paste(img, position)  # 粘贴图片
+
+            # 保存大图片
+            big_image.save(save_file_path)
         
 
     def decode_first_stage(self,latents,file_path,index,n_samples=8,decoder=None):
         latents = torch.stack(latents,dim=0)
         print(latents.shape)
+        n_cam =1
+        if len(latents.shape) == 5:
+            n_cam = 6
         chunk_size = (latents.shape[0] + n_samples - 1) // n_samples
         latents_chunk = torch.chunk(latents,chunks=chunk_size,dim=0)
         start_frame = 0
         for chunk in latents_chunk:
             chunk = chunk.to(self.model.device)
+            if n_cam > 1 :
+                chunk = rearrange(chunk, "b n c h w -> (b n) c h w") 
             if not decoder is None:
                 output = decoder.decode_first_stage(chunk)
             else:
                 output = self.model.decode_first_stage(chunk)
-            output = output.cpu()
+            if n_cam > 1 :
+                chunk = rearrange(chunk, "(b n) c h w -> b n c h w",n = n_cam) 
+                output = rearrange(output, "(b n) c h w -> b n c h w",n = n_cam) 
+                output = output.cpu()
+                self.save_tensor_as_MVimage(output,file_path,index,frame=start_frame)
+            else:
+                output = output.cpu()
+                self.save_tensor_as_image(output,file_path,index,frame=start_frame)
             chunk = chunk.cpu()
-            self.save_tensor_as_image(output,file_path,index,frame=start_frame)
             start_frame += chunk.shape[0]
         
 
@@ -583,6 +642,8 @@ class StreamingSDInferPipeLine(pl.LightningModule):
         num_sigmas = len(sigmas)
         c,uc = self.model.get_unconditional_conditioning(batch)
         z = self.model.get_input(batch)
+        if len(z.shape) == 5:
+             z = rearrange(z, "b n c h w -> (b n) c h w")
         if return_first_frame:
             z_ = z
         randn = torch.randn_like(z).to(z.device)

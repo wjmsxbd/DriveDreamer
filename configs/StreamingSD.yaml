@@ -14,6 +14,12 @@ model:
       target: ldm.models.condition.StreamingSDCondition
       params:
         emb_models:
+
+          - input_key: clip_first_frame
+            is_trainable: False
+            ucg_rate: 0.15
+            target: ldm.models.condition.FrozenClipImageEmbedder
+
           - input_keys: [cond_frames,HDmap]
             is_trainable: False
             ucg_rate: 0.15
@@ -91,7 +97,9 @@ model:
             use_spatial_transformer: True
             transformer_depth: 1
             context_dim: 768
+            num_cameras: 6
             use_checkpoint: true
+            use_image_clip: True
             legacy: False
             attn_type: softmax-xformers
       
@@ -145,8 +153,9 @@ data:
         cfg:
           version: v1.0-mini
           dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
-          img_size: [768,448]
+          img_size: [256,128]
           nusc_canbus_frequency: 50
+          num_cameras: 6
           camera_frequency: 2
         num_boxes: 70
         movie_len: 2
@@ -159,8 +168,9 @@ data:
         cfg:
           version: v1.0-mini
           dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
-          img_size: [768,448]
+          img_size: [256,128]
           nusc_canbus_frequency: 50
+          num_cameras: 6
           camera_frequency: 2
         num_boxes: 70
         movie_len: 2
@@ -172,13 +182,13 @@ lightning:
     video_logger:
       target: main.ImageLogger
       params:
-        batch_frequency: 1000
-        max_images: 8
+        batch_frequency: 2000
+        max_images: 6
         increase_log_steps: False
 
   trainer:
     benchmark: True
-    gpus: 0,1,2,3,
+    gpus: 0,
     # device: 1
     # gpus: 0,
     # num_nodes: 1

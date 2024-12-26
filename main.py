@@ -505,7 +505,13 @@ class DataModuleFromConfig(pl.LightningDataModule):
                         out[key].append(value)
                 else:
                     raise NotImplementedError
+        for key, value in out.items():
+            if isinstance(value, torch.Tensor) and len(value.shape) == 5 and key != 'image':
+                # 合并多视角
+                value = rearrange(value, "b n c h w -> (b n) c h w")
+                out[key] = value
         return out
+    
     def _train_dataloader(self):
         is_iterable_dataset = False
         if is_iterable_dataset or self.use_worker_init_fn:
@@ -647,7 +653,7 @@ class ImageLogger(Callback):
                   global_step, current_epoch, batch_idx):
         root = os.path.join(save_dir, "images", split)
         for k in images:
-            grid = torchvision.utils.make_grid(images[k], nrow=4)
+            grid = torchvision.utils.make_grid(images[k], nrow=3)
             if self.rescale:
                 grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
             grid = grid.transpose(0, 1).transpose(1, 2).squeeze(-1)

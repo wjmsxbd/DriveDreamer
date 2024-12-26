@@ -42,7 +42,6 @@ import cv2
 from skimage import morphology
 try:
     import moxing as mox
-
     mox.file.shift('os', 'mox')
 except:
     pass
@@ -642,6 +641,14 @@ def get_this_scene_info(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_to
 # @profile(precision=4,stream=open('log.txt',"w+",encoding="utf-8"))
 def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448),return_camera_info=False,collect_data=None):
     all_data = {}
+    # ORI_ORDER = [
+    #     "CAM_FRONT",
+    #     "CAM_FRONT_RIGHT",
+    #     "CAM_FRONT_LEFT",
+    #     "CAM_BACK",
+    #     "CAM_BACK_LEFT",
+    #     "CAM_BACK_RIGHT",
+    # ]
     sample_record = nusc.get('sample',sample_token)
     cam_front_token = sample_record['data']['CAM_FRONT']
     cam_front_calibrated_sensor_token = nusc.get('sample_data',cam_front_token)['calibrated_sensor_token']
@@ -708,6 +715,80 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
         dense_range_image = np.repeat(dense_range_image[...,np.newaxis],3,axis=-1)
         all_data['dense_range_image'] = dense_range_image
     return all_data
+
+def get_this_scene_info_with_lidar_MV(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448),return_camera_info=False,collect_data=None):
+     all_data = {}
+     ORI_ORDER = [
+        "CAM_FRONT",
+        "CAM_FRONT_RIGHT",
+        "CAM_FRONT_LEFT",
+        "CAM_BACK",
+        "CAM_BACK_LEFT",
+        "CAM_BACK_RIGHT",
+     ]
+     cam_view_imgs = []
+     HD_maps = []
+     for view in ORI_ORDER:
+        sample_record = nusc.get('sample',sample_token)
+        cam_view_token = sample_record['data'][view]
+        cam_view_calibrated_sensor_token = nusc.get('sample_data',cam_view_token)['calibrated_sensor_token']
+        pointsensor_token = sample_record['data']['LIDAR_TOP']
+        pointsensor = nusc.get('sample_data',pointsensor_token)
+        # print(f"sample_token:{sample_token},pointsensor_token:{pointsensor_token}")
+        # Lidar_TOP_record = nusc.get('calibrated_sensor',pointsensor['calibrated_sensor_token'])
+        # cam_view_record = nusc.get('calibrated_sensor',cam_view_calibrated_sensor_token)
+        # Lidar_TOP_poserecord = nusc.get('ego_pose',pointsensor['ego_pose_token'])
+        # cam_poserecord = nusc.get('ego_pose',nusc.get('sample_data',cam_view_token)['ego_pose_token'])
+        cam_view_path = nusc.get('sample_data',cam_view_token)['filename']
+        cam_view_path = os.path.join(dataset_dir,cam_view_path)
+        if cam_view_path.startswith('obs'):
+            with mox.file.File(cam_view_path, 'rb') as f:
+                img_data = f.read()
+            cam_view_img = Image.open(io.BytesIO(img_data))
+            imsize = cam_view_img.size
+            cam_view_img = np.array(cam_view_img.resize(img_size))
+            if 'reference_image' in collect_data:
+                cam_view_imgs.append(cam_view_img)
+                
+        else:
+            cam_view_img = mpimg.imread(cam_view_path)
+            imsize = (cam_view_img.shape[1],cam_view_img.shape[0])
+            cam_view_img = Image.fromarray(cam_view_img)
+            # cam_view_img.save("gt.png")
+            cam_view_img = np.array(cam_view_img.resize(img_size))
+            if 'reference_image' in collect_data:
+                cam_view_imgs.append(cam_view_img)
+
+        if 'HDmap' in collect_data:
+            hdmap = get_hdmap(cam_view_token,nusc,nusc_map)
+            hdmap = Image.fromarray(hdmap)
+            hdmap = np.array(hdmap.resize(img_size),dtype=np.uint8)
+            HD_maps.append(hdmap)
+     if '3Dbox' in collect_data:
+        box_list,box_category = get_3dbox(cam_view_token,nusc,imsize)#out_path=f'./temp/3dbox/{count:02d}.jpg'
+        box_list = np.array(box_list)
+        all_data['3Dbox'] = box_list
+        all_data['category'] = box_category
+    #  i = 0
+    #  for map in HD_maps:
+    #      map = map.astype(np.uint8)
+    #      image = Image.fromarray(map)
+    #      image.save(f'map{i}.png')
+    #      i = i+1
+    #  j = 0
+    #  for map in cam_view_imgs:
+    #      map = map.astype(np.uint8)
+    #      image = Image.fromarray(map)
+    #      image.save(f'image{j}.png')
+    #      j = j+1
+          
+     cam_view_imgs = np.stack(cam_view_imgs, axis=0)
+     HD_maps = np.stack(HD_maps,axis=0)
+     all_data['reference_image'] = cam_view_imgs
+     all_data['HDmap'] = HD_maps
+
+     return all_data
+
 def project_to_image(nusc: NuScenes,sample_token:str,pointsensor_channel: str='LIDAR_TOP',camera_channel:str='CAM_FRONT',out_path:str=None,
                      img_size=(128,256)):
     sample_record = nusc.get('sample',sample_token)

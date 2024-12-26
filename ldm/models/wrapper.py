@@ -17,7 +17,7 @@ class StreamingSDWrapper(IdentityWrapper):
                 x:torch.Tensor,
                 t:torch.Tensor,
                 c:dict,**kwargs):
-        x = torch.cat((x,c.get("concat",torch.Tensor([]).type_as(x))),dim=1)
+        x = torch.cat((x,c.get("concat",torch.Tensor([]).type_as(x))),dim=1) # c is condition
         return self.diffusion_model(
             x,
             timesteps=t,

@@ -712,9 +712,10 @@ class StreamingSDCondition(nn.Module):
                     emb = torch.zeros_like(emb)
                 if out_key in output:
                     #print(f"Embedder {embedder.input_key} -> {out_key}")
-                    output[out_key] = torch.cat(
-                        (output[out_key], emb), self.KEY2CATDIM[out_key]
-                    )
+                    if output[out_key].shape[0] == emb.shape[0]:
+                        output[out_key] = torch.cat(
+                            (output[out_key], emb), self.KEY2CATDIM[out_key]
+                         )
                 else:
                     output[out_key] = emb
         return output

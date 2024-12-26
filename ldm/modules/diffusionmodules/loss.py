@@ -73,6 +73,7 @@ class StandardDiffusionLoss(nn.Module):
             x:torch.Tensor,
             return_predict: bool=False,
     ):
+        # x(B,N,C,H,W)
         if self.disabled_sigmas_sampler:
             assert 'sigmas' in cond.keys()
             sigmas = cond['sigmas']
@@ -84,9 +85,14 @@ class StandardDiffusionLoss(nn.Module):
             rand_init = torch.randn(offset_shape,device=x.device)
             noise = noise + self.offset_noise_level * append_dims(rand_init,x.ndim)
         sigmas_bc = append_dims(sigmas,x.ndim)
-        
-        noised_x = self.get_noised_input(sigmas_bc,noise,x)
-       
+        #为6视角增加一样的噪声
+        if len(x.shape) == 5:
+            noise = noise[:, 0:1, :, :, :].expand(-1, x.shape[1], -1, -1, -1)
+            noised_x = self.get_noised_input(sigmas_bc,noise,x)
+            noised_x = rearrange(noised_x, "b n c h w -> (b n) c h w")
+            x = rearrange(x, "b n c h w -> (b n) c h w")
+        else :
+            noised_x = self.get_noised_input(sigmas_bc,noise,x)
         model_output = denoiser(network,noised_x,sigmas,cond)
         
         w = append_dims(self.loss_weighting(sigmas),x.ndim)

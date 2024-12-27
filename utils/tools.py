@@ -46,6 +46,7 @@ try:
 except:
     pass
 import queue
+import copy
 
 def distance(p1,p2):
     return np.sqrt(np.sum((p1-p2)**2))
@@ -641,14 +642,6 @@ def get_this_scene_info(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_to
 # @profile(precision=4,stream=open('log.txt',"w+",encoding="utf-8"))
 def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_token:str,img_size:tuple=(768,448),return_camera_info=False,collect_data=None):
     all_data = {}
-    # ORI_ORDER = [
-    #     "CAM_FRONT",
-    #     "CAM_FRONT_RIGHT",
-    #     "CAM_FRONT_LEFT",
-    #     "CAM_BACK",
-    #     "CAM_BACK_LEFT",
-    #     "CAM_BACK_RIGHT",
-    # ]
     sample_record = nusc.get('sample',sample_token)
     cam_front_token = sample_record['data']['CAM_FRONT']
     cam_front_calibrated_sensor_token = nusc.get('sample_data',cam_front_token)['calibrated_sensor_token']
@@ -704,9 +697,6 @@ def get_this_scene_info_with_lidar(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMa
         all_data['category'] = box_category
     
     if 'range_image' in collect_data:
-        # range_image = project_to_image(nusc,sample_token,img_size=(img_size[1],img_size[0]))
-        # range_image = np.repeat(range_image[:,:,np.newaxis],3,axis=-1)
-        # nusc.render_pointcloud_in_image(sample_token)
         range_image = project_to_camera(nusc,sample_token,img_size=(img_size[1],img_size[0]))
         all_data['range_image'] = range_image
     if 'dense_range_image' in collect_data:
@@ -728,17 +718,14 @@ def get_this_scene_info_with_lidar_MV(dataset_dir,nusc:NuScenes,nusc_map:NuScene
      ]
      cam_view_imgs = []
      HD_maps = []
+     boxes = []
+     boxes_categorys = []
      for view in ORI_ORDER:
         sample_record = nusc.get('sample',sample_token)
         cam_view_token = sample_record['data'][view]
         cam_view_calibrated_sensor_token = nusc.get('sample_data',cam_view_token)['calibrated_sensor_token']
         pointsensor_token = sample_record['data']['LIDAR_TOP']
         pointsensor = nusc.get('sample_data',pointsensor_token)
-        # print(f"sample_token:{sample_token},pointsensor_token:{pointsensor_token}")
-        # Lidar_TOP_record = nusc.get('calibrated_sensor',pointsensor['calibrated_sensor_token'])
-        # cam_view_record = nusc.get('calibrated_sensor',cam_view_calibrated_sensor_token)
-        # Lidar_TOP_poserecord = nusc.get('ego_pose',pointsensor['ego_pose_token'])
-        # cam_poserecord = nusc.get('ego_pose',nusc.get('sample_data',cam_view_token)['ego_pose_token'])
         cam_view_path = nusc.get('sample_data',cam_view_token)['filename']
         cam_view_path = os.path.join(dataset_dir,cam_view_path)
         if cam_view_path.startswith('obs'):
@@ -754,7 +741,6 @@ def get_this_scene_info_with_lidar_MV(dataset_dir,nusc:NuScenes,nusc_map:NuScene
             cam_view_img = mpimg.imread(cam_view_path)
             imsize = (cam_view_img.shape[1],cam_view_img.shape[0])
             cam_view_img = Image.fromarray(cam_view_img)
-            # cam_view_img.save("gt.png")
             cam_view_img = np.array(cam_view_img.resize(img_size))
             if 'reference_image' in collect_data:
                 cam_view_imgs.append(cam_view_img)
@@ -764,28 +750,19 @@ def get_this_scene_info_with_lidar_MV(dataset_dir,nusc:NuScenes,nusc_map:NuScene
             hdmap = Image.fromarray(hdmap)
             hdmap = np.array(hdmap.resize(img_size),dtype=np.uint8)
             HD_maps.append(hdmap)
-     if '3Dbox' in collect_data:
-        box_list,box_category = get_3dbox(cam_view_token,nusc,imsize)#out_path=f'./temp/3dbox/{count:02d}.jpg'
-        box_list = np.array(box_list)
-        all_data['3Dbox'] = box_list
-        all_data['category'] = box_category
-    #  i = 0
-    #  for map in HD_maps:
-    #      map = map.astype(np.uint8)
-    #      image = Image.fromarray(map)
-    #      image.save(f'map{i}.png')
-    #      i = i+1
-    #  j = 0
-    #  for map in cam_view_imgs:
-    #      map = map.astype(np.uint8)
-    #      image = Image.fromarray(map)
-    #      image.save(f'image{j}.png')
-    #      j = j+1
+
+        if '3Dbox' in collect_data:
+            box_list,box_category = get_3dbox(cam_view_token,nusc,imsize)#out_path=f'./temp/3dbox/{count:02d}.jpg'
+            box_list = np.array(box_list)
+            boxes.append(box_list)
+            boxes_categorys.append(box_category)
           
      cam_view_imgs = np.stack(cam_view_imgs, axis=0)
      HD_maps = np.stack(HD_maps,axis=0)
      all_data['reference_image'] = cam_view_imgs
      all_data['HDmap'] = HD_maps
+     all_data['3Dbox'] = boxes
+     all_data['category'] = boxes_categorys
 
      return all_data
 
@@ -999,6 +976,193 @@ def get_bev_hdmap(sample_data_token:str,
         return bev_hdmap,sample_points
     return bev_hdmap
 
+def get_matrix_from_theta(theta):
+    cos_theta = np.cos(theta)
+    sin_theta = np.sin(theta)
+    rotation_matrix = np.array([[cos_theta, -sin_theta],
+                                     [sin_theta, cos_theta]])
+    return rotation_matrix
+
+def get_bev_hdmap_front_view(sample_data_token:str,
+                             nusc:NuScenes,
+                             nusc_map:NuScenesMap,
+                             width: int = 38.4,
+                             height: int = 38.4,
+                             img_size: tuple=(256,256),
+                             ):
+    sample_record = nusc.get('sample',sample_data_token)
+    cam_front_token = sample_record['data']['CAM_FRONT']
+    sd_record = nusc.get('sample_data',cam_front_token)
+    pose_record = nusc.get('ego_pose',sd_record['ego_pose_token'])
+    scale = width 
+    box_coords = (
+        pose_record['translation'][0] - scale,
+        pose_record['translation'][1] - scale,
+        pose_record['translation'][0] + scale,
+        pose_record['translation'][1] + scale,
+    )
+    layer_names = {'lane':0,'ped_crossing':1,'lane_divider':2}
+    records_in_patch = nusc_map.get_records_in_patch(box_coords,layer_names,mode='intersect')
+    dx,dy = img_size[0] / (2*width) , img_size[1] / (2*height)
+    bev_hdmap = np.zeros((3,img_size[0],img_size[1],3)).astype(np.uint8)
+    ypr_rad = Quaternion(pose_record['rotation']).yaw_pitch_roll
+    for layer_name in layer_names.keys():
+        for token in records_in_patch[layer_name]:
+            record = nusc_map.get(layer_name,token)
+            if layer_name == 'lane_divider':
+                line_token = record['line_token']
+                line = nusc_map.extract_line(line_token)
+                points = np.array(line.xy).copy()
+                # transform to ego pose coord
+                points_x = (points[0] - np.array(pose_record['translation'][0]))
+                points_y = (np.array(pose_record['translation'][1]) - points[1])
+                points = np.concatenate([points_x[:,np.newaxis],points_y[:,np.newaxis]],axis=1)
+                rotation_matrix = get_matrix_from_theta(ypr_rad[0])
+                points = np.dot(points,rotation_matrix.T)
+
+                # transform to cv coord
+                points_x = (-points[:,0]) * dx + img_size[0] // 2
+                points_y = (points[:,1]) * dy + img_size[1] // 2
+                points = np.concatenate([points_y[np.newaxis,:],points_x[np.newaxis,:]],axis=0)
+                points = points.astype(np.int16)
+                for i in range(len(points[0])-1):
+                    cv2.line(bev_hdmap[layer_names[layer_name]],points[:,i],points[:,i+1],color=(255,255,255),thickness=1)
+            else:
+                polygon_tokens = [record['polygon_token']]
+                for polygon_token in polygon_tokens:
+                    polygon = nusc_map.extract_polygon(polygon_token)
+                    points = np.array(polygon.exterior.xy).copy()
+                    # transform to ego pose coord
+                    points_x = (points[0] - np.array(pose_record['translation'][0]))
+                    points_y = (np.array(pose_record['translation'][1]) - points[1])
+                    points = np.concatenate([points_x[:,np.newaxis],points_y[:,np.newaxis]],axis=1)
+                    rotation_matrix = get_matrix_from_theta(ypr_rad[0])
+                    points = np.dot(points,rotation_matrix.T)
+
+                    # transform to cv coord
+                    points_x = (-points[:,0]) * dx + img_size[0] // 2
+                    points_y = (points[:,1]) * dy + img_size[1] // 2
+                    points = np.concatenate([points_y[np.newaxis,:],points_x[np.newaxis,:]],axis=0)
+                    points = points.astype(np.int32)
+                    points = points.T.reshape(-1,1,2)
+                    cv2.polylines(bev_hdmap[layer_names[layer_name]],[points],isClosed=True,color=(255,255,255),thickness=1)
+    # x_values,y_values = np.meshgrid(np.arange(img_size[0]),np.arange(img_size[1]))
+    # theta = np.arctan2((y_values - bev_hdmap.shape[1] // 2),(x_values + eps - bev_hdmap.shape[0] // 2))
+    # mask = ~np.logical_and((-90 - 35) / 180 * math.pi <= theta,theta<= (-90 + 35) / 180 * math.pi)
+    # bev_hdmap[:,mask] = 0
+    return bev_hdmap
+
+def get_bev_box_label(sample_data_token:str,
+                           nusc:NuScenes,
+                           nusc_map:NuScenesMap,
+                           width:int=38.4,
+                           height:int=38.4,
+                           img_size:tuple=(256,256),
+                           instance_label=None):
+    assert img_size[0] == img_size[1]
+    def calc_distance(point:np.ndarray)->float:
+        return np.sqrt(point[0]**2 + point[1]**2)
+    sample_record = nusc.get('sample',sample_data_token)
+    cam_front_token = sample_record['data']['CAM_FRONT']
+    sd_record = nusc.get('sample_data', cam_front_token)
+    cs_record = nusc.get('calibrated_sensor', sd_record['calibrated_sensor_token'])
+    sensor_record = nusc.get('sensor', cs_record['sensor_token'])
+    pose_record = nusc.get('ego_pose', sd_record['ego_pose_token'])
+    boxes = copy.deepcopy(nusc.get_boxes(cam_front_token))
+    dx,dy = img_size[0] / (2*width) , img_size[1] / (2*height)
+    # filter
+    bev_instance_label = np.zeros((50,img_size[0],img_size[1])).astype(np.uint8)
+    bev_box = np.zeros((len(instance_label.keys()),img_size[0],img_size[1])).astype(np.uint8)
+    # bev_box_center_label = np.zeros((len(instance_label.keys()),img_size[0],img_size[1])).astype(np.uint8)
+    # bev_box_center = np.zeros((len(instance_label.keys()),img_size[0],img_size[1]),2).astype(np.uint8)
+    # bev_box_offset_mask = np.zeros((len(instance_label.keys(),img_size[0],img_size[1]))).astype(np.uint8)
+    # bev_box_offset = np.zeros((len(instance_label.keys(),img_size[0],img_size[1])),2).astype(np.uint8)
+    yaw = Quaternion(pose_record['rotation']).yaw_pitch_roll[0]
+    boxes = sorted(boxes,key=lambda x:calc_distance(x.center - np.array(pose_record['translation'])))
+    count = 0
+    for box in boxes:
+        name = box.name.split('.')[0]
+        if not box.name.split('.')[0] in instance_label.keys():
+            continue
+        yaw = Quaternion(pose_record['rotation']).yaw_pitch_roll[0]
+        box.translate(-np.array(pose_record['translation']))
+        box.rotate(Quaternion(scalar=np.cos(yaw / 2), vector=[0, 0, np.sin(yaw / 2)]).inverse)
+        corner = box.corners()
+        x_min,x_max,y_min,y_max = corner[0].min(),corner[0].max(),corner[1].min(),corner[1].max()
+        x_min,x_max = int(((-x_min) * dx + img_size[0] // 2)),int(((-x_max) * dx + img_size[0] // 2))
+        y_min,y_max = int(((-y_min) * dy + img_size[1] // 2)),int(((-y_max) * dy + img_size[1] // 2))
+        y_min,y_max,x_min,x_max = np.clip(y_min,0,img_size[0]-1),np.clip(y_max,0,img_size[0]-1),np.clip(x_min,0,img_size[0]-1),np.clip(x_max,0,img_size[0]-1)
+        if count < 50:
+            bev_instance_label[count,x_max:x_min,y_max:y_min] = instance_label[name]
+        bev_box[instance_label[name],x_max:x_min,y_max:y_min] = 255
+        count += 1
+        # box_center_grid = np.array([(x_min+x_max)//2,(y_min+y_max)//2])
+        # bev_box_center[instance_label[box.name.split('.')[0]],x_max:x_min,y_max:y_min] = box_center_grid
+        # bev_box_center_label[instance_label[box.name.split('.')[0]],box_center_grid[0],box_center_grid[1]] = 255
+        # bev_box_offset_mask[instance_label[box.name.split('.')[0]],x_max:x_min,y_max:y_min] = 1
+    
+    x_values,y_values = np.meshgrid(np.arange(img_size[0]),np.arange(img_size[1]))
+    theta = np.arctan2((y_values - img_size[0] // 2),(x_values + eps - img_size[0] // 2))
+    mask = ~np.logical_and((-90-35) / 180 * math.pi <= theta,theta<= (-90+35) / 180 * math.pi)
+
+    bev_instance_label = bev_instance_label[:] * mask
+    # bev_box = bev_box[:] * mask
+    tmp = np.sum(bev_box,axis=0,keepdims=True)
+    background = (tmp == 0)
+    background = np.ones_like(background) * background * 255
+    bev_box[instance_label['background']] = background
+    # bev_xy = np.concatenate([x_values[:,:,np.newaxis],y_values,np.newaxis],axis=-1) - np.array([img_size[0]//2,img_size[1]//2])
+    # bev_box_offset = bev_xy * bev_box_offset_mask - bev_box_center
+    # bev_box_offset = bev_box_offset[:,mask]
+    # bev_box_center_label = bev_box_center_label[:,mask]
+    # bev_box_center = bev_box_center[:,mask]
+
+    # return bev_box_center_label,bev_box_offset
+    return bev_instance_label,bev_box
+
+
+def get_bev_box_label_test(sample_data_token:str,
+                           nusc:NuScenes,
+                           nusc_map:NuScenesMap,
+                           width:int=50,
+                           height:int=50,
+                           img_size:tuple=(256,256),
+                           instance_label=None):
+    assert img_size[0] == img_size[1]
+    sd_record = nusc.get('sample_data', sample_data_token)
+    cs_record = nusc.get('calibrated_sensor', sd_record['calibrated_sensor_token'])
+    sensor_record = nusc.get('sensor', cs_record['sensor_token'])
+    pose_record = nusc.get('ego_pose', sd_record['ego_pose_token'])
+    boxes = copy.deepcopy(nusc.get_boxes(sample_data_token))
+    dx,dy = img_size[0] / (2*width) , img_size[1] / (2*height)
+    # filter
+    bev_box = np.zeros((img_size[0],img_size[0],3)).astype(np.uint8)
+    yaw = Quaternion(pose_record['rotation']).yaw_pitch_roll[0]
+    for box in boxes:
+        if not box.name.split('.')[0] in instance_label.keys():
+            continue
+        yaw = Quaternion(pose_record['rotation']).yaw_pitch_roll[0]
+        box.translate(-np.array(pose_record['translation']))
+        box.rotate(Quaternion(scalar=np.cos(yaw / 2), vector=[0, 0, np.sin(yaw / 2)]).inverse)
+        corner = box.corners()
+        x_min,x_max,y_min,y_max = corner[0].min(),corner[0].max(),corner[1].min(),corner[1].max()
+        x_min,x_max = int(((-x_min) * dx + img_size[0] // 2)),int(((-x_max) * dx + img_size[0] // 2))
+        y_min,y_max = int(((-y_min) * dy + img_size[1] // 2)),int(((-y_max) * dy + img_size[1] // 2))
+        y_min,y_max,x_min,x_max = np.clip(y_min,0,img_size[0]-1),np.clip(y_max,0,img_size[0]-1),np.clip(x_min,0,img_size[0]-1),np.clip(x_max,0,img_size[0]-1)
+        # bev_box[y_max:y_min,x_max:x_min] = 255
+        # cv2.rectangle(bev_box,(y_max,x_max),(y_min,x_min),(255,255,255),thickness=1)
+        bev_box[x_max:x_min,y_max:y_min] = 255
+
+    
+    x_values,y_values = np.meshgrid(np.arange(img_size[0]),np.arange(img_size[1]))
+    theta = np.arctan2((y_values - img_size[0] // 2),(x_values + eps - img_size[0] // 2))
+    mask = ~np.logical_and((-90-35) / 180 * math.pi <= theta,theta<= (-90+35) / 180 * math.pi)
+    bev_box[mask] = 0
+
+    # bev_box = Image.fromarray(bev_box)
+    # bev_box.save('test_box.png')
+    # bev_box = np.array(bev_box)
+    return bev_box
 
 
 def project_to_camera(nusc,sample_token,img_size=(128,256),min_dist=1.0,out_path=None,pointsensor_channel="LIDAR_TOP",camera_channel="CAM_FRONT"):

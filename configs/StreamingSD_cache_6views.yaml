@@ -11,6 +11,7 @@ model:
     use_ema: False #use ema?
     use_scheduler: true
     copy_ca_weight: True
+    num_cameras: 6
     global_condition_config:
       target: ldm.models.condition.StreamingSDCondition
       params:
@@ -57,7 +58,7 @@ model:
           - input_key: 3Dbox
             is_trainable: False
             ucg_rate: 0.15
-            target: ldm.models.condition.FrozenCLIPTextWrapper
+            target: ldm.models.condition.MultiViewFrozenClipTextWrapper
             params:
               clip_config:
                 target: ldm.models.condition.FrozenCLIPTextEmbedder
@@ -102,7 +103,7 @@ model:
             use_spatial_transformer: True
             transformer_depth: 1
             context_dim: 768
-            num_cameras: 1
+            num_cameras: ${model.params.num_cameras}
             use_checkpoint: true
             legacy: False
             use_cache: True
@@ -135,6 +136,7 @@ model:
         offset_noise_level: 0.02
         additional_loss_weight: 0.1
         disabled_sigmas_sampler: True
+        num_cameras: ${model.params.num_cameras}
         sigma_sampler_config:
           target: ldm.modules.diffusionmodules.sigma_sampling.EDMSampling
           params:
@@ -165,9 +167,9 @@ data:
         cfg:
           version: v1.0-mini
           dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
-          img_size: [256,128]
+          img_size: [768,448]
           nusc_canbus_frequency: 50
-          num_cameras: 1
+          num_cameras: ${model.params.num_cameras}
           camera_frequency: 2
         num_boxes: 70
         movie_len: 1
@@ -185,9 +187,9 @@ data:
         cfg:
           version: v1.0-mini
           dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
-          img_size: [256,128]
+          img_size: [768,448]
           nusc_canbus_frequency: 50
-          num_cameras: 1
+          num_cameras: ${model.params.num_cameras}
           camera_frequency: 2
         num_boxes: 70
         movie_len: 1

@@ -9,7 +9,8 @@ from ldm.modules.diffusionmodules.model import Encoder, Decoder
 from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
 
 from ldm.util import instantiate_from_config
-
+import copy,os
+from PIL import Image
 
 class VQModel(pl.LightningModule):
     def __init__(self,
@@ -326,6 +327,47 @@ class AutoencoderKL(pl.LightningModule):
         moments = self.quant_conv(h)
         posterior = DiagonalGaussianDistribution(moments)
         return posterior
+
+
+    def save_tensor_as_image(self,tensor,file_path,index,frame):
+        if tensor.is_cuda:
+            tensor = tensor.cpu()
+        tensor = tensor.clamp(-1.,1.)
+        tensor = (tensor + 1.) / 2.
+        tensor = tensor * 255.0
+        tensor = tensor.byte()
+
+        for i in range(tensor.shape[0]):
+            img = tensor[i]
+            img = img.permute(1,2,0)
+            img = img.numpy()
+            img = Image.fromarray(img)
+            save_file_path = os.path.join(file_path,f'{index:02d}_{frame+i:02d}.png')
+            img.save(save_file_path)
+        
+    def decode_first_stage(self,latents,file_path,index,n_samples=8,decoder=None):
+        with torch.no_grad():
+            latents = torch.stack(latents,dim=0)
+            print(latents.shape)
+            chunk_size = (latents.shape[0] + n_samples - 1) // n_samples
+            latents_chunk = torch.chunk(latents,chunks=chunk_size,dim=0)
+            start_frame = 0
+            for chunk in latents_chunk:
+                chunk = chunk.to(self.device)
+                if not decoder is None:
+                    output = decoder.decode_first_stage(chunk)
+                else:
+                    output = self.decode(chunk)
+                output = output.cpu()
+                chunk = chunk.cpu()
+                self.save_tensor_as_image(output,file_path,index,frame=start_frame)
+                start_frame += chunk.shape[0]
+
+    def encode_first_stage(self,x):
+        h = self.encoder(x)
+        moments = self.quant_conv(h)
+        posterior = DiagonalGaussianDistribution(moments)
+        return posterior.sample()
 
     def decode(self, z):
         z = self.post_quant_conv(z)

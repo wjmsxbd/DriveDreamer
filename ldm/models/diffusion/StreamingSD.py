@@ -71,7 +71,8 @@ class StreamingSD(pl.LightningModule):
                  use_scheduler=True,
                  scheduler_config=None,
                  copy_ca_weight=False,
-                 slow_fast_path=None):
+                 slow_fast_path=None,
+                 num_cameras=1):
         super().__init__()
         self.global_condition = instantiate_from_config(global_condition_config)
         self.model = instantiate_from_config(unet_config)
@@ -88,6 +89,7 @@ class StreamingSD(pl.LightningModule):
         self.use_ema = use_ema
         self.copy_ca_weight = copy_ca_weight
         self.scheduler_config = scheduler_config
+        self.num_cameras = num_cameras
         if self.use_ema:
             self.model_ema = LitEma(self.model)
             print(f"Keeping EMAs of {len(list(self.model_ema.buffers()))}")
@@ -240,6 +242,13 @@ class StreamingSD(pl.LightningModule):
     def set_model_init_feature(self,flag):
         self.model.set_model_init_feature(flag)
 
+    def pack_camera_squence(self,batch):
+        for key in batch.keys():
+            if isinstance(batch[key],torch.Tensor):
+                if len(batch[key].shape) == 5:
+                    batch[key] = rearrange(batch[key],'b n c h w -> (b n) c h w')
+        return batch
+
     # input_shape: cond_frame tensor:(b h w c)
     #              image tensor:(b h w c)
     #              HDmap tensor:(b h w c)
@@ -247,51 +256,20 @@ class StreamingSD(pl.LightningModule):
     # 多帧会出问题
     @torch.no_grad()
     def get_input(self,batch,return_first_stage_outputs=False,bs=None):
+        if self.num_cameras == 6:
+            self.pack_camera_squence(batch)
         x = batch[self.input_keys]
-        n_cam = 1
-        if len(x.shape) == 5:
-            n_cam = x.shape[1]
-            x = rearrange(x, "b n c h w -> (b n) c h w")
         if bs is not None:
             x = x[:bs]
         assert isinstance(x,torch.Tensor)
         encoder_posterior = self.encode_first_stage(x)
-        #FX TODO:call self.model.clear_model_cache() if batch['first_frame'] == 1   
-        # if 'first_frame' in batch.keys():
-        #     if batch['first_frame'][0] == [1]:
-        #         self.model.clear_model_cache()
-        #         self.model.set_model_init_feature(True)
-        #     else:
-        #         self.model.set_model_init_feature(False)
+    
         z = self.get_first_stage_encoding(encoder_posterior).detach()
-        if n_cam > 1:
-            z = rearrange(z, "(b n) c h w -> b n c h w",n = n_cam)
         if return_first_stage_outputs:
-            if n_cam > 1:
-                z = rearrange(z, "b n c h w -> (b n) c h w")
-                x_rec = self.decode_first_stage(z)
-                #z = rearrange(z, "(b n) c h w -> b n c h w",n = n_cam)
-            else:
-                x_rec = self.decode_first_stage(z)
+            x_rec = self.decode_first_stage(z)
             return z,x_rec
         return z
     
-    # @torch.no_grad()
-    # def get_latent(self,batch,return_first_stage_outputs=False,bs=None):
-    #     x = batch[self.input_keys]
-    #     if bs is not None:
-    #         x = x[:bs]
-    #     assert isinstance(x,torch.Tensor)
-    #     encoder_posterior = x
-    #     #FX TODO:call self.model.clear_model_cache() if batch['first_frame'] == 1
-    #     if batch['first_frame'] == 1:
-    #         self.model.clear_model_cache()
-
-    #     z = self.get_first_stage_encoding(encoder_posterior).detach()
-    #     if return_first_stage_outputs:
-    #         x_rec = self.decode_first_stage(z)
-    #         return z,x_rec
-    #     return z
     
     def get_losses(self,x,cond,return_predict=False):
         return self.loss_fn._forward(self.model,self.denoiser,cond,x,return_predict)
@@ -540,7 +518,7 @@ class StreamingSDInferPipeLine(pl.LightningModule):
     def save_tensor_as_MVimage(self,tensor,file_path,index,frame):
         if tensor.is_cuda:
             tensor = tensor.cpu()
-            
+        h,w = tensor.shape[-2:]
         tensor = tensor.clamp(-1, 1)  # 确保值在[-1, 1]之间
         tensor = (tensor + 1.0) / 2.0  # 转换到[0, 1]
         tensor = tensor * 255.0  # 转换到[0, 255]
@@ -548,7 +526,7 @@ class StreamingSDInferPipeLine(pl.LightningModule):
 
         # 构建保存文件的路
         # 创建一个空白图片，用于存放拼接后的大图    
-        big_image = Image.new('RGB', (3 * 256, 2 * 128), (255, 255, 255))  # 白色背景
+        big_image = Image.new('RGB', (3 * w, 2 * h), (255, 255, 255))  # 白色背景
 
         # 将张量转换为PIL图像，并拼接
         for j in range(tensor.shape[0]):
@@ -563,7 +541,7 @@ class StreamingSDInferPipeLine(pl.LightningModule):
                 row = i // 3  # 行号
                 col = i % 3  # 列号
                 if row < 2:  # 只有两行
-                    position = (col * 256, row * 128)  # 确定位置
+                    position = (col * w, row * h)  # 确定位置
                     big_image.paste(img, position)  # 粘贴图片
 
             # 保存大图片
@@ -640,10 +618,8 @@ class StreamingSDInferPipeLine(pl.LightningModule):
     def _forward(self,batch,replace_cond_frames=False,return_first_frame=False):
         sigmas = self.model.prepare_sigmas()
         num_sigmas = len(sigmas)
-        c,uc = self.model.get_unconditional_conditioning(batch)
         z = self.model.get_input(batch)
-        if len(z.shape) == 5:
-             z = rearrange(z, "b n c h w -> (b n) c h w")
+        c,uc = self.model.get_unconditional_conditioning(batch)
         if return_first_frame:
             z_ = z
         randn = torch.randn_like(z).to(z.device)

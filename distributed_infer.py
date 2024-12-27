@@ -204,6 +204,22 @@ class dataloader(data.Dataset):
                     hdmap = collect_data['HDmap'][:,:,:3].copy()
                     hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
                     out['HDmap'] = rearrange(hdmap,'h w c -> c h w').contiguous()
+                    boxes = collect_data['3Dbox']
+                    category = collect_data['category']
+                    boxes = np.array(boxes).astype(np.float32)
+                    if boxes.shape[0] == 0:
+                        box_text = ["None" for i in range(self.num_boxes)]
+                    elif boxes.shape[0] < self.num_boxes:
+                        zero_len = self.num_boxes - boxes.shape[0]
+                        box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])]
+                        for i in range(zero_len):
+                            box_text.append('None')
+                    else:
+                        boxes = boxes[:self.num_boxes]
+                        category = category[:self.num_boxes]
+                        box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])] 
+                    out['3Dbox'] = box_text
+
                 else:
                     collect_data = get_this_scene_info_with_lidar_MV(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=False,collect_data=self.collect_condition)
                     img = collect_data['reference_image'][:,:,:,:3].copy()
@@ -212,6 +228,23 @@ class dataloader(data.Dataset):
                     hdmap = collect_data['HDmap'][:,:,:,:3].copy()
                     hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
                     out['HDmap'] = rearrange(hdmap,'n h w c -> n c h w').contiguous()
+                    boxes_list = collect_data['3Dbox']
+                    category_list = collect_data['category']
+                    for i in range(self.num_cameras):
+                        boxes = boxes_list[i]
+                        category = category_list[i]
+                        if boxes.shape[0] == 0:
+                            box_text = ["None" for i in range(self.num_boxes)]
+                        elif boxes.shape[0] < self.num_boxes:
+                            zero_len = self.num_boxes - boxes.shape[0]
+                            box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])]
+                            for i in range(zero_len):
+                                box_text.append('None')
+                        else:
+                            boxes = boxes[:self.num_boxes]
+                            category = category[:self.num_boxes]
+                            box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])] 
+                        out['3Dbox'].append(box_text)
             else:
                 if self.num_cameras == 1:
                     collect_data = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=False,collect_data=self.collect_condition)
@@ -221,6 +254,22 @@ class dataloader(data.Dataset):
                     hdmap = collect_data['HDmap'][:,:,:3].copy()
                     hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
                     out['HDmap'] = rearrange(hdmap,'h w c -> c h w').contiguous()
+                    boxes = collect_data['3Dbox']
+                    category = collect_data['category']
+                    boxes = np.array(boxes).astype(np.float32)
+                    if boxes.shape[0] == 0:
+                        box_text = ["None" for i in range(self.num_boxes)]
+                    elif boxes.shape[0] < self.num_boxes:
+                        zero_len = self.num_boxes - boxes.shape[0]
+                        box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])]
+                        for i in range(zero_len):
+                            box_text.append('None')
+                    else:
+                        boxes = boxes[:self.num_boxes]
+                        category = category[:self.num_boxes]
+                        box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])] 
+                    out['3Dbox'] = box_text
+                    
                 else:
                     collect_data = get_this_scene_info_with_lidar_MV(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=False,collect_data=self.collect_condition)
                     img = collect_data['reference_image'][:,:,:,:3].copy()
@@ -229,23 +278,27 @@ class dataloader(data.Dataset):
                     hdmap = collect_data['HDmap'][:,:,:,:3].copy()
                     hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
                     out['HDmap'] = rearrange(hdmap,'n h w c -> n c h w').contiguous()
-            boxes = collect_data['3Dbox']
-            category = collect_data['category']
-            boxes = np.array(boxes).astype(np.float32)
-            if boxes.shape[0] == 0:
-                box_text = ["None" for i in range(self.num_boxes)]
-            elif boxes.shape[0] < self.num_boxes:
-                zero_len = self.num_boxes - boxes.shape[0]
-                box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])]
-                for i in range(zero_len):
-                    box_text.append('None')
-            else:
-                boxes = boxes[:self.num_boxes]
-                category = category[:self.num_boxes]
-                box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])] 
-            out['3Dbox'] = box_text
+                    boxes_list = collect_data['3Dbox']
+                    category_list = collect_data['category']
+                    for i in range(self.num_cameras):
+                        boxes = boxes_list[i]
+                        category = category_list[i]
+                        if boxes.shape[0] == 0:
+                            box_text = ["None" for i in range(self.num_boxes)]
+                        elif boxes.shape[0] < self.num_boxes:
+                            zero_len = self.num_boxes - boxes.shape[0]
+                            box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])]
+                            for i in range(zero_len):
+                                box_text.append('None')
+                        else:
+                            boxes = boxes[:self.num_boxes]
+                            category = category[:self.num_boxes]
+                            box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])] 
+                        out['3Dbox'].append(box_text)
+            
         if out['first_frame'][0] == 1:
             out['cond_frames'] = out['image']
+            out['clip_first_frame'] = out['image']
         else:
             sample_token = self.video_infos[idx-1]['token']
             if self.num_cameras == 1:
@@ -291,12 +344,6 @@ def collate_fn(batch):
                 out[key].append(value)
             else:
                 raise NotImplementedError
-        for key, value in out.items():
-            if isinstance(value, torch.Tensor) and len(value.shape) == 5 and key != 'image':
-                # 合并多视角
-                value = rearrange(value, "b n c h w -> (b n) c h w")
-                out[key] = value
-        return out  
     return out
 
 class DistributedSceneSampler(Sampler):
@@ -475,7 +522,7 @@ def save_tensor_as_image(tensor, file_path,index,frame):
 def save_tensor_as_MVimage(tensor, file_path,index,frame):
     if tensor.is_cuda:
         tensor = tensor.cpu()
-        
+    h,w = tensor.shape[-2:]
     tensor = tensor.clamp(-1, 1)  # 确保值在[-1, 1]之间
     tensor = (tensor + 1.0) / 2.0  # 转换到[0, 1]
     tensor = tensor * 255.0  # 转换到[0, 255]
@@ -484,7 +531,7 @@ def save_tensor_as_MVimage(tensor, file_path,index,frame):
     # 构建保存文件的路径
     save_file_path = os.path.join(file_path, f'{index:02d}_{frame:02d}.png')
     # 创建一个空白图片，用于存放拼接后的大图    
-    big_image = Image.new('RGB', (3 * 256, 2 * 128), (255, 255, 255))  # 白色背景
+    big_image = Image.new('RGB', (3 * w, 2 * h), (255, 255, 255))  # 白色背景
 
     # 将张量转换为PIL图像，并拼接
     for i in range(tensor.shape[0]):  # 遍历6张图片
@@ -497,7 +544,7 @@ def save_tensor_as_MVimage(tensor, file_path,index,frame):
         row = i // 3  # 行号
         col = i % 3  # 列号
         if row < 2:  # 只有两行
-            position = (col * 256, row * 128)  # 确定位置
+            position = (col * w, row * h)  # 确定位置
             big_image.paste(img, position)  # 粘贴图片
 
     # 保存大图片
@@ -539,7 +586,7 @@ if __name__ == "__main__":
                         default=None,
                         type=str,
                         help="model_path")
-    parser.add_argument('--local_rank',
+    parser.add_argument('--local-rank',
                         default=0,
                         type=int,
                         help="local_rank")
@@ -577,9 +624,9 @@ if __name__ == "__main__":
         video_decoder_config = omegaconf.OmegaConf.load(video_decoder)
         decoder = instantiate_from_config(video_decoder_config['model'])
 
-    # world_size = int(os.environ['WORLD_SIZE'])
+    world_size = int(os.environ['WORLD_SIZE'])
     rank = int(os.environ['RANK'])
-    # dist.init_process_group('nccl',world_size=world_size,rank=rank)
+    dist.init_process_group('nccl',world_size=world_size,rank=rank)
     if use_train:
         data_loader = instantiate_from_config(cfg.data.params.train)
         # data_loader = dataloader(**cfg.data.params.train.params)
@@ -597,6 +644,8 @@ if __name__ == "__main__":
         collate_fn=collate_fn
     )
     network = instantiate_from_config(cfg['model'])
+    multiview = network.model.num_cameras == 6
+    assert multiview
     model_path = cmd_args.model_path
     if model_path:
         network.init_from_ckpt(model_path)
@@ -617,7 +666,7 @@ if __name__ == "__main__":
             os.makedirs(cam_rec_save_path)
         if not os.path.exists(cam_sample_save_path):
             os.makedirs(cam_sample_save_path)
-    # dist.barrier()
+    dist.barrier()
     pre_batch = None
     now_frames = 0
     len2idx = sampler.len2idx.copy()
@@ -632,7 +681,6 @@ if __name__ == "__main__":
     pre_batch = None
     with torch.no_grad():
         for _,batch in tqdm(enumerate(data_loader_)):
-            #batch = collate_fn(batch)
             if batch['first_frame'][0] == 1 or batch['first_frame'][0] == [1]:
                 if first_frame_keys != []:
                     if device == 'cuda':
@@ -647,8 +695,9 @@ if __name__ == "__main__":
                 if device == 'cuda':
                     batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
                 output = network(batch)
-                if len(batch['image'].shape) == 5: # b n c h w
-                   output = rearrange(output, "(b n) c h w -> b n c h w",n = batch['image'].shape[1])
+                if multiview: # b n c h w
+                   output = rearrange(output, "(b n) c h w -> b n c h w",n = 6)
+                   batch['image'] = rearrange(batch['image'],'(b n) c h w -> b n c h w',n = 6)
                 for idx in batch['idx']:
                     count_first_frame_idx[idx] = 0
                 for i in range(len(first_frame_idx)):
@@ -656,7 +705,7 @@ if __name__ == "__main__":
                     if now_frames < count_first_frame_idx[idx]:
                         continue
                     first_frame_keys.append(idx)
-                    if len(batch['image'].shape) == 4:
+                    if not multiview:
                         save_tensor_as_image(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
                     else :
                         save_tensor_as_MVimage(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
@@ -667,13 +716,14 @@ if __name__ == "__main__":
                 if device == 'cuda':
                     batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
                 output = network(batch)
-                if len(batch['image'].shape) == 5: # b n c h w
-                   output = rearrange(output, "(b n) c h w -> b n c h w",n = batch['image'].shape[1])
+                if multiview: # b n c h w
+                   output = rearrange(output, "(b n) c h w -> b n c h w",n = 6)
+                   batch['image'] = rearrange(batch['image'],'(b n) c h w -> b n c h w',n = 6)
                 for i in range(len(first_frame_idx)):
                     idx = first_frame_idx[i]
                     if now_frames < count_first_frame_idx[idx]:
                         continue
-                    if len(batch['image'].shape) == 4:
+                    if not multiview:
                         save_tensor_as_image(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
                     else :
                         save_tensor_as_MVimage(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
@@ -735,5 +785,4 @@ if __name__ == "__main__":
     #     # if now_frames == idx2len[first_frame_idx[0]]:
     #     #     now_frames = 0
             
-
 

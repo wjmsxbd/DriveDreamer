@@ -505,11 +505,6 @@ class DataModuleFromConfig(pl.LightningDataModule):
                         out[key].append(value)
                 else:
                     raise NotImplementedError
-        for key, value in out.items():
-            if isinstance(value, torch.Tensor) and len(value.shape) == 5 and key != 'image':
-                # 合并多视角
-                value = rearrange(value, "b n c h w -> (b n) c h w")
-                out[key] = value
         return out
     
     def _train_dataloader(self):

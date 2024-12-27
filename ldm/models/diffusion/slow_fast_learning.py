@@ -60,7 +60,6 @@ class FeatureCache1D:
         self.window_size = window_size
         self.choose_feature_idx = choose_feature_idx
         self.cache = []
-        self.first = []
 
     def replace_cache(self,feature,index=None):
         if index is None:
@@ -88,7 +87,6 @@ class FeatureCache1D:
         temp_feature = []
         for idx in self.choose_feature_idx:
             temp_feature.append(self.cache[idx][col])
-        temp_feature.append(self.first[col])
         temp_feature = torch.stack(temp_feature,dim=1)
         return copy.deepcopy(temp_feature)
 
@@ -239,7 +237,6 @@ class SlowFastLearning(pl.LightningModule):
             b = len(batch['first_frame'])
             fast_dataset = self.generate_data
             fast_dataset = DataLoader(fast_dataset,batch_size=1,collate_fn=self.collate_fn)
-            self.model.train()
             tqdm_bar = tqdm(enumerate(fast_dataset),total=len(fast_dataset))
             for _,data in tqdm_bar:
                 for k in data.keys():
@@ -255,7 +252,6 @@ class SlowFastLearning(pl.LightningModule):
                 self.slow_optimizer.step()
             self.clear_generate_data()
             # fast learning
-            self.model.eval()
             batch['samples'] = self.cond_frames
             output,cond = self.fast_learning(self.model,batch,self.num_frame.replace(self.replace_window_size))
             cond['first_frame'] = batch['first_frame']

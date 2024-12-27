@@ -8,6 +8,7 @@ import copy
 # from ldm.modules.diffusionmodules.util import checkpoint
 from typing import Union,List,Optional,Any
 from torch.utils.checkpoint import checkpoint
+# from flash_attn import flash_attn_func
 from packaging import version
 if version.parse(torch.__version__) >= version.parse("2.0.0"):
     SDP_IS_AVAILABLE = True
@@ -404,6 +405,57 @@ class MemoryEfficientCrossAttention(nn.Module):
             out = out[:, n_tokens_to_mask:]
         return self.to_out(out)
 
+class NPUMemoryEfficientCrossAttention(nn.Module):
+    # https://github.com/MatthieuTPHR/diffusers/blob/d80b531ff8060ec1ea982b65a1b8df70f73aa67c/src/diffusers/models/attention.py#L223
+    def __init__(
+        self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.0, **kwargs
+    ):
+        super().__init__()
+        print(
+            f"Setting up {self.__class__.__name__}. Query dim is {query_dim}, "
+            f"context_dim is {context_dim} and using {heads} heads with a "
+            f"dimension of {dim_head}."
+        )
+        inner_dim = dim_head * heads
+        context_dim = default(context_dim, query_dim)
+
+        self.heads = heads
+        self.dim_head = dim_head
+
+        self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
+        self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
+        self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
+
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim, query_dim), nn.Dropout(dropout)
+        )
+        self.attention_op: Optional[Any] = None
+
+    def forward(
+        self,
+        x,
+        context=None,
+        mask=None,
+        additional_tokens=None,
+        n_times_crossframe_attn_in_self=0,
+    ):
+        q = self.to_q(x)
+        context = default(context, x)
+        k = self.to_k(context)
+        v = self.to_v(context)
+
+        b, n, c = q.shape
+        q, k, v = map(
+            lambda t: t.unsqueeze(3)
+            .reshape(b, t.shape[1], self.heads, self.dim_head)
+            .contiguous(),
+            (q, k, v),
+        )
+        q,k,v = q.to(torch.float16),k.to(torch.float16),v.to(torch.float16)
+        x = flash_attn_func(q,k,v,0.0,softmax_scale=self.dim_head**-0.5,causal=False)
+        out = x.reshape(b,n,c).to(torch.float32)
+        return self.to_out(out)
+
 class RopeMemoryEfficientCrossAttention(MemoryEfficientCrossAttention):
     def __init__(self,query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.0,seq_len=256,choose_feature_idx=[-10,-5,-1],**kwargs):
         super().__init__(query_dim,context_dim,heads,dim_head,dropout,**kwargs)
@@ -522,7 +574,7 @@ class BasicTransformerBlock(nn.Module):
         self.neighboring_attn_type =  "add"
         # multiview attention
         self.norm5 = nn.LayerNorm(dim)
-        self.attn5 = CrossAttention(
+        self.attn5 = attn_cls(
             query_dim=dim,
             context_dim=dim,
             heads=n_heads,
@@ -757,8 +809,8 @@ class PixelTemporalAttention(nn.Module):
         self.norm1 = torch.nn.GroupNorm(
             num_groups=norm_num_groups,num_channels=input_channels,eps=1e-6,affine=True
         )
-        self.attn2 = attn_cls(input_channels,input_channels,heads=input_channels//attention_head_dim,dim_head=attention_head_dim)
-        self.norm2 = nn.LayerNorm(input_channels)
+        # self.attn2 = attn_cls(input_channels,input_channels,heads=input_channels//attention_head_dim,dim_head=attention_head_dim)
+        # self.norm2 = nn.LayerNorm(input_channels)
         self.proj_in = nn.Linear(input_channels,input_channels)
         self.proj_out = nn.Linear(input_channels,input_channels)
         self.dropout = nn.Dropout(p=0.25)

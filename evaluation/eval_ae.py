@@ -328,7 +328,7 @@ def save_tensor_as_video(tensor,file_path,index):
         imageio.mimsave(save_video_path,video,'GIF',fps=5,loop=0)
 
 def evaluate_fid(real_save_path,rec_save_path):
-    fid_value = fid_score.calculate_fid_given_paths([real_save_path,rec_save_path],2,'cuda',2048)
+    fid_value = fid_score.calculate_fid_given_paths([real_save_path,rec_save_path],64,'cuda',2048)
     return fid_value
 
 def trans(x):
@@ -539,27 +539,27 @@ if __name__ == "__main__":
     rank = int(os.environ['RANK'])
     dist.init_process_group('nccl',world_size=world_size,rank=rank)
 
-    if use_train:
-        data_loader = dataloader(**cfg.data.params.train.params)
-    else:
-        data_loader = dataloader(**cfg.data.params.validation.params)
-    # 35
-    sampler = torch.utils.data.distributed.DistributedSampler(data_loader)
-    batch_size = 2
-    data_loader_ = torch.utils.data.DataLoader(
-        data_loader,
-        batch_size  =   batch_size,
-        num_workers =   0,
-        sampler=sampler,
-        collate_fn=collate_fn
-    )
-    network = instantiate_from_config(cfg['model'])
-    model_path = cmd_args.model_path
-    if model_path:
-        network.init_from_ckpt(model_path)
-    if device == 'cuda':
-        print(f"now_process:{local_rank}")
-        network = network.eval().to(f'cuda:{cuda_id[local_rank]}')
+    # if use_train:
+    #     data_loader = dataloader(**cfg.data.params.train.params)
+    # else:
+    #     data_loader = dataloader(**cfg.data.params.validation.params)
+    # # 35
+    # sampler = torch.utils.data.distributed.DistributedSampler(data_loader)
+    # batch_size = 2
+    # data_loader_ = torch.utils.data.DataLoader(
+    #     data_loader,
+    #     batch_size  =   batch_size,
+    #     num_workers =   0,
+    #     sampler=sampler,
+    #     collate_fn=collate_fn
+    # )
+    # network = instantiate_from_config(cfg['model'])
+    # model_path = cmd_args.model_path
+    # if model_path:
+    #     network.init_from_ckpt(model_path)
+    # if device == 'cuda':
+    #     print(f"now_process:{local_rank}")
+    #     network = network.eval().to(f'cuda:{cuda_id[local_rank]}')
     save_path = 'all_pics/'
     save_path = os.path.join(save_path,path_type)
 
@@ -569,91 +569,91 @@ if __name__ == "__main__":
     lidar_real_save_path = save_path + '/lidar_inputs/'
     lidar_rec_save_path = save_path + "/lidar_rec/"
     lidar_samples_save_path = save_path + "/lidar_samples/"
-    if rank == 0:
-        if not os.path.exists(cam_real_save_path):
-            os.makedirs(cam_real_save_path)
-        if not os.path.exists(cam_rec_save_path):
-            os.makedirs(cam_rec_save_path)
-        if not os.path.exists(lidar_real_save_path):
-            os.makedirs(lidar_real_save_path)
-        if not os.path.exists(lidar_rec_save_path):
-            os.makedirs(lidar_rec_save_path)
-    dist.barrier()
-    videos1 = []
-    videos2 = []
-    # if not video_eval:
-    #     cfg_path = 'evaluation/lidar_bonnetal/train/tasks/semantic/log2/arch_cfg.yaml'
-    #     model_path = 'evaluation/lidar_bonnetal/train/tasks/semantic/log2'
-    #     data_cfg_path = 'evaluation/lidar_bonnetal/train/tasks/semantic/log2/data_cfg.yaml'
-    #     frid = FRIDCalculation(cfg_path,data_cfg_path,model_path=model_path,device=(f'cuda:{cuda_id}' if device == 'cuda' else 'cpu'))
-    #     real_features = []
-    #     rec_features = []
-    point_losses = []
+    # if rank == 0:
+    #     if not os.path.exists(cam_real_save_path):
+    #         os.makedirs(cam_real_save_path)
+    #     if not os.path.exists(cam_rec_save_path):
+    #         os.makedirs(cam_rec_save_path)
+    #     if not os.path.exists(lidar_real_save_path):
+    #         os.makedirs(lidar_real_save_path)
+    #     if not os.path.exists(lidar_rec_save_path):
+    #         os.makedirs(lidar_rec_save_path)
+    # dist.barrier()
+    # videos1 = []
+    # videos2 = []
+    # # if not video_eval:
+    # #     cfg_path = 'evaluation/lidar_bonnetal/train/tasks/semantic/log2/arch_cfg.yaml'
+    # #     model_path = 'evaluation/lidar_bonnetal/train/tasks/semantic/log2'
+    # #     data_cfg_path = 'evaluation/lidar_bonnetal/train/tasks/semantic/log2/data_cfg.yaml'
+    # #     frid = FRIDCalculation(cfg_path,data_cfg_path,model_path=model_path,device=(f'cuda:{cuda_id}' if device == 'cuda' else 'cpu'))
+    # #     real_features = []
+    # #     rec_features = []
+    # point_losses = []
 
-    for _,batch in tqdm(enumerate(data_loader_)):
-        idx = batch['index']
-        del batch['index']
-        if _ > 1023:
-            break
-        if device == 'cuda':
-            batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
-        if not video_eval and not only_camera:
-            gt_lidar_point = data_loader.get_gt_lidar_point(batch['sample_token'],return_intensity=False)
-        del batch['sample_token']
-        logs = network.log_video(batch)
-        # if not video_eval and not only_camera:
-        #     real_feature,rec_feature = frid.calculate_frid_by_video_path(logs['lidar_inputs'],logs['lidar_reconstruction'],gt_lidar_point)
-        #     real_features.append(real_feature)
-        #     rec_features.append(rec_feature)
-        # depth = torch.mean(logs['lidar_reconstruction'],dim=2)
-        # logs['lidar_reconstruction'][:,:,:3] = depth
-        if not video_eval:
-            save_tensor_as_image(logs['inputs'],file_path=cam_real_save_path,index=idx)
-            save_tensor_as_image(logs['samples'],file_path=cam_rec_save_path,index=idx)
-            if not only_camera:
-                save_tensor_as_image(logs['lidar_samples'],file_path=lidar_rec_save_path,index=idx)
-                save_tensor_as_image(logs['lidar_inputs'],file_path=lidar_real_save_path,index=idx)
-        else:
-            if logs['inputs'].shape[1] <10:
-                for key in logs.keys():
-                    temp = logs[key][:,:1]
-                    temp = repeat(temp,'b n c h w -> b (repeat n) c h w',repeat=10-logs['inputs'].shape[1])
-                    logs[key] = torch.cat([temp,logs[key]],dim=1)
-            save_tensor_as_video(logs['inputs'],file_path=cam_real_save_path,index=idx)
-            save_tensor_as_video(logs['samples'],file_path=cam_rec_save_path,index=idx)
-            if not only_camera:
-                save_tensor_as_video(logs['lidar_samples'],file_path=lidar_rec_save_path,index=idx)
-                save_tensor_as_video(logs['lidar_inputs'],file_path=lidar_real_save_path,index=idx)
-        # # logs['inputs'] = torch.cat([repeat(logs["inputs"][:,0:1],'b n c h w -> b (repeat n) c h w',repeat=5),logs['inputs']],dim=1)
-        # # logs['reconstruction'] = torch.cat([repeat(logs["reconstruction"][:,0:1],'b n c h w -> b (repeat n) c h w',repeat=5),logs['reconstruction']],dim=1)
-        # # results_cam = evaluate_fvd(logs['inputs'],logs['reconstruction'],'cuda')
-        # # print(results_cam)
-        # # results_lidar = evaluate_fvd(logs['lidar_inputs'],logs['lidar_reconstruction'],device)
-        # # print(results_lidar)
-        # # batch['reference_image'] = batch['reference_image'][:,0:1]
-        # # batch['reference_image'] = repeat(batch['reference_image'],'b n h w c -> b (repeat n) h w c',repeat=5)
-        # # logs = network.log_video(batch)
-        # lidar_inputs = logs['lidar_inputs']
-        # lidar_inputs = rearrange(lidar_inputs,'b n c h w -> (b n) c h w')
-        # lidar_reconstruction = logs['lidar_reconstruction']
-        # lidar_reconstruction = rearrange(lidar_reconstruction,'b n c h w -> (b n) c h w')
-        # save_tensor_as_video(logs['inputs'],file_path=cam_real_save_path+f'inputs_{_:02d}.png',save_type='png')
-        # save_tensor_as_video(logs['reconstruction'],file_path=cam_rec_save_path+f'samples{_:02d}.png',save_type='png')
-        # save_tensor_as_video(logs['lidar_reconstruction'],file_path=lidar_rec_save_path+f'lidar_samples{_:02d}.png',save_type='png')
-        # save_tensor_as_video(logs['lidar_inputs'],file_path=lidar_real_save_path+f'lidar_inputs{_:02d}.png',save_type='png')
-        # # network.lidar_model.calc_3D_point_loss(lidar_inputs,lidar_reconstruction)
-        # # save_tensor_as_video(logs['inputs'],file_path=cam_real_save_path+f'inputs_{_:02d}.gif')
-        # # save_tensor_as_video(logs['reconstruction'],file_path=cam_rec_save_path+f'samples{_:02d}.gif')
-        # # save_tensor_as_video(logs['lidar_reconstruction'],file_path=lidar_rec_save_path+f'lidar_samples{_:02d}.gif')
-        # # save_tensor_as_video(logs['lidar_inputs'],file_path=lidar_real_save_path+f'lidar_inputs{_:02d}.gif')
+    # for _,batch in tqdm(enumerate(data_loader_)):
+    #     idx = batch['index']
+    #     del batch['index']
+    #     if _ > 1023:
+    #         break
+    #     if device == 'cuda':
+    #         batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
+    #     if not video_eval and not only_camera:
+    #         gt_lidar_point = data_loader.get_gt_lidar_point(batch['sample_token'],return_intensity=False)
+    #     del batch['sample_token']
+    #     logs = network.log_video(batch)
+    #     # if not video_eval and not only_camera:
+    #     #     real_feature,rec_feature = frid.calculate_frid_by_video_path(logs['lidar_inputs'],logs['lidar_reconstruction'],gt_lidar_point)
+    #     #     real_features.append(real_feature)
+    #     #     rec_features.append(rec_feature)
+    #     # depth = torch.mean(logs['lidar_reconstruction'],dim=2)
+    #     # logs['lidar_reconstruction'][:,:,:3] = depth
+    #     if not video_eval:
+    #         save_tensor_as_image(logs['inputs'],file_path=cam_real_save_path,index=idx)
+    #         save_tensor_as_image(logs['samples'],file_path=cam_rec_save_path,index=idx)
+    #         if not only_camera:
+    #             save_tensor_as_image(logs['lidar_samples'],file_path=lidar_rec_save_path,index=idx)
+    #             save_tensor_as_image(logs['lidar_inputs'],file_path=lidar_real_save_path,index=idx)
+    #     else:
+    #         if logs['inputs'].shape[1] <10:
+    #             for key in logs.keys():
+    #                 temp = logs[key][:,:1]
+    #                 temp = repeat(temp,'b n c h w -> b (repeat n) c h w',repeat=10-logs['inputs'].shape[1])
+    #                 logs[key] = torch.cat([temp,logs[key]],dim=1)
+    #         save_tensor_as_video(logs['inputs'],file_path=cam_real_save_path,index=idx)
+    #         save_tensor_as_video(logs['samples'],file_path=cam_rec_save_path,index=idx)
+    #         if not only_camera:
+    #             save_tensor_as_video(logs['lidar_samples'],file_path=lidar_rec_save_path,index=idx)
+    #             save_tensor_as_video(logs['lidar_inputs'],file_path=lidar_real_save_path,index=idx)
+    #     # # logs['inputs'] = torch.cat([repeat(logs["inputs"][:,0:1],'b n c h w -> b (repeat n) c h w',repeat=5),logs['inputs']],dim=1)
+    #     # # logs['reconstruction'] = torch.cat([repeat(logs["reconstruction"][:,0:1],'b n c h w -> b (repeat n) c h w',repeat=5),logs['reconstruction']],dim=1)
+    #     # # results_cam = evaluate_fvd(logs['inputs'],logs['reconstruction'],'cuda')
+    #     # # print(results_cam)
+    #     # # results_lidar = evaluate_fvd(logs['lidar_inputs'],logs['lidar_reconstruction'],device)
+    #     # # print(results_lidar)
+    #     # # batch['reference_image'] = batch['reference_image'][:,0:1]
+    #     # # batch['reference_image'] = repeat(batch['reference_image'],'b n h w c -> b (repeat n) h w c',repeat=5)
+    #     # # logs = network.log_video(batch)
+    #     # lidar_inputs = logs['lidar_inputs']
+    #     # lidar_inputs = rearrange(lidar_inputs,'b n c h w -> (b n) c h w')
+    #     # lidar_reconstruction = logs['lidar_reconstruction']
+    #     # lidar_reconstruction = rearrange(lidar_reconstruction,'b n c h w -> (b n) c h w')
+    #     # save_tensor_as_video(logs['inputs'],file_path=cam_real_save_path+f'inputs_{_:02d}.png',save_type='png')
+    #     # save_tensor_as_video(logs['reconstruction'],file_path=cam_rec_save_path+f'samples{_:02d}.png',save_type='png')
+    #     # save_tensor_as_video(logs['lidar_reconstruction'],file_path=lidar_rec_save_path+f'lidar_samples{_:02d}.png',save_type='png')
+    #     # save_tensor_as_video(logs['lidar_inputs'],file_path=lidar_real_save_path+f'lidar_inputs{_:02d}.png',save_type='png')
+    #     # # network.lidar_model.calc_3D_point_loss(lidar_inputs,lidar_reconstruction)
+    #     # # save_tensor_as_video(logs['inputs'],file_path=cam_real_save_path+f'inputs_{_:02d}.gif')
+    #     # # save_tensor_as_video(logs['reconstruction'],file_path=cam_rec_save_path+f'samples{_:02d}.gif')
+    #     # # save_tensor_as_video(logs['lidar_reconstruction'],file_path=lidar_rec_save_path+f'lidar_samples{_:02d}.gif')
+    #     # # save_tensor_as_video(logs['lidar_inputs'],file_path=lidar_real_save_path+f'lidar_inputs{_:02d}.gif')
 
-        # if not video_eval and not only_camera:
-        #     point_loss = calc_point_cloud_distance(gt_lidar_point,logs['lidar_inputs'],logs['lidar_reconstruction'],movie_len=data_loader.movie_len).numpy()
-        #     point_losses.append(point_loss)
+    #     # if not video_eval and not only_camera:
+    #     #     point_loss = calc_point_cloud_distance(gt_lidar_point,logs['lidar_inputs'],logs['lidar_reconstruction'],movie_len=data_loader.movie_len).numpy()
+    #     #     point_losses.append(point_loss)
 
-        # if _>1:
-        #     break
-    dist.barrier()
+    #     # if _>1:
+    #     #     break
+    # dist.barrier()
     if rank==0:
         # if not video_eval and not only_camera:
         #     point_losses = np.vstack(point_losses)
@@ -668,23 +668,24 @@ if __name__ == "__main__":
             #     rec_sigma = np.cov(rec_features,rowvar=False)
             #     fid_value = frid.calculate_frechet_distance(real_mu,real_sigma,rec_mu,rec_sigma)
             #     print(f"lidar_frid:{fid_value}")
-            cam_fid = evaluate_fid(cam_real_save_path,cam_rec_save_path)
-            if not only_camera:
-                lidar_fid = evaluate_fid(lidar_real_save_path,lidar_rec_save_path)
-                lidar_psnr = evaluate_psnr(cam_real_save_path,cam_rec_save_path)
-                lidar_ssim = evaluate_ssim(lidar_real_save_path,lidar_rec_save_path)
-            else:
-                lidar_fid = 0
-                lidar_psnr = 0
-                lidar_ssim = 0
-            print(f"cam_fid:{cam_fid} lidar_fid:{lidar_fid}")
-            cam_psnr = evaluate_psnr(cam_real_save_path,cam_rec_save_path)
-            print(f"cam_psnr:{cam_psnr},lidar_psnr:{lidar_psnr}")
-            cam_ssim = evaluate_ssim(cam_real_save_path,cam_rec_save_path)
-            print(f"cam_ssim:{cam_ssim},lidar_ssim:{lidar_ssim}")
+            cam_fid = evaluate_fid(cam_real_save_path,cam_samples_save_path)
+            print(f"fid:{cam_fid}")
+            # if not only_camera:
+            #     lidar_fid = evaluate_fid(lidar_real_save_path,lidar_rec_save_path)
+            #     lidar_psnr = evaluate_psnr(cam_real_save_path,cam_rec_save_path)
+            #     lidar_ssim = evaluate_ssim(lidar_real_save_path,lidar_rec_save_path)
+            # else:
+            #     lidar_fid = 0
+            #     lidar_psnr = 0
+            #     lidar_ssim = 0
+            # print(f"cam_fid:{cam_fid} lidar_fid:{lidar_fid}")
+            # cam_psnr = evaluate_psnr(cam_real_save_path,cam_rec_save_path)
+            # print(f"cam_psnr:{cam_psnr},lidar_psnr:{lidar_psnr}")
+            # cam_ssim = evaluate_ssim(cam_real_save_path,cam_rec_save_path)
+            # print(f"cam_ssim:{cam_ssim},lidar_ssim:{lidar_ssim}")
 
         else:
-            cam_fvd = evaluate_fvd(cam_real_save_path,cam_rec_save_path)
+            cam_fvd = evaluate_fvd(cam_real_save_path,cam_samples_save_path)
             if not only_camera:
                 lidar_fvd = evaluate_fvd(lidar_real_save_path,lidar_rec_save_path)
             else:

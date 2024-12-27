@@ -17,7 +17,7 @@ from nuscenes.map_expansion.map_api import NuScenesMap,NuScenesMapExplorer
 from pyquaternion import Quaternion
 from nuscenes.nuscenes import NuScenes
 from torch.utils import data
-from utils.tools import get_this_scene_info,get_this_scene_info_with_lidar,get_bev_hdmap
+from utils.tools import get_this_scene_info,get_this_scene_info_with_lidar,get_bev_hdmap_front_view,get_bev_box_label_test
 from ldm.util import instantiate_from_config
 import matplotlib.image as mpimg
 from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -60,8 +60,15 @@ class dataloader(data.Dataset):
         self.nusc_can = NuScenesCanBus(dataroot='/storage/group/4dvlab/datasets/nuScenes')
         self.return_pose_info = return_pose_info
         self.collect_condition = collect_condition
+        # self.observe_category = ['human.pedestrian.adult','human.pedestrian.child','human.pedestrian.construction_worker','human.pedestrian.personal_mobility','human.pedestrian.police_officer','human.pedestrian.stroller','human.pedestrian.wheelchair','vehicle.bicycle','vehicle.bus.bendy','vehicle.bus.rigid','vehicle.car','vehicle.construction','vehicle.emergency.ambulance','vehicle.emergency.police','vehicle.motorcycle','vehicle.trailer','vehicle.truck']
+        self.observe_category = ['human','vehicle']
+        self.instance_label = {}
+        instance_id = 0
+        for category in self.observe_category:
+            self.instance_label[category] = instance_id
+            instance_id += 1
         self.load_data_infos()
-
+        
     def load_data_infos(self):
         data_info_path = os.path.join(self.cfg['dataroot'],f"nuScenes_advanced_infos_{self.split_name}.pkl")
         with open(data_info_path,'rb') as f:
@@ -134,7 +141,7 @@ class dataloader(data.Dataset):
         actions = self.action_infos[idx]
         out = {}
         out = {}
-        out['actions'] = torch.zeros((self.movie_len,14))
+        out['actions'] = torch.zeros((self.movie_len,10))
         out['sample_points'] = []
 
         # if self.return_pose_info:
@@ -162,10 +169,11 @@ class dataloader(data.Dataset):
             ego_translation = torch.tensor(pose_record['translation']).to(torch.float32)
             # cam_front_img,box_list,now_hdmap,box_category,depth_cam_front_img,range_image,dense_range_image
             now_action = torch.cat([actions[i],ego_translation],dim=-1).unsqueeze(0)
-            bev_hdmap,sample_points = get_bev_hdmap(cam_front_token,self.nusc,nusc_map,return_point=True)
-            if 'actions' in self.collect_condition:
-                out['actions'][i] = now_action
-            out['sample_points'].append(sample_points)
+            bev_hdmap = get_bev_hdmap_front_view(cam_front_token,self.nusc,nusc_map)
+            get_bev_box_label_test(cam_front_token,self.nusc,nusc_map,instance_label=self.instance_label)
+            # if 'actions' in self.collect_condition:
+            #     out['actions'][i] = now_action
+            # out['sample_points'].append(sample_points)
 
             
         return out

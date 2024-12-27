@@ -133,6 +133,32 @@ class FrozenCLIPTextWrapper(AbstractEmbModel):
         output = torch.stack(output)
         return output
         
+class MultiViewFrozenClipTextWrapper(AbstractEmbModel):
+    def __init__(self,clip_config,n_samples=35):
+        super().__init__()
+        self.clip = instantiate_from_config(clip_config)
+        self.n_samples = n_samples
+
+
+    def forward(self,x):
+        output = []
+        for bs in range(len(x)):
+            batch = []
+            for camera in range(len(x[0])):
+                boxes = []
+                n_batch = (len(x[0][0]) + self.n_samples - 1) // self.n_samples
+                mask = torch.tensor([0 if x[bs][camera][i] == 'None' else 1 for i in range(len(x[0][0]))],device=next(self.parameters()).device).unsqueeze(-1)
+                for i in range(n_batch):
+                    start = i * self.n_samples
+                    end = min((i+1)*self.n_samples,len(x[0][0]))
+                    text = x[bs][camera][start:end]
+                    boxes.append(self.clip(text))
+                boxes = torch.vstack(boxes) * mask
+                batch.append(boxes)
+            batch = torch.stack(batch)
+            output.append(batch)
+        output = torch.vstack(output)
+        return output
 
     
 class ImageEmbedder(AbstractEmbModel):
@@ -712,10 +738,9 @@ class StreamingSDCondition(nn.Module):
                     emb = torch.zeros_like(emb)
                 if out_key in output:
                     #print(f"Embedder {embedder.input_key} -> {out_key}")
-                    if output[out_key].shape[0] == emb.shape[0]:
-                        output[out_key] = torch.cat(
-                            (output[out_key], emb), self.KEY2CATDIM[out_key]
-                         )
+                    output[out_key] = torch.cat(
+                        (output[out_key], emb), self.KEY2CATDIM[out_key]
+                    )
                 else:
                     output[out_key] = emb
         return output

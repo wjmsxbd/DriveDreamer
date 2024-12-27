@@ -9,8 +9,8 @@ model:
         scale_factor: 0.18215
         training_strategy: feature
         load_from_ema: False
-        ckpt_path: /storage/group/4dvlab/wangjm2024/last.ckpt #stable_diffusion/sd-v1-4.ckpt #/storage/group/4dvlab/wangjm2024/last.ckpt
-        slow_fast_path:  #logs/2024-12-02T20-14-16_slow_fast_learning/checkpoints/last.ckpt 
+        ckpt_path:  /storage/group/4dvlab/wangjm2024/last.ckpt #stable_diffusion/sd-v1-4.ckpt #/storage/group/4dvlab/wangjm2024/last.ckpt
+        slow_fast_path: #/storage/group/4dvlab/wangjm2024/slow_fast_learning/last.ckpt #logs/2024-12-02T20-14-16_slow_fast_learning/checkpoints/last.ckpt 
         ignore_keys: ['cond_stage_model'] #TODO:!!!!!!!!!
         monitor: val/loss #use ema?
         use_ema: False #use ema?
@@ -164,12 +164,12 @@ data:
     num_workers: 0
     use_distributed_scene_sampler: true
     train:
-      target: distributed_infer2.dataloader
+      target: distributed_infer.dataloader
       params:
         cfg:
           version: v1.0-mini
           dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
-          img_size: [256,128]
+          img_size: [768,448]
           nusc_canbus_frequency: 50
           num_cameras: 1
           camera_frequency: 2
@@ -184,12 +184,12 @@ data:
             p_std: 1.6
     
     validation:
-      target: distributed_infer2.dataloader
+      target: distributed_infer.dataloader
       params:
         cfg:
           version: v1.0-mini
           dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
-          img_size: [256,128]
+          img_size: [768,448]
           nusc_canbus_frequency: 50
           num_cameras: 1
           camera_frequency: 2

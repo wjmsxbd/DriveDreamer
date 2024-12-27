@@ -5,7 +5,7 @@ model:
     monitor: val/rec_loss
     embed_dim: 4
     ckpt_path: stable_diffusion/kl-f8.ckpt
-    ignore_keys: ['quant_conv','post_quant_conv']
+    ignore_keys: []
     lossconfig:
       target: ldm.modules.losses.contperceptual.LPIPSWithDiscriminator
       params:
@@ -36,31 +36,41 @@ data:
     use_distributed_scene_sampler: true
     wrap: False
     train:
-      target: data.dataloader_streamingSD_sampler.dataloader
+      target: distributed_infer.dataloader
       params:
         cfg:
-          version: v1.0-mini
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
-          img_size: [256,128]
+          version: advanced_12Hz_trainval
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          img_size: [1600,896]
           nusc_canbus_frequency: 50
-          camera_frequency: 2
+          camera_frequency: 12
         movie_len: 1
         num_boxes: 30
         split_name: train
-        collect_condition: ['reference_image','HDmap','3Dbox']
+        collect_condition: ['reference_image']
+        sigma_sampler_config:
+          target: ldm.modules.diffusionmodules.sigma_sampling.EDMSampling
+          params:
+            p_mean: 1.0
+            p_std: 1.6
     validation:
-      target: data.dataloader_streamingSD_sampler.dataloader
+      target: distributed_infer.dataloader
       params:
         cfg:
-          version: v1.0-mini
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
-          img_size: [256,128]
+          version: advanced_12Hz_trainval
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          img_size: [1600,896]
           nusc_canbus_frequency: 50
-          camera_frequency: 2
+          camera_frequency: 12
         movie_len: 1
         split_name: val
         num_boxes: 30
-        collect_condition: ['reference_image','HDmap','3Dbox']
+        collect_condition: ['reference_image']
+        sigma_sampler_config:
+          target: ldm.modules.diffusionmodules.sigma_sampling.EDMSampling
+          params:
+            p_mean: 1.0
+            p_std: 1.6
 
 lightning:
   callbacks:

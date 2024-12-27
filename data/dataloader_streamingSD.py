@@ -57,12 +57,7 @@ class dataloader(data.Dataset):
         print(category)
         self.movie_len = movie_len
         self.num_boxes = num_boxes
-        #self.sigma_sampler = instantiate_from_config(sigma_sampler_config)
-        # nusc_canbus_frequency = cfg['nusc_canbus_frequency']
         camera_frequency = cfg['camera_frequency']
-        # ailgn_frequency = math.gcd(nusc_canbus_frequency,camera_frequency)
-        # self.nusc_canbus_frequecy = nusc_canbus_frequency // ailgn_frequency
-        # self.camera_frequency = camera_frequency // ailgn_frequency
         self.camera_frequency = camera_frequency
         self.num_cameras = cfg['num_cameras']
         self.nusc_maps = {
@@ -120,8 +115,6 @@ class dataloader(data.Dataset):
     def __getitem__(self,idx):
         if isinstance(idx,list):
             data = []
-            # if self.check_idx_is_first_frame(idx[0]):
-            #     self.sigmas = self.sigma_sampler(len(idx))
             for i in range(len(idx)):
                 data.append(self.get_data_info(idx[i],i))
             return data
@@ -173,7 +166,7 @@ class dataloader(data.Dataset):
         video_info = self.video_infos[idx]
         out = {}
         #out['sigmas'] = self.sigmas[list_idx]
-        out['first_frame'] = ([1] if idx == 0 or self.scenes[idx] != self.scenes[idx-1] else [0])
+        out['first_frame'] = ([1] if idx == 0 or self.scenes[idx] != self.scenes[idx-1] else [0]) * self.num_cameras
         out['3Dbox'] = []
         if self.num_cameras == 1:
             out['HDmap'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
@@ -202,6 +195,21 @@ class dataloader(data.Dataset):
                     hdmap = collect_data['HDmap'][:,:,:3].copy()
                     hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
                     out['HDmap'] = rearrange(hdmap,'h w c -> c h w').contiguous()
+                    boxes = collect_data['3Dbox']
+                    category = collect_data['category']
+                    boxes = np.array(boxes).astype(np.float32)
+                    if boxes.shape[0] == 0:
+                        box_text = ["None" for i in range(self.num_boxes)]
+                    elif boxes.shape[0] < self.num_boxes:
+                        zero_len = self.num_boxes - boxes.shape[0]
+                        box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])]
+                        for i in range(zero_len):
+                            box_text.append('None')
+                    else:
+                        boxes = boxes[:self.num_boxes]
+                        category = category[:self.num_boxes]
+                        box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])] 
+                    out['3Dbox'] = box_text
                 else:
                     collect_data = get_this_scene_info_with_lidar_MV(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=False,collect_data=self.collect_condition)
                     img = collect_data['reference_image'][:,:,:,:3].copy()
@@ -210,6 +218,23 @@ class dataloader(data.Dataset):
                     hdmap = collect_data['HDmap'][:,:,:,:3].copy()
                     hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
                     out['HDmap'] = rearrange(hdmap,'n h w c -> n c h w').contiguous()
+                    boxes_list = collect_data['3Dbox']
+                    category_list = collect_data['category']
+                    for i in range(self.num_cameras):
+                        boxes = boxes_list[i]
+                        category = category_list[i]
+                        if boxes.shape[0] == 0:
+                            box_text = ["None" for i in range(self.num_boxes)]
+                        elif boxes.shape[0] < self.num_boxes:
+                            zero_len = self.num_boxes - boxes.shape[0]
+                            box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])]
+                            for i in range(zero_len):
+                                box_text.append('None')
+                        else:
+                            boxes = boxes[:self.num_boxes]
+                            category = category[:self.num_boxes]
+                            box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])] 
+                        out['3Dbox'].append(box_text)
             else:
                 if self.num_cameras == 1:
                     collect_data = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=False,collect_data=self.collect_condition)
@@ -219,6 +244,21 @@ class dataloader(data.Dataset):
                     hdmap = collect_data['HDmap'][:,:,:3].copy()
                     hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
                     out['HDmap'] = rearrange(hdmap,'h w c -> c h w').contiguous()
+                    boxes = collect_data['3Dbox']
+                    category = collect_data['category']
+                    boxes = np.array(boxes).astype(np.float32)
+                    if boxes.shape[0] == 0:
+                        box_text = ["None" for i in range(self.num_boxes)]
+                    elif boxes.shape[0] < self.num_boxes:
+                        zero_len = self.num_boxes - boxes.shape[0]
+                        box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])]
+                        for i in range(zero_len):
+                            box_text.append('None')
+                    else:
+                        boxes = boxes[:self.num_boxes]
+                        category = category[:self.num_boxes]
+                        box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])] 
+                    out['3Dbox'] = box_text
                 else:
                     collect_data = get_this_scene_info_with_lidar_MV(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=False,collect_data=self.collect_condition)
                     img = collect_data['reference_image'][:,:,:,:3].copy()
@@ -227,23 +267,29 @@ class dataloader(data.Dataset):
                     hdmap = collect_data['HDmap'][:,:,:,:3].copy()
                     hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
                     out['HDmap'] = rearrange(hdmap,'n h w c -> n c h w').contiguous()
-            boxes = collect_data['3Dbox']
-            category = collect_data['category']
-            boxes = np.array(boxes).astype(np.float32)
-            if boxes.shape[0] == 0:
-                box_text = ["None" for i in range(self.num_boxes)]
-            elif boxes.shape[0] < self.num_boxes:
-                zero_len = self.num_boxes - boxes.shape[0]
-                box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])]
-                for i in range(zero_len):
-                    box_text.append('None')
-            else:
-                boxes = boxes[:self.num_boxes]
-                category = category[:self.num_boxes]
-                box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])] 
-            out['3Dbox'] = box_text
+                    boxes_list = collect_data['3Dbox']
+                    category_list = collect_data['category']
+                    for i in range(self.num_cameras):
+                        boxes = boxes_list[i]
+                        category = category_list[i]
+                        if boxes.shape[0] == 0:
+                            box_text = ["None" for i in range(self.num_boxes)]
+                        elif boxes.shape[0] < self.num_boxes:
+                            zero_len = self.num_boxes - boxes.shape[0]
+                            box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])]
+                            for i in range(zero_len):
+                                box_text.append('None')
+                        else:
+                            boxes = boxes[:self.num_boxes]
+                            category = category[:self.num_boxes]
+                            box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])] 
+                        out['3Dbox'].append(box_text)
+
+
+
         if out['first_frame'][0] == 1:
             out['cond_frames'] = out['image']
+            out['clip_first_frame'] = out['image']
         else:
             sample_token = self.video_infos[idx-1]['token']
             if self.num_cameras == 1:

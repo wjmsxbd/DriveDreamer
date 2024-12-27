@@ -3,13 +3,14 @@ model:
   base_learning_rate: 5e-5
   params:
     scale_factor: 0.18215
-    training_strategy: feature
+    training_strategy: full
     load_from_ema: False
-    ckpt_path: logs/2024-11-05T13-24-05_StreamingSD/checkpoints/epoch=000007.ckpt #TODO:!!!!!!!!!!!!
+    ckpt_path: stable_diffusion/sd-v1-4.ckpt #TODO:!!!!!!!!!!!!
     ignore_keys: ['cond_stage_model'] #TODO:!!!!!!!!!
     monitor: val/loss #use ema?
     use_ema: False #use ema?
     use_scheduler: true
+    num_cameras: 6
     copy_ca_weight: True
     global_condition_config:
       target: ldm.models.condition.StreamingSDCondition
@@ -57,7 +58,7 @@ model:
           - input_key: 3Dbox
             is_trainable: False
             ucg_rate: 0.15
-            target: ldm.models.condition.FrozenCLIPTextWrapper
+            target: ldm.models.condition.MultiViewFrozenClipTextWrapper
             params:
               clip_config:
                 target: ldm.models.condition.FrozenCLIPTextEmbedder
@@ -102,15 +103,10 @@ model:
             use_spatial_transformer: True
             transformer_depth: 1
             context_dim: 768
-            num_cameras: 1
+            num_cameras: ${model.params.num_cameras}
             use_checkpoint: true
-            legacy: False
-            use_cache: True
             use_image_clip: True
-            window_size: 10
-            choose_feature_idx: [-10,-5,-1]
-            # use_rope_positional_encoding: True
-            # seq_len: 256
+            legacy: False
             attn_type: softmax-xformers
       
     sampler_config:
@@ -134,7 +130,7 @@ model:
         use_additional_loss: True
         offset_noise_level: 0.02
         additional_loss_weight: 0.1
-        disabled_sigmas_sampler: True
+        num_cameras: ${model.params.num_cameras}
         sigma_sampler_config:
           target: ldm.modules.diffusionmodules.sigma_sampling.EDMSampling
           params:
@@ -156,56 +152,44 @@ data:
   params:
     batch_size: 1
     wrap: False
-    num_workers: 0
-    use_distributed_scene_sampler: true
-    stage: stage2
+    num_workers: 1
     train:
-      target: data.dataloader_streamingSD_sampler.dataloader
+      target: data.dataloader_streamingSD.dataloader
       params:
         cfg:
           version: v1.0-mini
           dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
-          img_size: [256,128]
+          img_size: [768,448]
           nusc_canbus_frequency: 50
-          num_cameras: 1
+          num_cameras: ${model.params.num_cameras}
           camera_frequency: 2
         num_boxes: 70
         movie_len: 1
         split_name: train
         collect_condition: ['reference_image','HDmap','3Dbox']
-        sigma_sampler_config:
-          target: ldm.modules.diffusionmodules.sigma_sampling.EDMSampling
-          params:
-            p_mean: 1.0
-            p_std: 1.6
     
     validation:
-      target: data.dataloader_streamingSD_sampler.dataloader
+      target: data.dataloader_streamingSD.dataloader
       params:
         cfg:
           version: v1.0-mini
           dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
-          img_size: [256,128]
+          img_size: [768,448]
           nusc_canbus_frequency: 50
-          num_cameras: 1
+          num_cameras: ${model.params.num_cameras}
           camera_frequency: 2
         num_boxes: 70
         movie_len: 1
         split_name: val
         collect_condition: ['reference_image','HDmap','3Dbox']
-        sigma_sampler_config:
-          target: ldm.modules.diffusionmodules.sigma_sampling.EDMSampling
-          params:
-            p_mean: 1.0
-            p_std: 1.6
 
 lightning:
   callbacks:
     video_logger:
       target: main.ImageLogger
       params:
-        batch_frequency: 1000000
-        max_images: 8
+        batch_frequency: 10000000
+        max_images: 6
         increase_log_steps: False
 
   trainer:
@@ -213,6 +197,5 @@ lightning:
     gpus: 0,
     # device: 1
     # gpus: 0,
-    num_nodes: 1
+    # num_nodes: 1
     distributed_backend: ddp
-    replace_sampler_ddp: False

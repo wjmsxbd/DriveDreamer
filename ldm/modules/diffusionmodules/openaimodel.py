@@ -809,6 +809,8 @@ class UNetModel(nn.Module):
                 zero_feature_cache = [copy.deepcopy(self.zero_feature_cache) for i in range(self.window_size)]
                 self.zero_feature_cache = [copy.deepcopy(cache[:1]) for cache in self.zero_feature_cache]
                 self.feature_cache.replace_cache(zero_feature_cache)
+
+                
             for i in range(len(hs)):
                 temp_feature = self.feature_cache.get_feature(i).to(x.device)
                 hs[i] = self.feature_fusion[i](hs[i],temp_feature,None)#self.frame_counter.get_num_frames())

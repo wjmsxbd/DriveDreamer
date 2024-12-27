@@ -1,8 +1,5 @@
 torchrun \
     --nnodes=1 \
-    --nproc_per_node=4 \
+    --nproc_per_node=1 \
     --node_rank=0 \
-    --rdzv_backend=c10d \
-    --rdzv_endpoint=mayuexin01:5001 \
-    --node_rank=0\
-    main.py --base configs/StreamingSD_cache.yaml --train True 
+    main.py --base configs/slow_fast_learning.yaml --train True 

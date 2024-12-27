@@ -132,7 +132,9 @@ class dataloader(data.Dataset):
                 data.append(self.get_data_info(idx[i],i))
             return data
         else:
-            return self.get_data_info(idx)
+            if self.sigmas is None:
+                self.sigmas = self.sigma_sampler(1)
+            return self.get_data_info(idx,0)
     
     def get_cam_image_from_sample_token(self,sample_token,img_size,):
         sample_record = self.nusc.get('sample',sample_token)
@@ -178,7 +180,7 @@ class dataloader(data.Dataset):
     def get_data_info(self,idx,list_idx):
         video_info = self.video_infos[idx]
         out = {}
-        out['sigmas'] = self.sigmas[list_idx].repeat(self.num_cameras)
+        out['sigmas'] = self.sigmas[list_idx].repeat(self.num_cameras).squeeze()
         out['first_frame'] = ([1] if idx == 0 or self.scenes[idx] != self.scenes[idx-1] else [0]) * self.num_cameras
         out['3Dbox'] = []
         if self.num_cameras == 1:

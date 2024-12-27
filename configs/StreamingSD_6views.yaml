@@ -152,9 +152,10 @@ data:
   params:
     batch_size: 1
     wrap: False
-    num_workers: 1
+    num_workers: 0
+    use_distributed_scene_sampler: false
     train:
-      target: data.dataloader_streamingSD.dataloader
+      target: data.dataloader_streamingSD_sampler.dataloader
       params:
         cfg:
           version: v1.0-mini
@@ -167,9 +168,14 @@ data:
         movie_len: 1
         split_name: train
         collect_condition: ['reference_image','HDmap','3Dbox']
+        sigma_sampler_config:
+          target: ldm.modules.diffusionmodules.sigma_sampling.EDMSampling
+          params:
+            p_mean: 1.0
+            p_std: 1.6
     
     validation:
-      target: data.dataloader_streamingSD.dataloader
+      target: data.dataloader_streamingSD_sampler.dataloader
       params:
         cfg:
           version: v1.0-mini
@@ -182,7 +188,11 @@ data:
         movie_len: 1
         split_name: val
         collect_condition: ['reference_image','HDmap','3Dbox']
-
+        sigma_sampler_config:
+          target: ldm.modules.diffusionmodules.sigma_sampling.EDMSampling
+          params:
+            p_mean: 1.0
+            p_std: 1.6
 lightning:
   callbacks:
     video_logger:

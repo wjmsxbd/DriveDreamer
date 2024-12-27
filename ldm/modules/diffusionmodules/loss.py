@@ -31,7 +31,8 @@ class StandardDiffusionLoss(nn.Module):
             use_additional_loss: bool = False,
             offset_noise_level: float = 0.0,
             additional_loss_weight: float = 0.0,
-            disabled_sigmas_sampler=False
+            disabled_sigmas_sampler=False,
+            num_cameras=1,
     ):
         super().__init__()
         assert loss_type in ["l2", "l1"]
@@ -43,6 +44,7 @@ class StandardDiffusionLoss(nn.Module):
         self.offset_noise_level = offset_noise_level
         self.additional_loss_weight = additional_loss_weight
         self.disabled_sigmas_sampler = disabled_sigmas_sampler
+        self.num_cameras = num_cameras
         
     def get_noised_input(
             self,
@@ -85,14 +87,13 @@ class StandardDiffusionLoss(nn.Module):
             rand_init = torch.randn(offset_shape,device=x.device)
             noise = noise + self.offset_noise_level * append_dims(rand_init,x.ndim)
         sigmas_bc = append_dims(sigmas,x.ndim)
-        #为6视角增加一样的噪声
-        if len(x.shape) == 5:
-            noise = noise[:, 0:1, :, :, :].expand(-1, x.shape[1], -1, -1, -1)
-            noised_x = self.get_noised_input(sigmas_bc,noise,x)
-            noised_x = rearrange(noised_x, "b n c h w -> (b n) c h w")
-            x = rearrange(x, "b n c h w -> (b n) c h w")
-        else :
-            noised_x = self.get_noised_input(sigmas_bc,noise,x)
+        noise = rearrange(noise,"(b n) c h w -> b n c h w",n=self.num_cameras)
+        x = rearrange(x,"(b n) c h w -> b n c h w",n=self.num_cameras)
+        noise = noise[:,0:1,:,:,:].expand(-1,self.num_cameras,-1,-1,-1)
+        noised_x = self.get_noised_input(sigmas_bc,noise,x)
+        x = rearrange(x,"b n c h w -> (b n) c h w")
+        noised_x = rearrange(noised_x,"b n c h w -> (b n) c h w")
+
         model_output = denoiser(network,noised_x,sigmas,cond)
         
         w = append_dims(self.loss_weighting(sigmas),x.ndim)

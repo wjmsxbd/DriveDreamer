@@ -721,6 +721,9 @@ class UNetModel(nn.Module):
             #nn.LogSoftmax(dim=1)  # change to cross_entropy and produce non-normalized logits
         )
 
+    def get_zero_feature(self,):
+        return [copy.deepcopy(self.zero_feature_cache) for _ in range(self.window_size)]
+
     def replace_feature_cache(self,feature):
         self.feature_cache.replace_cache(feature)
 

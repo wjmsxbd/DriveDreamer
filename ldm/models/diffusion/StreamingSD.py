@@ -245,8 +245,7 @@ class StreamingSD(pl.LightningModule):
     def pack_camera_squence(self,batch):
         for key in batch.keys():
             if isinstance(batch[key],torch.Tensor):
-                if len(batch[key].shape) == 5:
-                    batch[key] = rearrange(batch[key],'b n c h w -> (b n) c h w')
+                batch[key] = rearrange(batch[key],'b n ... -> (b n) ...')
         return batch
 
     # input_shape: cond_frame tensor:(b h w c)
@@ -378,6 +377,9 @@ class StreamingSD(pl.LightningModule):
 
     def prepare_model_setting(self,first_frame):
         self.model.prepare_model_setting(first_frame)
+
+    def get_zero_feature(self,):
+        return self.model.get_zero_feature()
 
     @torch.no_grad()
     def sample(
@@ -629,12 +631,11 @@ class StreamingSDInferPipeLine(pl.LightningModule):
         for i in range(num_sigmas-1):
             if self.use_feature_cache:
                 feature_cache = self.feature_cache.get_feature_in_row(i)
-                if feature_cache != []:
-                    self.model.replace_feature_cache(feature_cache)
+                self.model.replace_feature_cache(feature_cache)
                 self.model.prepare_model_setting(batch['first_frame'])
                 z = self.model.infer_step(z,sigmas,i,c,uc)
                 feature_cache = self.model.get_feature_cache()
-                self.feature_cache.update(feature_cache,i)
+                # self.feature_cache.update(feature_cache,i)
             else:
                 z = self.model.infer_step(z,sigmas,i,c,uc)
         if return_first_frame:
@@ -642,8 +643,16 @@ class StreamingSDInferPipeLine(pl.LightningModule):
         else:
             return z
 
+    def init_cache(self,batch):
+        if self.feature_cache.get_feature_in_row(0) == []:
+            copy_batch = {k:copy.deepcopy(v) for k,v in batch.items()}
+            self._forward(copy_batch,False,False)
+            self.feature_cache.init_cache(self.model)
+            
     def forward(self,batch):
-        if batch['first_frame'][0] == [1]:
+        if self.use_feature_cache:
+            self.init_cache(batch)
+        if batch['first_frame'][0] == [1] or batch['first_frame'] == 1:
             self.noise_cache = None
             output,z = self._forward(batch,False,True)
             self.cond_frames = z.detach()

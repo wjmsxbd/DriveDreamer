@@ -172,6 +172,7 @@ data:
           img_size: [768,448]
           nusc_canbus_frequency: 50
           camera_frequency: 2
+          num_cameras: 1
         num_boxes: 70
         movie_len: 1
         split_name: train
@@ -191,6 +192,7 @@ data:
           img_size: [768,448]
           nusc_canbus_frequency: 50
           camera_frequency: 2
+          num_cameras: 1
         num_boxes: 70
         movie_len: 1
         split_name: val

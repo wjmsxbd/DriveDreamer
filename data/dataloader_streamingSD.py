@@ -166,7 +166,7 @@ class dataloader(data.Dataset):
         video_info = self.video_infos[idx]
         out = {}
         #out['sigmas'] = self.sigmas[list_idx]
-        out['first_frame'] = ([1] if idx == 0 or self.scenes[idx] != self.scenes[idx-1] else [0]) * self.num_cameras
+        out['first_frame'] = torch.tensor(([1] if idx == 0 or self.scenes[idx] != self.scenes[idx-1] else [0])).repeat(self.num_cameras).squeeze()
         out['3Dbox'] = []
         if self.num_cameras == 1:
             out['HDmap'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))

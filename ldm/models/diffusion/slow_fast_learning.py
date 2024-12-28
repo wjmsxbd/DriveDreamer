@@ -46,13 +46,14 @@ class SlowLearning(nn.Module):
         
     def forward(self,model,cond):
         x = cond['image']
+        self.cache.init_cache(model)
         feature_cache = self.cache.get_feature_in_row(0)
-        if feature_cache != []:
-            model.replace_feature_cache(feature_cache)
+        model.replace_feature_cache(feature_cache)
         model.prepare_model_setting(cond['first_frame'])
         loss = model.get_losses(x,cond)
         feature_cache = model.get_feature_cache()
-        self.cache.update(feature_cache,0)
+        # self.cache.update(feature_cache,0)
+        self.cache.check_id()
         return loss
 
 class FeatureCache1D:
@@ -63,11 +64,11 @@ class FeatureCache1D:
 
     def replace_cache(self,feature,index=None):
         if index is None:
-            self.cache = copy.deepcopy(feature)
+            self.cache = feature
         else:
             for i in range(self.window_size): # time 
                 for j in range(len(self.cache[0])): # layer
-                    self.cache[i][j][index] = copy.deepcopy(feature[i][j])
+                    self.cache[i][j][index] = feature[i][j]
 
     def check_cache_is_empty(self,):
         return self.cache == []
@@ -76,19 +77,19 @@ class FeatureCache1D:
         self.cache = []
 
     def get_cache(self):
-        return copy.deepcopy(self.cache)
+        return self.cache
     
     def update(self,feature):
         assert len(self.cache) == self.window_size
         self.cache.pop(0)
-        self.cache.append(copy.deepcopy(feature))
+        self.cache.append(feature)
 
     def get_feature(self,col):
         temp_feature = []
         for idx in self.choose_feature_idx:
             temp_feature.append(self.cache[idx][col])
         temp_feature = torch.stack(temp_feature,dim=1)
-        return copy.deepcopy(temp_feature)
+        return temp_feature
 
     
 
@@ -96,12 +97,24 @@ class FeatureCache2D:
     def __init__(self,num_steps):
         self.cache = [[] for i in range(num_steps)]
         self.num_steps = num_steps
+        self.cache_id = [[] for i in range(num_steps)]
+
+    def init_cache(self,model):
+        if self.get_feature_in_row(0) == []:
+            zero_feature_cache = model.get_zero_feature()
+            for i in range(self.num_steps):
+                self.update(copy.deepcopy(zero_feature_cache),i)
+                self.cache_id[i] = id(self.get_feature_in_row(i))
+
+    def check_id(self,):
+        for i in range(self.num_steps):
+            assert self.cache_id[i] == id(self.cache[i])
 
     def get_feature_in_row(self,row):
-        return copy.deepcopy(self.cache[row])
+        return self.cache[row]
 
     def update(self,feature,row):
-        self.cache[row] = copy.deepcopy(feature)
+        self.cache[row] = feature
 
     def clear_feature_cache(self,):
         self.cache.clear()
@@ -117,22 +130,23 @@ class FastLearning(nn.Module):
     def forward(self,model,batch,replace):
         sigmas = model.prepare_sigmas()
         num_sigmas = len(sigmas)
-        c,uc = model.get_unconditional_conditioning(batch)
         z = model.get_input(batch)
+        c,uc = model.get_unconditional_conditioning(batch)
         c['image'] = z
         randn = torch.randn_like(z).to(z.device)
         z = randn
         for i in range(len(replace)):
             if replace[i]:
                 c['concat'][i,:4] = batch['samples'][i]
+        self.cache.init_cache(model)
         for i in range(num_sigmas-1):
             feature_cache = self.cache.get_feature_in_row(i)
-            if feature_cache != []:
-                model.replace_feature_cache(feature_cache)
+            model.replace_feature_cache(feature_cache)
             model.prepare_model_setting(batch['first_frame'])
             z = model.infer_step(z,sigmas,i,c,uc)
             feature_cache = model.get_feature_cache()
-            self.cache.update(feature_cache,i)
+            # self.cache.update(feature_cache,i)
+        self.cache.check_id()
         
         return z,c
 
@@ -150,14 +164,19 @@ class FrameCounter:
         for i in range(len(self.num_frame)):
             self.num_frame[i] += 1
 
-    def prepare(self,first_frame):
+    def prepare(self,first_frame,multiview):
         if self.num_frame is None:
             self.num_frame = []
             for i in range(len(first_frame)):
                 self.num_frame.append(0)
         else:
-            for i in range(len(first_frame)):
-                if first_frame[i] == [1]:
+            if multiview:
+                up_len = len(first_frame) * 6
+            else:
+                up_len = len(first_frame)
+            for i in range(up_len):
+                idx = i if not multiview else i // 6
+                if first_frame[idx] == [1] or first_frame[idx] == 1:
                     self.num_frame[i] = 0
 
     def replace(self,window_size):
@@ -191,10 +210,12 @@ class SlowFastLearning(pl.LightningModule):
         self.num_frame = FrameCounter()
         self.cond_frames = None
         self.force_train_step = force_train_step
+        self.multiview = self.model.num_cameras == 6
         
-    def replace_cond_latent(self,cond,output,first_frame):
-        for i in range(len(first_frame)):
-            if first_frame[i] == [1]:
+    def replace_cond_latent(self,cond,output,first_frame,multiview):
+        for i in range(cond['concat'].shape[0]):
+            idx = i if not multiview else i // 6
+            if first_frame[idx] == [1] or first_frame[idx] == 1:
                 continue
             cond['concat'][i,:4] = output[i].detach()
         return cond
@@ -231,7 +252,7 @@ class SlowFastLearning(pl.LightningModule):
 
     def force_training_step(self,batch,batch_idx):
         assert 'first_frame' in batch.keys()
-        self.num_frame.prepare(batch['first_frame'])
+        self.num_frame.prepare(batch['first_frame'],self.multiview)
         if len(self.generate_data) == self.force_train_step:
             # slow learning
             b = len(batch['first_frame'])
@@ -255,7 +276,7 @@ class SlowFastLearning(pl.LightningModule):
             batch['samples'] = self.cond_frames
             output,cond = self.fast_learning(self.model,batch,self.num_frame.replace(self.replace_window_size))
             cond['first_frame'] = batch['first_frame']
-            cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'])
+            cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'],self.multiview)
             self.cond_frames = output.detach()
             cond = {k:copy.deepcopy(v.detach().cpu()) if isinstance(v,torch.Tensor) else v for k,v in cond.items()}
             self.generate_data.append(cond)
@@ -264,7 +285,7 @@ class SlowFastLearning(pl.LightningModule):
             batch['samples'] = self.cond_frames
             output,cond = self.fast_learning(self.model,batch,self.num_frame.replace(self.replace_window_size))
             cond['first_frame'] = batch['first_frame']
-            cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'])
+            cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'],self.multiview)
             self.cond_frames = output.detach()
             cond = {k:copy.deepcopy(v.detach().cpu()) if isinstance(v,torch.Tensor) else v for k,v in cond.items()}
             self.generate_data.append(cond)

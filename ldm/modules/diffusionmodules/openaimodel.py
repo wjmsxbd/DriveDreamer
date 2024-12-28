@@ -517,7 +517,9 @@ class UNetModel(nn.Module):
         self.window_size = window_size
         self.choose_feature_idx = choose_feature_idx
         self.zero_feature_cache = None
+        self.batch_zero_feature_cache = None
         time_embed_dim = model_channels * 4
+        self.num_cameras = num_cameras
         # self.frame_counter = FrameCounter()
         self.time_embed = nn.Sequential(
             linear(model_channels, time_embed_dim),
@@ -722,7 +724,7 @@ class UNetModel(nn.Module):
         )
 
     def get_zero_feature(self,):
-        return [copy.deepcopy(self.zero_feature_cache) for _ in range(self.window_size)]
+        return self.batch_zero_feature_cache
 
     def replace_feature_cache(self,feature):
         self.feature_cache.replace_cache(feature)
@@ -732,8 +734,9 @@ class UNetModel(nn.Module):
             # self.frame_counter.prepare(first_frame)
             # self.frame_counter.update()
             return
-        for i in range(len(first_frame)):
-            if first_frame[i] == [1]:
+        for i in range(len(first_frame) * self.num_cameras):
+            idx = i // self.num_cameras
+            if first_frame[idx] == [1]:
                 zero_feature = [copy.deepcopy(self.zero_feature_cache) for _ in range(self.window_size)]
                 self.feature_cache.replace_cache(zero_feature,i)
         # self.frame_counter.prepare(first_frame)
@@ -812,6 +815,7 @@ class UNetModel(nn.Module):
                 zero_feature_cache = [copy.deepcopy(self.zero_feature_cache) for i in range(self.window_size)]
                 self.zero_feature_cache = [copy.deepcopy(cache[:1]) for cache in self.zero_feature_cache]
                 self.feature_cache.replace_cache(zero_feature_cache)
+                self.batch_zero_feature_cache = zero_feature_cache
 
                 
             for i in range(len(hs)):

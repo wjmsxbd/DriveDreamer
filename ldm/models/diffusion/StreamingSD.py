@@ -646,7 +646,7 @@ class StreamingSDInferPipeLine(pl.LightningModule):
     def init_cache(self,batch):
         if self.feature_cache.get_feature_in_row(0) == []:
             copy_batch = {k:copy.deepcopy(v) for k,v in batch.items()}
-            self._forward(copy_batch,False,False)
+            self.model.shared_step(copy_batch)
             self.feature_cache.init_cache(self.model)
             
     def forward(self,batch):

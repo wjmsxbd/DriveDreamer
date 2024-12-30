@@ -645,7 +645,6 @@ if __name__ == "__main__":
     )
     network = instantiate_from_config(cfg['model'])
     multiview = network.model.num_cameras == 6
-    assert multiview
     model_path = cmd_args.model_path
     if model_path:
         network.init_from_ckpt(model_path)

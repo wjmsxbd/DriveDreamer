@@ -21,6 +21,7 @@ from ldm.modules.diffusionmodules.util import make_beta_schedule,extract_into_te
 from functools import partial
 from ldm.models.condition import StreamingSDCondition
 from ldm.util import exists,default
+import copy
 
 class StandardDiffusionLoss(nn.Module):
     def __init__(
@@ -78,21 +79,23 @@ class StandardDiffusionLoss(nn.Module):
         # x(B,N,C,H,W)
         if self.disabled_sigmas_sampler:
             assert 'sigmas' in cond.keys()
-            sigmas = cond['sigmas']
+            sigmas = copy.deepcopy(cond['sigmas'])
         else:
-            sigmas = self.sigma_sampler(x.shape[0]).to(x)
+            sigmas = self.sigma_sampler(x.shape[0]//self.num_cameras).to(x)
         noise = torch.randn_like(x)
         if self.offset_noise_level > 0.0:
             offset_shape = (x.shape[0],x.shape[1])
             rand_init = torch.randn(offset_shape,device=x.device)
             noise = noise + self.offset_noise_level * append_dims(rand_init,x.ndim)
-        sigmas_bc = append_dims(sigmas,x.ndim)
+        sigmas = rearrange(sigmas,'(b n) -> b n',n=1).expand(-1,self.num_cameras)
         noise = rearrange(noise,"(b n) c h w -> b n c h w",n=self.num_cameras)
         x = rearrange(x,"(b n) c h w -> b n c h w",n=self.num_cameras)
+        sigmas_bc = append_dims(sigmas,x.ndim)
         noise = noise[:,0:1,:,:,:].expand(-1,self.num_cameras,-1,-1,-1)
         noised_x = self.get_noised_input(sigmas_bc,noise,x)
         x = rearrange(x,"b n c h w -> (b n) c h w")
         noised_x = rearrange(noised_x,"b n c h w -> (b n) c h w")
+        sigmas = rearrange(sigmas,'b n -> (b n)')
 
         model_output = denoiser(network,noised_x,sigmas,cond)
         

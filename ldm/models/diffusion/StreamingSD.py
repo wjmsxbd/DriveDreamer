@@ -245,6 +245,8 @@ class StreamingSD(pl.LightningModule):
     def pack_camera_squence(self,batch):
         for key in batch.keys():
             if isinstance(batch[key],torch.Tensor):
+                if key == 'sigmas':
+                    continue
                 batch[key] = rearrange(batch[key],'b n ... -> (b n) ...')
         return batch
 

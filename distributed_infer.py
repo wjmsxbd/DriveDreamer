@@ -173,7 +173,7 @@ class dataloader(data.Dataset):
     def get_data_info(self,idx,list_idx):
         video_info = self.video_infos[idx]
         out = {}
-        out['sigmas'] = out['sigmas'] = self.sigmas[list_idx].repeat(self.num_cameras).squeeze()
+        out['sigmas'] = out['sigmas'] = self.sigmas[list_idx]
         out['first_frame'] = ([1] if idx == 0 or self.scenes[idx] != self.scenes[idx-1] else [0])
         out['3Dbox'] = []
         out['idx'] = idx

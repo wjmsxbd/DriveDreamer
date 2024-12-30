@@ -180,7 +180,7 @@ class dataloader(data.Dataset):
     def get_data_info(self,idx,list_idx):
         video_info = self.video_infos[idx]
         out = {}
-        out['sigmas'] = self.sigmas[list_idx].repeat(self.num_cameras).squeeze()
+        out['sigmas'] = self.sigmas[list_idx]
         out['first_frame'] = ([1] if idx == 0 or self.scenes[idx] != self.scenes[idx-1] else [0])
         out['3Dbox'] = []
         if self.num_cameras == 1:
@@ -597,7 +597,7 @@ if __name__ == "__main__":
     data_loader = dataloader(**cfg.data.params.train.params)
     sampler = DistributedSceneSampler2(data_loader,samples_per_gpu=2,seed=0,num_replicas=1,rank=0) 
 
-    batch_size = 2
+    batch_size = 1
     data_loader_ = torch.utils.data.DataLoader(
         data_loader,
         batch_size  =   1,

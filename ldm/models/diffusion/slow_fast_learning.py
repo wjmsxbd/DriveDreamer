@@ -170,11 +170,7 @@ class FrameCounter:
             for i in range(len(first_frame)):
                 self.num_frame.append(0)
         else:
-            if multiview:
-                up_len = len(first_frame) * 6
-            else:
-                up_len = len(first_frame)
-            for i in range(up_len):
+            for i in range(len(first_frame)):
                 idx = i if not multiview else i // 6
                 if first_frame[idx] == [1] or first_frame[idx] == 1:
                     self.num_frame[i] = 0

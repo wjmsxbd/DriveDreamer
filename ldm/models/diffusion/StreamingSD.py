@@ -519,7 +519,17 @@ class StreamingSDInferPipeLine(pl.LightningModule):
             save_file_path = os.path.join(file_path,f'{index:02d}_{frame+i:02d}.png')
             img.save(save_file_path)
     
-    def save_tensor_as_MVimage(self,tensor,file_path,index,frame):
+    def save_tensor_as_MVimage(self,tensor,file_path,index,scene_token,ti,frame):
+        view_order = [
+        "CAM_FRONT",
+        "CAM_FRONT_RIGHT",
+        "CAM_FRONT_LEFT",
+        "CAM_BACK",
+        "CAM_BACK_LEFT",
+        "CAM_BACK_RIGHT",
+     ]
+        scene_token = scene_token[0]
+        print(scene_token)
         if tensor.is_cuda:
             tensor = tensor.cpu()
         h,w = tensor.shape[-2:]
@@ -528,31 +538,37 @@ class StreamingSDInferPipeLine(pl.LightningModule):
         tensor = tensor * 255.0  # 转换到[0, 255]
         tensor = tensor.byte()  # 转换为byte类型
 
+        # for view, gen_img in zip(view_order, tensor):
+        #             save_path = os.path.join(
+        #                 file_path, f"{scene_token}_gen",
+        #                 f"{scene_token}_{view}_{frame}.png")
+        #             os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        #             gen_img.save(save_path)
+
         # 构建保存文件的路
         # 创建一个空白图片，用于存放拼接后的大图    
-        big_image = Image.new('RGB', (3 * w, 2 * h), (255, 255, 255))  # 白色背景
+        #big_image = Image.new('RGB', (3 * w, 2 * h), (255, 255, 255))  # 白色背景
 
         # 将张量转换为PIL图像，并拼接
         for j in range(tensor.shape[0]):
-            save_file_path = os.path.join(file_path, f'{index:02d}_{frame+j:02d}.png')
+
+            if not os.path.exists(os.path.join(file_path, f"{scene_token}_gen{ti}")):
+                os.makedirs(os.path.join(file_path, f"{scene_token}_gen{ti}"), exist_ok=True)
+            
             for i in range(tensor.shape[1]):  # 遍历6张图片
                 img = tensor[j][i]  # 获取单张图片的张量
                 img = img.permute(1, 2, 0)  # 调整维度为高度x宽度x通道
                 img = img.numpy()  # 转换为numpy数组
                 img = Image.fromarray(img)  # 转换为PIL图像
-
-            # 计算图片在大图中的位置
-                row = i // 3  # 行号
-                col = i % 3  # 列号
-                if row < 2:  # 只有两行
-                    position = (col * w, row * h)  # 确定位置
-                    big_image.paste(img, position)  # 粘贴图片
-
-            # 保存大图片
-            big_image.save(save_file_path)
+                img = img.resize((400, 224), Image.BICUBIC)
+                view = view_order[i]
+                save_path = os.path.join(
+                        file_path, f"{scene_token}_gen{ti}",
+                        f"{scene_token}_{view}_{frame+j}.png")
+                img.save(save_path)
         
 
-    def decode_first_stage(self,latents,file_path,index,n_samples=8,decoder=None):
+    def decode_first_stage(self,latents,file_path,index,scene_token,ti,n_samples=8,decoder=None):
         latents = torch.stack(latents,dim=0)
         print(latents.shape)
         n_cam =1
@@ -573,7 +589,7 @@ class StreamingSDInferPipeLine(pl.LightningModule):
                 chunk = rearrange(chunk, "(b n) c h w -> b n c h w",n = n_cam) 
                 output = rearrange(output, "(b n) c h w -> b n c h w",n = n_cam) 
                 output = output.cpu()
-                self.save_tensor_as_MVimage(output,file_path,index,frame=start_frame)
+                self.save_tensor_as_MVimage(output,file_path,index,scene_token,ti,frame=start_frame)
             else:
                 output = output.cpu()
                 self.save_tensor_as_image(output,file_path,index,frame=start_frame)

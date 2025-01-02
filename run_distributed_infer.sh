@@ -1,1 +1,1 @@
-python -m torch.distributed.launch --nproc_per_node=1 --nnodes=1 --node_rank=0 --master_port 5005 distributed_infer.py --config configs/streaming_SD_cache_infer_6views.yaml --device cuda --cuda_id 0, --type test --samples_per_gpu 1 --n_samples 2 --train 
+python -m torch.distributed.launch --nproc_per_node=1 --nnodes=1 --node_rank=0 --master_port 5005 distributed_infer.py --config configs/streaming_SD_cache_infer_6views.yaml --device cuda --cuda_id 0, --type test --samples_per_gpu 1  

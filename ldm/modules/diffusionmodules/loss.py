@@ -91,6 +91,8 @@ class StandardDiffusionLoss(nn.Module):
         noise = rearrange(noise,"(b n) c h w -> b n c h w",n=self.num_cameras)
         x = rearrange(x,"(b n) c h w -> b n c h w",n=self.num_cameras)
         sigmas_bc = append_dims(sigmas,x.ndim)
+        noise = rearrange(noise,"(b n) c h w -> b n c h w",n=self.num_cameras)
+        x = rearrange(x,"(b n) c h w -> b n c h w",n=self.num_cameras)
         noise = noise[:,0:1,:,:,:].expand(-1,self.num_cameras,-1,-1,-1)
         noised_x = self.get_noised_input(sigmas_bc,noise,x)
         x = rearrange(x,"b n c h w -> (b n) c h w")
@@ -134,5 +136,3 @@ class StandardDiffusionLoss(nn.Module):
             
 
         
-
-

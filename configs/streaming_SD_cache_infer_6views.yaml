@@ -9,7 +9,7 @@ model:
         scale_factor: 0.18215
         training_strategy: feature
         load_from_ema: False
-        ckpt_path:  /storage/group/4dvlab/wangjm2024/stage1_6view/last.ckpt #stable_diffusion/sd-v1-4.ckpt #/storage/group/4dvlab/wangjm2024/last.ckpt
+        ckpt_path:  /public/home/xiangfeng/DriveDreamer/logs/2024-12-13T20-32-21_StreamingSD_cache/checkpoints/epoch=000335.ckpt #stable_diffusion/sd-v1-4.ckpt #/storage/group/4dvlab/wangjm2024/last.ckpt
         slow_fast_path: #/storage/group/4dvlab/wangjm2024/slow_fast_learning/last.ckpt #logs/2024-12-02T20-14-16_slow_fast_learning/checkpoints/last.ckpt 
         ignore_keys: ['cond_stage_model'] #TODO:!!!!!!!!!
         monitor: val/loss #use ema?
@@ -115,7 +115,7 @@ model:
                 use_image_clip: True
                 window_size: 10
                 choose_feature_idx: [-10,-5,-1]
-                attn_type: softmax-xformers
+                #attn_type: softmax-xformers
           
         sampler_config:
           target: ldm.modules.diffusionmodules.sampling.EulerEDMSampler
@@ -161,7 +161,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 1
+    batch_size: 2
     wrap: False
     num_workers: 0
     use_distributed_scene_sampler: true
@@ -169,12 +169,12 @@ data:
       target: distributed_infer.dataloader
       params:
         cfg:
-          version: v1.0-mini
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
-          img_size: [768,448]
+          version: advanced_12Hz_trainval
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          img_size: [256,128]
           nusc_canbus_frequency: 50
           num_cameras: ${model.params.model_config.params.num_cameras}
-          camera_frequency: 2
+          camera_frequency: 12
         num_boxes: 70
         movie_len: 1
         split_name: train
@@ -189,12 +189,12 @@ data:
       target: distributed_infer.dataloader
       params:
         cfg:
-          version: v1.0-mini
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
-          img_size: [768,448]
+          version: advanced_12Hz_trainval
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          img_size: [256,128]
           nusc_canbus_frequency: 50
           num_cameras: ${model.params.model_config.params.num_cameras}
-          camera_frequency: 2
+          camera_frequency: 12
         num_boxes: 70
         movie_len: 1
         split_name: val

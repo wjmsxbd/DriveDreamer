@@ -73,6 +73,7 @@ class dataloader(data.Dataset):
             'singapore-queenstown': NuScenesMap(dataroot='.', map_name='singapore-queenstown'),
         }
         # self.nusc_can = NuScenesCanBus(dataroot='/storage/group/4dvlab/datasets/nuScenes')
+        self.sigmas = None
         self.return_pose_info = return_pose_info
         self.collect_condition = collect_condition
         self.use_original_action = use_original_action
@@ -94,6 +95,7 @@ class dataloader(data.Dataset):
                 pic_infos[scene['name']] = [data_infos[id]]
             else:
                 pic_infos[scene['name']].append(data_infos[id])
+        print(pic_infos.keys())
         idx = 0
         scenes_id = 0
         scenes = []
@@ -121,13 +123,19 @@ class dataloader(data.Dataset):
     def __getitem__(self,idx):
         if isinstance(idx,list):
             data = []
-            if self.check_idx_is_first_frame(idx[0]):
+            if self.sigmas is None:
                 self.sigmas = self.sigma_sampler(len(idx))
+            else:
+                for i in range(len(idx)):
+                    if self.check_idx_is_first_frame(idx[i]):
+                        self.sigmas[i] = self.sigma_sampler(1)
             for i in range(len(idx)):
                 data.append(self.get_data_info(idx[i],i))
             return data
         else:
-            return self.get_data_info(idx)
+            if self.sigmas is None:
+                self.sigmas = self.sigma_sampler(1)
+            return self.get_data_info(idx,0)
     
     def get_cam_image_from_sample_token(self,sample_token,img_size,):
         sample_record = self.nusc.get('sample',sample_token)
@@ -173,7 +181,7 @@ class dataloader(data.Dataset):
     def get_data_info(self,idx,list_idx):
         video_info = self.video_infos[idx]
         out = {}
-        out['sigmas'] = out['sigmas'] = self.sigmas[list_idx]
+        out['sigmas'] = self.sigmas[list_idx]
         out['first_frame'] = ([1] if idx == 0 or self.scenes[idx] != self.scenes[idx-1] else [0])
         out['3Dbox'] = []
         out['idx'] = idx
@@ -189,6 +197,7 @@ class dataloader(data.Dataset):
             out['clip_first_frame'] = torch.zeros((self.num_cameras,3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
         for i in range(self.movie_len):
             sample_token = video_info['token']
+            out['scene_token'] = sample_token
             scene_token = self.nusc.get('sample',sample_token)['scene_token']
             scene = self.nusc.get('scene',scene_token)
             text = scene['description']
@@ -219,7 +228,6 @@ class dataloader(data.Dataset):
                         category = category[:self.num_boxes]
                         box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])] 
                     out['3Dbox'] = box_text
-
                 else:
                     collect_data = get_this_scene_info_with_lidar_MV(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=False,collect_data=self.collect_condition)
                     img = collect_data['reference_image'][:,:,:,:3].copy()
@@ -269,7 +277,6 @@ class dataloader(data.Dataset):
                         category = category[:self.num_boxes]
                         box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])] 
                     out['3Dbox'] = box_text
-                    
                 else:
                     collect_data = get_this_scene_info_with_lidar_MV(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=False,collect_data=self.collect_condition)
                     img = collect_data['reference_image'][:,:,:,:3].copy()
@@ -342,6 +349,12 @@ def collate_fn(batch):
                 if not key in out.keys():
                     out[key] = []
                 out[key].append(value)
+            elif isinstance(value,str):
+                if not key in out.keys():
+                    out[key] = []
+                    out[key].append(value)
+                else:
+                    out[key].append(value)
             else:
                 raise NotImplementedError
     return out
@@ -551,11 +564,12 @@ def save_tensor_as_MVimage(tensor, file_path,index,frame):
     big_image.save(save_file_path)
    
 
-def decoder_latent_in_dict(latents,keys,network,file_path,n_samples=24,decoder=None):
+def decoder_latent_in_dict(latents,keys,scene_token_keys,ti,network,file_path,n_samples=24,decoder=None):
     print(f"now:{keys}")
-    for key in keys:
+    print(scene_token_keys)
+    for key,scene_token in zip(keys,scene_token_keys):
         scene_latents = latents[key]
-        network.decode_first_stage(scene_latents,file_path,key,n_samples,decoder)
+        network.decode_first_stage(scene_latents,file_path,key,scene_token,ti,n_samples,decoder)
     for key in keys:
         del latents[key]
      
@@ -673,71 +687,80 @@ if __name__ == "__main__":
     for length in len2idx.keys():
         for idx in len2idx[length]:
             idx2len[idx] = length
-    first_frame_idx = None
-    count_first_frame_idx = dict()
-    collate_latent = {}
-    first_frame_keys = []
     pre_batch = None
+    infer_times = 1
     with torch.no_grad():
-        for _,batch in tqdm(enumerate(data_loader_)):
-            if batch['first_frame'][0] == 1 or batch['first_frame'][0] == [1]:
-                if first_frame_keys != []:
+        for ti in range(infer_times):
+            first_frame_idx = None
+            count_first_frame_idx = dict()
+            collate_latent = {}
+            first_frame_keys = [] 
+            scene_token_keys = [] 
+            for _,batch in tqdm(enumerate(data_loader_)):
+                if batch['first_frame'][0] == 1 or batch['first_frame'][0] == [1]:
+                    if first_frame_keys != []:
+                        if device == 'cuda':
+                            batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
+                        collate_latent = network.continue_infer(collate_latent,more_frames,batch,first_frame_idx)
+                        if device == 'cuda':
+                            batch = {k:v.cpu() if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
+                        decoder_latent_in_dict(collate_latent,first_frame_keys,scene_token_keys,ti,network,cam_sample_save_path,n_samples,decoder)
+                        first_frame_keys = []
+                        scene_token_keys = []
+                    first_frame_idx = batch['idx']
+                    now_frames = 0
                     if device == 'cuda':
                         batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
-                    collate_latent = network.continue_infer(collate_latent,more_frames,batch,first_frame_idx)
+                    output = network(batch)
+                    if multiview: # b n c h w
+                        output = rearrange(output, "(b n) c h w -> b n c h w",n = 6)
+                        batch['image'] = rearrange(batch['image'],'(b n) c h w -> b n c h w',n = 6)
+                    for idx in batch['idx']:
+                        count_first_frame_idx[idx] = 0
+                    for i in range(len(first_frame_idx)):
+                        idx = first_frame_idx[i]
+                        if now_frames < count_first_frame_idx[idx]:
+                            continue
+                        first_frame_keys.append(idx)
+                        scene_token_keys.append(batch['scene_token'])
+                        if not multiview:
+                            save_tensor_as_image(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
+                        else :
+                            save_tensor_as_MVimage(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
+                        collate_latent[idx] = []
+                        collate_latent[idx].append(output[i])
+                        count_first_frame_idx[idx] += 1
+                else:
+                    if now_frames >= 16:
+                        continue
                     if device == 'cuda':
-                        batch = {k:v.cpu() if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
-                    decoder_latent_in_dict(collate_latent,first_frame_keys,network,cam_sample_save_path,n_samples,decoder)
-                    first_frame_keys = []
-                first_frame_idx = batch['idx']
-                now_frames = 0
-                if device == 'cuda':
-                    batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
-                output = network(batch)
-                if multiview: # b n c h w
-                   output = rearrange(output, "(b n) c h w -> b n c h w",n = 6)
-                   batch['image'] = rearrange(batch['image'],'(b n) c h w -> b n c h w',n = 6)
-                for idx in batch['idx']:
-                    count_first_frame_idx[idx] = 0
-                for i in range(len(first_frame_idx)):
-                    idx = first_frame_idx[i]
-                    if now_frames < count_first_frame_idx[idx]:
-                        continue
-                    first_frame_keys.append(idx)
-                    if not multiview:
-                        save_tensor_as_image(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
-                    else :
-                        save_tensor_as_MVimage(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
-                    collate_latent[idx] = []
-                    collate_latent[idx].append(output[i])
-                    count_first_frame_idx[idx] += 1
-            else:
-                if device == 'cuda':
-                    batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
-                output = network(batch)
-                if multiview: # b n c h w
-                   output = rearrange(output, "(b n) c h w -> b n c h w",n = 6)
-                   batch['image'] = rearrange(batch['image'],'(b n) c h w -> b n c h w',n = 6)
-                for i in range(len(first_frame_idx)):
-                    idx = first_frame_idx[i]
-                    if now_frames < count_first_frame_idx[idx]:
-                        continue
-                    if not multiview:
-                        save_tensor_as_image(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
-                    else :
-                        save_tensor_as_MVimage(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
-                    collate_latent[idx].append(output[i])
-                    count_first_frame_idx[idx] += 1
-            now_frames += 1
-            pre_batch = batch
+                        batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
+                    output = network(batch)
+                    if multiview: # b n c h w
+                        output = rearrange(output, "(b n) c h w -> b n c h w",n = 6)
+                        batch['image'] = rearrange(batch['image'],'(b n) c h w -> b n c h w',n = 6)
+                    for i in range(len(first_frame_idx)):
+                        idx = first_frame_idx[i]
+                        if now_frames < count_first_frame_idx[idx]:
+                            continue
+                        if not multiview:
+                            save_tensor_as_image(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
+                        else :
+                            save_tensor_as_MVimage(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
+                        collate_latent[idx].append(output[i])
+                        count_first_frame_idx[idx] += 1
+                now_frames += 1
+                pre_batch = batch
+                if now_frames >= 16:
+                    continue
 
-    if first_frame_keys != []:
-        if device == 'cuda':
-            pre_batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in pre_batch.items()}
-        collate_latent = network.continue_infer(collate_latent,more_frames,pre_batch,first_frame_idx)
-        if device == 'cuda':
-            pre_batch = {k:v.cpu() if isinstance(v,torch.Tensor) else v for k,v in pre_batch.items()}
-        decoder_latent_in_dict(collate_latent,first_frame_keys,network,cam_sample_save_path,n_samples,decoder)
+            if first_frame_keys != []:
+                if device == 'cuda':
+                    pre_batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in pre_batch.items()}
+                collate_latent = network.continue_infer(collate_latent,more_frames,pre_batch,first_frame_idx)
+                if device == 'cuda':
+                    pre_batch = {k:v.cpu() if isinstance(v,torch.Tensor) else v for k,v in pre_batch.items()}
+                decoder_latent_in_dict(collate_latent,first_frame_keys,scene_token_keys,ti,network,cam_sample_save_path,n_samples,decoder)
     # for _,batch in tqdm(enumerate(data_loader_)):
     #     if batch['first_frame'][0] == 1 or batch['first_frame'][0] == [1]:
     #         first_frame_idx = batch['idx']

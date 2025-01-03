@@ -2,15 +2,15 @@ model:
   target: ldm.models.diffusion.StreamingSD.StreamingSDInferPipeLine
   params:
     use_feature_cache: True
-    num_steps: 50
+    num_steps: 15
     model_config:
       target: ldm.models.diffusion.StreamingSD.StreamingSD
       params:
         scale_factor: 0.18215
         training_strategy: feature
         load_from_ema: False
-        ckpt_path:  /storage/group/4dvlab/wangjm2024/last.ckpt #stable_diffusion/sd-v1-4.ckpt #/storage/group/4dvlab/wangjm2024/last.ckpt
-        slow_fast_path: #/storage/group/4dvlab/wangjm2024/slow_fast_learning/last.ckpt #logs/2024-12-02T20-14-16_slow_fast_learning/checkpoints/last.ckpt 
+        ckpt_path:  #/storage/group/4dvlab/wangjm2024/last.ckpt #stable_diffusion/sd-v1-4.ckpt #/storage/group/4dvlab/wangjm2024/last.ckpt
+        slow_fast_path: logs/2024-12-28T22-08-51_slow_fast_learning/checkpoints/last.ckpt #/storage/group/4dvlab/wangjm2024/slow_fast_learning/last.ckpt #logs/2024-12-02T20-14-16_slow_fast_learning/checkpoints/last.ckpt 
         ignore_keys: ['cond_stage_model'] #TODO:!!!!!!!!!
         monitor: val/loss #use ema?
         use_ema: False #use ema?
@@ -214,7 +214,7 @@ lightning:
 
   trainer:
     benchmark: True
-    gpus: 0,1,2,3
+    gpus: 0,
     # device: 1
     # gpus: 0,
     num_nodes: 1

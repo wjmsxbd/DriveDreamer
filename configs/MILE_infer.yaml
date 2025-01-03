@@ -1,0 +1,307 @@
+model:
+  target: ldm.models.mile.trainer.Trainer
+  base_learning_rate: 1e-4 #TODO: check learning rate
+  params:
+    ckpt_path: logs/2024-12-30T21-32-46_MILE/checkpoints/last.ckpt
+    model_config:
+      target: ldm.models.mile.models.mile.Mile
+      params:
+        cfg:
+          STEPS: 50000
+          RECEPTIVE_FIELD: 1
+          OPTIMIZER:
+            WEIGHT_DECAY: 0.01
+            LR: 1e-4
+          SCHEDULER:
+            NAME: OneCycleLR
+            PCT_START: 0.2
+          IMAGE:
+            SIZE: [448,768] #TODO: check image size
+            CROP: #TODO: use image crop?
+            FOV: #TODO: use FOV?
+            CAMERA_POSITION: #TODO: use camera postion?
+            CAMERA_ROTATION: #TODO: use camera rotation?
+            IMAGENET_MEAN: [0.485,0.456,0.406]
+            IMAGENET_STD: [0.229,0.224,0.225]
+            AUGMENTATION:
+              BLUR_PROB: 0.3
+              BLUR_WINDOW: 5
+              BLUR_STD: [0.1,1.7]
+              SHARPEN_PROB: 0.3
+              SHARPEN_FACTOR: [1,5]
+              COLOR_PROB: 0.3
+              COLOR_JITTER_BRIGHTNESS: 0.3
+              COLOR_JITTER_CONTRAST: 0.3
+              COLOR_JITTER_SATURATION: 0.3
+              COLOR_JITTER_HUE: 0.1
+          BEV:
+            SIZE: [192,192] #TODO: modify bev size
+            RESOLUTION: 0.2 #TODO: modify bev resolution
+            OFFSET_FORWARD: 0 # offset of the center of gravity of the egocar relative to the center of bev in px
+            FEATURE_DOWNSAMPLE: 4 # Downsample factor for bev features
+            FRUSTUM_POOL:
+              D_BOUND: [1.0,38.0,1.0]
+              SPARSE: True
+              SPARSE_COUNT: 10
+          ROUTE:
+            SIZE: 192 #TODO modify spatial resolution
+
+            AUGMENTATION_DROPOUT: 0.025
+            AUGMENTATION_END_OF_ROUTE: 0.025
+            AUGMENTATION_SMALL_ROTATION: 0.025
+            AUGMENTATION_LARGE_ROTATION: 0.025
+            AUGMENTATION_DEGREES: 8.
+            AUGMENTATION_TRANSILATE: [0.1,0.1]
+            AUGMENTATION_SCALE: [0.95,1.05]
+            AUGMENTATION_SHEAR: [0.1,0.1]
+
+          SPEED:
+            NOISE_STD: 1.4
+            NORMALIZATION: 5.0
+
+          MODEL:
+            ACTION_DIM: 12
+            ENCODER:
+              NAME: resnet18
+              OUT_CHANNELS: 64
+
+            BEV:
+              BACKBONE: resnet18
+              CHANNELS: 64
+
+            SPEED:
+              CHANNELS: 16
+
+            ROUTE:
+              ENABLED: True
+              BACKBONE: resnet18
+              CHANNELS: 16
+
+            MEASUREMENTS: #TODO: use it?
+
+            EMBEDDING_DIM: 512
+            TRANSITION:
+              ENABLED: True
+              HIDDEN_STATE_DIM: 1024
+              STATE_DIM: 512
+              ACTION_LATENT_DIM: 64
+              USE_DROPOUT: True
+              DROPOUT_PROBABILITY: 0.15
+
+          SEMANTIC_SEG:
+            ENABLED: True
+            N_CHANNELS: 6
+            USE_TOP_K: True
+            TOP_K_RATIO: 0.25
+            USE_WEIGHTS: True
+
+          INSTANCE_SEG:
+            CENTER_LABEL_SIGMA_PX: 4
+            IGNORE_INDEX: 0 # TODO: check ignore index
+            CENTER_LOSS_WEIGHT: 200.0
+            OFFSET_LOSS_WEIGHT: 0.1
+
+          LOSSES:
+            WEIGHT_ACTION: 1.0
+            WEIGHT_SEGMENTATION: 0.1
+            WEIGHT_INSTANCE: 0.1
+            WEIGHT_PROBABILISTIC: 1e-3
+            KL_BALANCING_ALPHA: 0.75
+
+          PRETRAINED:
+            PATH: ''
+
+          EVAL:
+            RGB_SUPERVISION: True
+            NO_LIFTING: False
+            DATASET_REDUCTION: False
+            DATASET_REDUCTION_FACTOR: 1
+            RESOLUTION:
+              ENABLED: False
+              FACTOR: 1
+
+          SAMPLER: #TODO: use it ?
+            ENABLED: False
+            WITH_ACCELERATION: False
+            WITH_STEERING: False
+            N_BINS: 5
+            WITH_ROUTE_COMMAND: False
+            COMMAND_WEIGHTS: [1.0,1.0,1.0,1.0,1.0,1.0]
+
+    loss_config:
+      STEPS: 50000
+      OPTIMIZER:
+        WEIGHT_DECAY: 0.01
+        LR: 1e-4
+      SCHEDULER:
+        NAME: OneCycleLR
+        PCT_START: 0.2
+      IMAGE:
+        SIZE: [448,768] #TODO: check image size
+        CROP: #TODO: use image crop?
+        FOV: #TODO: use FOV?
+        CAMERA_POSITION: #TODO: use camera postion?
+        CAMERA_ROTATION: #TODO: use camera rotation?
+        IMAGENET_MEAN: [0.485,0.456,0.406]
+        IMAGENET_STD: [0.229,0.224,0.225]
+        AUGMENTATION:
+          BLUR_PROB: 0.3
+          BLUR_WINDOW: 5
+          BLUR_STD: [0.1,1.7]
+          SHARPEN_PROB: 0.3
+          SHARPEN_FACTOR: [1,5]
+          COLOR_PROB: 0.3
+          COLOR_JITTER_BRIGHTNESS: 0.3
+          COLOR_JITTER_CONTRAST: 0.3
+          COLOR_JITTER_SATURATION: 0.3
+          COLOR_JITTER_HUE: 0.1
+      BEV:
+        SIZE: [192,192] #TODO: modify bev size
+        RESOLUTION: 0.2 #TODO: modify bev resolution
+        OFFSET_FORWARD: 0 # offset of the center of gravity of the egocar relative to the center of bev in px
+        FEATURE_DOWNSAMPLE: 4 # Downsample factor for bev features
+        FRUSTUM_POOL:
+          D_BOUND: [1.0,38.0,1.0]
+          SPARSE: True
+          SAPRSE_COUNT: 10
+      ROUTE:
+        SIZE: 192 #TODO modify spatial resolution
+
+        AUGMENTATION_DROPOUT: 0.025
+        AUGMENTATION_END_OF_ROUTE: 0.025
+        AUGMENTATION_SMALL_ROTATION: 0.025
+        AUGMENTATION_LARGE_ROTATION: 0.025
+        AUGMENTATION_DEGREES: 8.
+        AUGMENTATION_TRANSLATE: [0.1,0.1]
+        AUGMENTATION_SCALE: [0.95,1.05]
+        AUGMENTATION_SHEAR: [0.1,0.1]
+
+      SPEED:
+        NOISE_STD: 1.4
+        NORMALIZATION: 5.0 #TODO: modify
+
+      MODEL:
+        ACTION_DIM: 12
+        ENCODER:
+          NAME: resnet18
+          OUT_CHANNELS: 64
+
+        BEV:
+          BACKBONE: resnet18
+          CHANNELS: 64
+
+        SPEED:
+          CHANNELS: 16
+
+        ROUTE:
+          ENABLED: True
+          BACKBONE: resnet18
+          CHANNELS: 16
+
+        MEASUREMENTS: #TODO: use it?
+
+        EMBEDDING_DIM: 512
+        TRANSITION:
+          ENABLED: True
+          HIDDEN_STATE_DIM: 1024
+          STATE_DIM: 512
+          ACTION_LATENT_DIM: 64
+          USE_DROPOUT: True
+          DROPOUT_PROBABILITY: 0.15
+
+      SEMANTIC_SEG:
+        ENABLED: True
+        N_CHANNELS: 6
+        USE_TOP_K: True
+        TOP_K_RATIO: 0.25
+        USE_WEIGHTS: True
+
+      INSTANCE_SEG:
+        CENTER_LABEL_SIGMA_PX: 4
+        IGNORE_INDEX: 0 # TODO: check ignore index
+        CENTER_LOSS_WEIGHT: 200.0
+        OFFSET_LOSS_WEIGHT: 0.1
+
+      LOSSES:
+        WEIGHT_ACTION: 1.0
+        WEIGHT_SEGMENTATION: 0.1
+        WEIGHT_INSTANCE: 0.1
+        WEIGHT_PROBABILISTIC: 1e-3
+        KL_BALANCING_ALPHA: 0.75
+
+      PRETRAINED:
+        PATH: ''
+
+      EVAL:
+        RGB_SUPERVISION: True
+        NO_LIFTING: False
+        DATASET_REDUCTION: False
+        DATASET_REDUCTION_FACTOR: 1
+        RESOLUTION:
+          ENABLED: False
+          FACTOR: 1
+
+      SAMPLER: #TODO: use it ?
+        ENABLED: False
+        WITH_ACCELERATION: False
+        WITH_STEERING: False
+        N_BINS: 5
+        WITH_ROUTE_COMMAND: False
+        COMMAND_WEIGHTS: [1.0,1.0,1.0,1.0,1.0,1.0]
+
+
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 1
+    wrap: False
+    num_workers: 0
+    use_distributed_scene_sampler: False
+    train:
+      target: data.dataloader_future.dataloader
+      params:
+        cfg:
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
+          img_size: [448,256]
+          nusc_canbus_frequency: 50
+          camera_frequency: 2
+          hdmap_size: [192,192]
+        num_boxes: 70
+        movie_len: 4
+        split_name: train
+
+    validation:
+      target: data.dataloader_future.dataloader
+      params:
+        cfg:
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
+          img_size: [448,256]
+          nusc_canbus_frequency: 50
+          camera_frequency: 2
+          hdmap_size: [192,192]
+        num_boxes: 70
+        movie_len: 4
+        split_name: val
+
+            
+
+lightning:
+  callbacks:
+    video_logger:
+      target: main.ImageLogger
+      params:
+        batch_frequency: 1000000
+        max_images: 8
+        increase_log_steps: False
+
+  trainer:
+    benchmark: True
+    gpus: 0,1,2,3
+    # device: 1
+    # gpus: 0,
+    num_nodes: 1
+    distributed_backend: ddp
+    replace_sampler_ddp: False
+    find_unused_parameters: False

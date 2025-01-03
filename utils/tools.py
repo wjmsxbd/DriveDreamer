@@ -1109,7 +1109,7 @@ def get_bev_box_label(sample_data_token:str,
     # bev_box = bev_box[:] * mask
     tmp = np.sum(bev_box,axis=0,keepdims=True)
     background = (tmp == 0)
-    background = np.ones_like(background) * background * 255
+    background = np.ones_like(background) * background * 127
     bev_box[instance_label['background']] = background
     # bev_xy = np.concatenate([x_values[:,:,np.newaxis],y_values,np.newaxis],axis=-1) - np.array([img_size[0]//2,img_size[1]//2])
     # bev_box_offset = bev_xy * bev_box_offset_mask - bev_box_center

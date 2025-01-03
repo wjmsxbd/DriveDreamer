@@ -5,24 +5,18 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "launch",
-            "type": "python",
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "cwd": "${fileDirname}",
-            // "justMyCode": true,
+            "cwd": "${workspaceFolder}",
             "args": [
                 //  "--base","configs/StreamingSD_cache.yaml",
                 //  "--train","True"
                 // "--device","cpu","--train"
-               // "--base","configs/StreamingSD_cache_6views.yaml","--train","True"
+                "--base","configs/MILE.yaml","--train","True"
                 // "--train","--config","configs/MILE_infer.yaml","--type","mile"
-                "--config", "configs/streaming_SD_cache_infer_6views.yaml",
-                "--device", "cuda" ,
-                "--cuda_id", "0", 
-                "--type" , "test",
-                "--samples_per_gpu", "1"
             ]
         }
     ]

@@ -9,7 +9,7 @@ model:
         scale_factor: 0.18215
         training_strategy: feature
         load_from_ema: False
-        ckpt_path:  /public/home/xiangfeng/DriveDreamer/logs/2024-12-13T20-32-21_StreamingSD_cache/checkpoints/epoch=000335.ckpt #stable_diffusion/sd-v1-4.ckpt #/storage/group/4dvlab/wangjm2024/last.ckpt
+        ckpt_path:  logs/2024-12-31T22-15-25_StreamingSD_6views/checkpoints/last.ckpt #stable_diffusion/sd-v1-4.ckpt #/storage/group/4dvlab/wangjm2024/last.ckpt
         slow_fast_path: #/storage/group/4dvlab/wangjm2024/slow_fast_learning/last.ckpt #logs/2024-12-02T20-14-16_slow_fast_learning/checkpoints/last.ckpt 
         ignore_keys: ['cond_stage_model'] #TODO:!!!!!!!!!
         monitor: val/loss #use ema?
@@ -21,10 +21,10 @@ model:
           target: ldm.models.condition.StreamingSDCondition
           params:
             emb_models:
-              # - input_key: sigmas
-              #   is_trainable: False
-              #   ucg_rate: 0.0
-              #   target: ldm.models.condition.IdentityEmbedder
+              - input_key: sigmas
+                is_trainable: False
+                ucg_rate: 0.0
+                target: ldm.models.condition.IdentityEmbedder
 
               - input_key: clip_first_frame
                 is_trainable: False
@@ -169,9 +169,9 @@ data:
       target: distributed_infer.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
-          dataroot: /storage/group/4dvlab/datasets/nuScenes/
-          img_size: [256,128]
+          version: v1.0-mini
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
+          img_size: [768,448]
           nusc_canbus_frequency: 50
           num_cameras: ${model.params.model_config.params.num_cameras}
           camera_frequency: 12
@@ -189,9 +189,9 @@ data:
       target: distributed_infer.dataloader
       params:
         cfg:
-          version: advanced_12Hz_trainval
+          version: v1.0-mini
           dataroot: /storage/group/4dvlab/datasets/nuScenes/
-          img_size: [256,128]
+          img_size: [768,448]
           nusc_canbus_frequency: 50
           num_cameras: ${model.params.model_config.params.num_cameras}
           camera_frequency: 12
@@ -216,7 +216,7 @@ lightning:
 
   trainer:
     benchmark: True
-    gpus: 0,1,2,3
+    gpus: 0,
     # device: 1
     # gpus: 0,
     num_nodes: 1

@@ -532,36 +532,37 @@ def save_tensor_as_image(tensor, file_path,index,frame):
     img = Image.fromarray(img)
     img.save(save_file_path)
 
-def save_tensor_as_MVimage(tensor, file_path,index,frame):
+def save_tensor_as_MVimage(tensor, file_path,index,token,ti,frame):
     if tensor.is_cuda:
         tensor = tensor.cpu()
     h,w = tensor.shape[-2:]
-    tensor = tensor.clamp(-1, 1)  # 确保值在[-1, 1]之间
-    tensor = (tensor + 1.0) / 2.0  # 转换到[0, 1]
-    tensor = tensor * 255.0  # 转换到[0, 255]
-    tensor = tensor.byte()  # 转换为byte类型
+    tensor = tensor.clamp(-1, 1)  
+    tensor = (tensor + 1.0) / 2.0 
+    tensor = tensor * 255.0  
+    tensor = tensor.byte()  
+    view_order = [
+        "CAM_FRONT",
+        "CAM_FRONT_RIGHT",
+        "CAM_FRONT_LEFT",
+        "CAM_BACK",
+        "CAM_BACK_LEFT",
+        "CAM_BACK_RIGHT",
+     ]
 
-    # 构建保存文件的路径
-    save_file_path = os.path.join(file_path, f'{index:02d}_{frame:02d}.png')
-    # 创建一个空白图片，用于存放拼接后的大图    
-    big_image = Image.new('RGB', (3 * w, 2 * h), (255, 255, 255))  # 白色背景
+    if not os.path.exists(os.path.join(file_path, f"{token}_gen{ti}")):
+         os.makedirs(os.path.join(file_path, f"{token}_gen{ti}"), exist_ok=True)
 
     # 将张量转换为PIL图像，并拼接
     for i in range(tensor.shape[0]):  # 遍历6张图片
+        view = view_order[i]
         img = tensor[i]  # 获取单张图片的张量
         img = img.permute(1, 2, 0)  # 调整维度为高度x宽度x通道
         img = img.numpy()  # 转换为numpy数组
         img = Image.fromarray(img)  # 转换为PIL图像
-
-    # 计算图片在大图中的位置
-        row = i // 3  # 行号
-        col = i % 3  # 列号
-        if row < 2:  # 只有两行
-            position = (col * w, row * h)  # 确定位置
-            big_image.paste(img, position)  # 粘贴图片
-
-    # 保存大图片
-    big_image.save(save_file_path)
+        save_path = os.path.join(
+                        file_path, f"{token}_gen{ti}",
+                        f"{token}_{view}_{frame}.png")
+        img.save(save_path)
    
 
 def decoder_latent_in_dict(latents,keys,scene_token_keys,ti,network,file_path,n_samples=24,decoder=None):
@@ -692,6 +693,7 @@ if __name__ == "__main__":
     with torch.no_grad():
         for ti in range(infer_times):
             first_frame_idx = None
+            first_frame_token = None
             count_first_frame_idx = dict()
             collate_latent = {}
             first_frame_keys = [] 
@@ -708,6 +710,7 @@ if __name__ == "__main__":
                         first_frame_keys = []
                         scene_token_keys = []
                     first_frame_idx = batch['idx']
+                    first_frame_token = batch['scene_token']
                     now_frames = 0
                     if device == 'cuda':
                         batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
@@ -719,6 +722,7 @@ if __name__ == "__main__":
                         count_first_frame_idx[idx] = 0
                     for i in range(len(first_frame_idx)):
                         idx = first_frame_idx[i]
+                        token = first_frame_token[i]
                         if now_frames < count_first_frame_idx[idx]:
                             continue
                         first_frame_keys.append(idx)
@@ -726,7 +730,7 @@ if __name__ == "__main__":
                         if not multiview:
                             save_tensor_as_image(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
                         else :
-                            save_tensor_as_MVimage(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
+                            save_tensor_as_MVimage(batch['image'][i],file_path=cam_real_save_path,index=idx,token=token,ti=ti,frame=now_frames)
                         collate_latent[idx] = []
                         collate_latent[idx].append(output[i])
                         count_first_frame_idx[idx] += 1
@@ -741,12 +745,13 @@ if __name__ == "__main__":
                         batch['image'] = rearrange(batch['image'],'(b n) c h w -> b n c h w',n = 6)
                     for i in range(len(first_frame_idx)):
                         idx = first_frame_idx[i]
+                        token = first_frame_token[i]
                         if now_frames < count_first_frame_idx[idx]:
                             continue
                         if not multiview:
                             save_tensor_as_image(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
                         else :
-                            save_tensor_as_MVimage(batch['image'][i],file_path=cam_real_save_path,index=idx,frame=now_frames)
+                            save_tensor_as_MVimage(batch['image'][i],file_path=cam_real_save_path,index=idx,token=token,ti=ti,frame=now_frames)
                         collate_latent[idx].append(output[i])
                         count_first_frame_idx[idx] += 1
                 now_frames += 1

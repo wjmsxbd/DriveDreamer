@@ -814,8 +814,8 @@ class UNetModel(nn.Module):
             if flag:
                 zero_feature_cache = [copy.deepcopy(self.zero_feature_cache) for i in range(self.window_size)]
                 self.zero_feature_cache = [copy.deepcopy(cache[:1]) for cache in self.zero_feature_cache]
+                self.batch_zero_feature_cache = copy.deepcopy(zero_feature_cache)
                 self.feature_cache.replace_cache(zero_feature_cache)
-                self.batch_zero_feature_cache = zero_feature_cache
 
                 
             for i in range(len(hs)):

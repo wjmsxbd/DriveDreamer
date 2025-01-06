@@ -51,9 +51,9 @@ class SlowLearning(nn.Module):
         model.replace_feature_cache(feature_cache)
         model.prepare_model_setting(cond['first_frame'])
         loss = model.get_losses(x,cond)
-        feature_cache = model.get_feature_cache()
+        # feature_cache = model.get_feature_cache()
         # self.cache.update(feature_cache,0)
-        self.cache.check_id()
+        # self.cache.check_id()
         return loss
 
 class FeatureCache1D:
@@ -175,10 +175,12 @@ class FrameCounter:
                 if first_frame[idx] == [1] or first_frame[idx] == 1:
                     self.num_frame[i] = 0
 
-    def replace(self,window_size):
+    def replace(self,window_size,multiview):
         replace_flags = []
-        for i in range(len(self.num_frame)):
-            if self.num_frame[i] % window_size != 0:
+        n_frames = len(self.num_frame) if not multiview else len(self.num_frame) * 6
+        for i in range(n_frames):
+            idx = i if not multiview else i // 6
+            if self.num_frame[idx] % window_size != 0:
                 replace_flags.append(True)
             else:
                 replace_flags.append(False)
@@ -270,7 +272,7 @@ class SlowFastLearning(pl.LightningModule):
             self.clear_generate_data()
             # fast learning
             batch['samples'] = self.cond_frames
-            output,cond = self.fast_learning(self.model,batch,self.num_frame.replace(self.replace_window_size))
+            output,cond = self.fast_learning(self.model,batch,self.num_frame.replace(self.replace_window_size,self.multiview))
             cond['first_frame'] = batch['first_frame']
             cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'],self.multiview)
             self.cond_frames = output.detach()
@@ -279,7 +281,7 @@ class SlowFastLearning(pl.LightningModule):
         else:
             #fast learning
             batch['samples'] = self.cond_frames
-            output,cond = self.fast_learning(self.model,batch,self.num_frame.replace(self.replace_window_size))
+            output,cond = self.fast_learning(self.model,batch,self.num_frame.replace(self.replace_window_size,self.multiview))
             cond['first_frame'] = batch['first_frame']
             cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'],self.multiview)
             self.cond_frames = output.detach()

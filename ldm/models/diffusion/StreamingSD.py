@@ -245,7 +245,7 @@ class StreamingSD(pl.LightningModule):
     def pack_camera_squence(self,batch):
         for key in batch.keys():
             if isinstance(batch[key],torch.Tensor):
-                if key == 'sigmas':
+                if key == 'sigmas' or key == 'samples':
                     continue
                 batch[key] = rearrange(batch[key],'b n ... -> (b n) ...')
         return batch
@@ -560,7 +560,6 @@ class StreamingSDInferPipeLine(pl.LightningModule):
                 img = img.permute(1, 2, 0)  # 调整维度为高度x宽度x通道
                 img = img.numpy()  # 转换为numpy数组
                 img = Image.fromarray(img)  # 转换为PIL图像
-                img = img.resize((400, 224), Image.BICUBIC)
                 view = view_order[i]
                 save_path = os.path.join(
                         file_path, f"{scene_token}_gen{ti}",

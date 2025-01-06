@@ -145,6 +145,9 @@ class dataloader(data.Dataset):
         cam = self.nusc.get('sample_data',cam_front_token)
         cs_record = self.nusc.get('calibrated_sensor',cam['calibrated_sensor_token'])
         camera_intrinsic = np.array(cs_record['camera_intrinsic'])
+
+        imsize = (cam['width'],cam['height'])
+
         cam_front_path = cam['filename']
         cam_front_path = os.path.join(self.cfg['dataroot'],cam_front_path)
         cam_front_img = mpimg.imread(cam_front_path)
@@ -154,6 +157,8 @@ class dataloader(data.Dataset):
         cam_front_img = torch.from_numpy(cam_front_img).to(torch.float32)
         cam_front_img = rearrange(cam_front_img,'h w c -> c h w').contiguous()
         camera_intrinsic = torch.from_numpy(camera_intrinsic).to(torch.float32)
+        camera_intrinsic[0] = (img_size[0] / imsize[0]) * camera_intrinsic[0]
+        camera_intrinsic[1] = (img_size[1] / imsize[1]) * camera_intrinsic[1]
         return cam_front_img,camera_intrinsic
 
     def get_cam2ego_matrix(self,sample_token):

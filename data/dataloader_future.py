@@ -119,7 +119,7 @@ class dataloader(data.Dataset):
                 select_can_bus_frames = []
                 pos = 0
                 for i in range(len(camera_frames)):
-                    while pos < len(can_bus_frames) and can_bus_frames[pose] <= camera_frames[i]:
+                    while pos < len(can_bus_frames) and can_bus_frames[pos] <= camera_frames[i]:
                         pos += 1
                     select_can_bus_frames.append(pos-1)
                 frames = torch.arange(len(value))

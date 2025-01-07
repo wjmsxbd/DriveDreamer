@@ -144,7 +144,7 @@ class FastLearning(nn.Module):
             model.replace_feature_cache(feature_cache)
             model.prepare_model_setting(batch['first_frame'])
             z = model.infer_step(z,sigmas,i,c,uc)
-            feature_cache = model.get_feature_cache()
+            # feature_cache = model.get_feature_cache()
             # self.cache.update(feature_cache,i)
         self.cache.check_id()
         
@@ -164,15 +164,14 @@ class FrameCounter:
         for i in range(len(self.num_frame)):
             self.num_frame[i] += 1
 
-    def prepare(self,first_frame,multiview):
+    def prepare(self,first_frame):
         if self.num_frame is None:
             self.num_frame = []
             for i in range(len(first_frame)):
                 self.num_frame.append(0)
         else:
             for i in range(len(first_frame)):
-                idx = i if not multiview else i // 6
-                if first_frame[idx] == [1] or first_frame[idx] == 1:
+                if first_frame[i] == [1] or first_frame[i] == 1:
                     self.num_frame[i] = 0
 
     def replace(self,window_size,multiview):
@@ -209,6 +208,7 @@ class SlowFastLearning(pl.LightningModule):
         self.cond_frames = None
         self.force_train_step = force_train_step
         self.multiview = self.model.num_cameras == 6
+        self.validation_cache = FeatureCache2D(num_steps=1)
         
     def replace_cond_latent(self,cond,output,first_frame,multiview):
         for i in range(cond['concat'].shape[0]):
@@ -241,6 +241,22 @@ class SlowFastLearning(pl.LightningModule):
         else:
             return None
 
+    def on_validation_batch_start(self,batch,batch_idx,dataloader_idx):
+        # rank = os.environ['RANK']
+        # print(f'pid:{rank},batch_idx:{batch_idx}')
+        # print(f'pid:{rank},dataloader_idx:{dataloader_idx}')
+        if batch_idx != 0:
+            return
+        if self.validation_cache.get_feature_in_row(0) == []:
+            copy_batch = {k:copy.deepcopy(v) for k,v in batch.items()}
+            self.model.shared_step(copy_batch)
+            self.validation_cache.init_cache(self.model)
+            feature_cache = self.validation_cache.get_feature_in_row(0)
+            self.model.replace_feature_cache(feature_cache)
+        else:
+            feature_cache = self.validation_cache.get_feature_in_row(0)
+            self.model.replace_feature_cache(feature_cache)
+
     #TODO: choose training type and manual_backward optimizer.step() optimizer.zero_grad()
     def training_step(self,batch,batch_idx):
         self.force_training_step(batch,batch_idx)
@@ -250,7 +266,7 @@ class SlowFastLearning(pl.LightningModule):
 
     def force_training_step(self,batch,batch_idx):
         assert 'first_frame' in batch.keys()
-        self.num_frame.prepare(batch['first_frame'],self.multiview)
+        self.num_frame.prepare(batch['first_frame'])
         if len(self.generate_data) == self.force_train_step:
             # slow learning
             b = len(batch['first_frame'])
@@ -328,9 +344,7 @@ class SlowFastLearning(pl.LightningModule):
                 self.prepare_model_setting(batch['first_frame'])
                 z = self.model.get_input(batch)
                 cond = self.model.get_condition(batch)
-                # cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'])
-                loss,predict = self.model.get_losses(z,cond,return_predict=True)
-                self.cond_frames = predict.detach()
+                loss = self.model.get_losses(z,cond)
                 log_prefix = "train" if self.training else "val"
                 loss_dict_ema = {f"{log_prefix}/loss":loss}
                 self.log_dict(loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
@@ -338,9 +352,7 @@ class SlowFastLearning(pl.LightningModule):
             self.prepare_model_setting(batch['first_frame'])
             z = self.model.get_input(batch)
             cond = self.model.get_condition(batch)
-            # cond = self.replace_cond_latent(cond,self.cond_frames,batch['first_frame'])
-            loss,predict = self.model.get_losses(z,cond,return_predict=True)
-            self.cond_frames = predict.detach()
+            loss = self.model.get_losses(z,cond)
             log_prefix = "train" if self.training else "val"
             loss_dict_no_ema = {f"{log_prefix}/loss":loss}
             self.log_dict(loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)

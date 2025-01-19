@@ -85,7 +85,7 @@ class PostProcess(nn.Module):
         intrinsics = intrinsics.view(b*n*n_cam,3,3).cpu().numpy()
         global2ego_rotation = global2ego_rotation.view(b*n,4).cpu().numpy()
         camera_intrinsics = np.zeros_like(intrinsics)
-        camera_image = np.zeros((b*n*n_cam,self.condition_size[1],self.condition_size[0],3)).astype(np.uint8)
+        # camera_image = np.zeros((b*n*n_cam,self.condition_size[1],self.condition_size[0],3)).astype(np.uint8)
         camera_intrinsics[:,0] = intrinsics[:,0] * (self.condition_size[0] / self.rgb_size[0])
         camera_intrinsics[:,1] = intrinsics[:,1] * (self.condition_size[1] / self.rgb_size[1])
         camera_intrinsics[:,2] = intrinsics[:,2]

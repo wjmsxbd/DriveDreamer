@@ -639,8 +639,8 @@ if __name__ == "__main__":
         video_decoder_config = omegaconf.OmegaConf.load(video_decoder)
         decoder = instantiate_from_config(video_decoder_config['model'])
 
-    world_size = int(os.environ['WORLD_SIZE'])
-    rank = int(os.environ['RANK'])
+    world_size = int(os.getenv('WORLD_SIZE',1))
+    rank = int(os.getenv("RANK",0))
     dist.init_process_group('nccl',world_size=world_size,rank=rank)
     if use_train:
         data_loader = instantiate_from_config(cfg.data.params.train)
@@ -717,7 +717,8 @@ if __name__ == "__main__":
                     output = network(batch)
                     if multiview: # b n c h w
                         output = rearrange(output, "(b n) c h w -> b n c h w",n = 6)
-                        batch['image'] = rearrange(batch['image'],'(b n) c h w -> b n c h w',n = 6)
+                        if(len(batch['image'].shape) == 4):
+                            batch['image'] = rearrange(batch['image'],'(b n) c h w -> b n c h w',n = 6)
                     for idx in batch['idx']:
                         count_first_frame_idx[idx] = 0
                     for i in range(len(first_frame_idx)):
@@ -735,14 +736,15 @@ if __name__ == "__main__":
                         collate_latent[idx].append(output[i])
                         count_first_frame_idx[idx] += 1
                 else:
-                    if now_frames >= 16:
-                        continue
+                    # if now_frames >= 16:
+                    #     continue
                     if device == 'cuda':
                         batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
                     output = network(batch)
                     if multiview: # b n c h w
                         output = rearrange(output, "(b n) c h w -> b n c h w",n = 6)
-                        batch['image'] = rearrange(batch['image'],'(b n) c h w -> b n c h w',n = 6)
+                        if(len(batch['image'].shape) == 4):
+                            batch['image'] = rearrange(batch['image'],'(b n) c h w -> b n c h w',n = 6)
                     for i in range(len(first_frame_idx)):
                         idx = first_frame_idx[i]
                         token = first_frame_token[i]
@@ -756,8 +758,8 @@ if __name__ == "__main__":
                         count_first_frame_idx[idx] += 1
                 now_frames += 1
                 pre_batch = batch
-                if now_frames >= 16:
-                    continue
+                # if now_frames >= 16:
+                #     continue
 
             if first_frame_keys != []:
                 if device == 'cuda':

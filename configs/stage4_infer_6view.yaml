@@ -8,7 +8,7 @@ model:
     mile_config:
       target: ldm.models.mile.trainer.Trainer
       params:
-        ckpt_path: logs/2024-12-30T21-32-46_MILE/checkpoints/last.ckpt #stable_diffusion/mile.ckpt
+        ckpt_path: logs/2025-01-18T02-49-39_MILE_6view/checkpoints/last.ckpt #stable_diffusion/mile.ckpt
         ignore_keys: [] #['model.speed_enc','model.rssm.posterior_action_module','model.rssm.prior_action_module.0.weight','model.policy.fc.6','model.bev_decoder.head_4.segmentation_head','model.bev_decoder.head_2.segmentation_head','model.bev_decoder.head_1.segmentation_head']
         model_config:
           target: ldm.models.mile.models.mile.Mile
@@ -46,7 +46,7 @@ model:
                 RESOLUTION: 0.2 #TODO: modify bev resolution
                 OFFSET_FORWARD: 0 # offset of the center of gravity of the egocar relative to the center of bev in px
                 FEATURE_DOWNSAMPLE: 4 # Downsample factor for bev features
-                N_CAMERAS: 1
+                N_CAMERAS: 6
                 FRUSTUM_POOL:
                   D_BOUND: [1.0,38.0,1.0]
                   SPARSE: True
@@ -178,7 +178,7 @@ model:
             RESOLUTION: 0.2 #TODO: modify bev resolution
             OFFSET_FORWARD: 0 # offset of the center of gravity of the egocar relative to the center of bev in px
             FEATURE_DOWNSAMPLE: 4 # Downsample factor for bev features
-            N_CAMERAS: 1
+            N_CAMERAS: 6
             FRUSTUM_POOL:
               D_BOUND: [1.0,38.0,1.0]
               SPARSE: True
@@ -273,8 +273,9 @@ model:
         scale_factor: 0.18215
         training_strategy: feature
         load_from_ema: False
-        ckpt_path:  #logs/2024-12-11T22-21-17_StreamingSD_cache/checkpoints/last.ckpt #stable_diffusion/sd-v1-4.ckpt #/storage/group/4dvlab/wangjm2024/last.ckpt
-        slow_fast_path: logs/2025-01-09T20-15-10_slow_fast_learning/checkpoints/last.ckpt #logs/2025-01-07T15-37-29_slow_fast_learning/checkpoints/last.ckpt #/storage/group/4dvlab/wangjm2024/slow_fast_learning/last.ckpt #logs/2024-12-02T20-14-16_slow_fast_learning/checkpoints/last.ckpt 
+        num_cameras: 6
+        ckpt_path:  logs/2024-12-11T22-21-17_StreamingSD_cache/checkpoints/last.ckpt #stable_diffusion/sd-v1-4.ckpt #/storage/group/4dvlab/wangjm2024/last.ckpt
+        slow_fast_path: #logs/2025-01-09T20-15-10_slow_fast_learning/checkpoints/last.ckpt #logs/2025-01-07T15-37-29_slow_fast_learning/checkpoints/last.ckpt #/storage/group/4dvlab/wangjm2024/slow_fast_learning/last.ckpt #logs/2024-12-02T20-14-16_slow_fast_learning/checkpoints/last.ckpt 
         ignore_keys: ['cond_stage_model'] #TODO:!!!!!!!!!
         monitor: val/loss #use ema?
         use_ema: False #use ema?
@@ -326,7 +327,7 @@ model:
               - input_key: 3Dbox
                 is_trainable: False
                 ucg_rate: 0.15
-                target: ldm.models.condition.FrozenCLIPTextWrapper
+                target: ldm.models.condition.MultiViewFrozenClipTextWrapper
                 params:
                   clip_config:
                     target: ldm.models.condition.FrozenCLIPTextEmbedder
@@ -370,7 +371,7 @@ model:
                 num_heads: 8
                 use_spatial_transformer: True
                 transformer_depth: 1
-                num_cameras: 1
+                num_cameras: 6
                 context_dim: 768
                 use_checkpoint: true
                 legacy: False
@@ -435,7 +436,7 @@ data:
           dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
           img_size: [768,448]
           nusc_canbus_frequency: 50
-          num_cameras: 1
+          num_cameras: 6
           camera_frequency: 2
           hdmap_size: [192,192]
         num_boxes: 70
@@ -456,7 +457,7 @@ data:
           dataroot: /storage/group/4dvlab/datasets/nuScenes/mini
           img_size: [768,448]
           nusc_canbus_frequency: 50
-          num_cameras: 1
+          num_cameras: 6
           camera_frequency: 2
           hdmap_size: [192,192]
         num_boxes: 70

@@ -618,6 +618,8 @@ class StreamingSDInferPipeLine(pl.LightningModule):
         cond_frame = last_frame.to(self.device)
         now_frame = len(collate_latent[first_frame_idx[0]])
         mile_batch,sd_batch = self.split_batch(batch)
+        if self.pre_mile_batch is None:
+            self.pre_mile_batch = mile_batch
         for i in range(T):
             self.get_observe_step_img(self.pre_mile_batch,self.cond_frames)
             self.pre_mile_batch = {k:v.to(batch['image'].device) for k,v in self.pre_mile_batch.items() if isinstance(v,torch.Tensor)}
@@ -701,13 +703,14 @@ class StreamingSDInferPipeLine(pl.LightningModule):
                 image = image.resize(self.mile_img_size)
                 mile_batch['image'][i][0][0] = torch.from_numpy(np.array(image).transpose(2,0,1)).to(batch['image'].device)
             else:
-                image = batch['image'][i][j].detach().cpu().numpy()
-                image = (image + 1.) / 2. * 255.
-                image = image.astype(np.uint8)
-                image = image.transpose(1,2,0)
-                image = Image.fromarray(image)
-                image = image.resize(self.mile_img_size)
-                mile_batch['image'][i][0][j] = torch.from_numpy(np.array(image).transpose(2,0,1)).to(batch['image'].device)
+                for j in  range(self.num_cameras):
+                    image = batch['image'][i][j].detach().cpu().numpy()
+                    image = (image + 1.) / 2. * 255.
+                    image = image.astype(np.uint8)
+                    image = image.transpose(1,2,0)
+                    image = Image.fromarray(image)
+                    image = image.resize(self.mile_img_size)
+                    mile_batch['image'][i][0][j] = torch.from_numpy(np.array(image).transpose(2,0,1)).to(batch['image'].device)
         return mile_batch,sd_batch
         
     def replace_SD_condition(self,mile_output,sd_batch):
@@ -744,18 +747,19 @@ class StreamingSDInferPipeLine(pl.LightningModule):
         img = img.clamp(-1.,1.)
         img = (img + 1.0) / 2.0 * 255.
         img = img.numpy().astype(np.uint8)
-        images = torch.zeros((img.shape[0],1,self.num_cameras,3,self.mile_img_size[1],self.mile_img_size[0]))
+        images = torch.zeros((img.shape[0]//self.num_cameras,1,self.num_cameras,3,self.mile_img_size[1],self.mile_img_size[0]))
         if self.num_cameras == 1:
             for i in range(img.shape[0]):
                 image = Image.fromarray(img[i].transpose(1,2,0)).resize(self.mile_img_size)
                 images[i][0][0] = torch.from_numpy(np.array(image).transpose(2,0,1))
         else:
-            for i in range(img.shape[0]):
+            for i in range(img.shape[0]//self.num_cameras):
                 for j in range(self.num_cameras):
                     row = i // self.num_cameras
                     col = j
                     image = Image.fromarray(img[i].transpose(1,2,0)).resize(self.mile_img_size)
                     images[row][0][col] = torch.from_numpy(np.array(image).transpose(2,0,1))
+        print(images.shape)
         batch['image'] = images
 
 

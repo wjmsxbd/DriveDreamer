@@ -731,16 +731,12 @@ class UNetModel(nn.Module):
 
     def prepare_model_setting(self,first_frame):
         if self.zero_feature_cache is None:
-            # self.frame_counter.prepare(first_frame)
-            # self.frame_counter.update()
             return
         for i in range(len(first_frame) * self.num_cameras):
             idx = i // self.num_cameras
             if first_frame[idx] == [1] or first_frame[idx] == 1:
                 zero_feature = [copy.deepcopy(self.zero_feature_cache) for _ in range(self.window_size)]
                 self.feature_cache.replace_cache(zero_feature,i)
-        # self.frame_counter.prepare(first_frame)
-        # self.frame_counter.update()
         
     def check_cache_is_empty(self,):
         return self.feature_cache.check_cache_is_empty()

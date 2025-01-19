@@ -8,16 +8,22 @@ from ldm.models.mile.constants import BIRDVIEW_COLOURS
 from ldm.models.mile.losses import SegmentationLoss, KLLoss, RegressionLoss, SpatialRegressionLoss
 from ldm.models.mile.models.mile import Mile
 from ldm.models.mile.models.preprocess import PreProcess
-# from ldm.models.mile.models.postprocess import postprocess
+from ldm.models.mile.models.postprocess import PostProcess
 from ldm.util import instantiate_from_config
 import scipy
 import numpy as np
+import cv2
+from nuscenes.utils.data_classes import PointCloud, Box
+from pyquaternion import Quaternion
+from utils.tools import draw_box_in_camera_view,view_points,draw_hdmap_in_camera_view
+from PIL import Image
+from scipy.spatial import KDTree
 
 class Trainer(pl.LightningModule):
     def __init__(self,model_config,loss_config,ckpt_path=None,ignore_keys=[]):
         super().__init__()
         self.preprocess = PreProcess(loss_config)
-        # self.postprocess = PostProcess(loss_config)
+        self.postprocess = PostProcess(loss_config)
         self.model = instantiate_from_config(model_config)
         self.action_loss = RegressionLoss(norm=1)
         self.loss_config = loss_config
@@ -44,7 +50,7 @@ class Trainer(pl.LightningModule):
             self.metric_iou_val = JaccardIndex(
                 num_classes=self.loss_config['SEMANTIC_SEG']['N_CHANNELS'], reduction='none',
             )
-
+        self.speed_normalization = loss_config['SPEED']['NORMALIZATION']
         if self.loss_config['EVAL']['RGB_SUPERVISION']:
             self.rgb_loss = SpatialRegressionLoss(norm=1)
         if ckpt_path:
@@ -69,9 +75,27 @@ class Trainer(pl.LightningModule):
         output = self.model.forward(batch,deployment=deployment)
         return output
     
+    def clear_cache(self,):
+        self.model.clear_cache()
+
     def deployment_forward(self,batch,is_dreaming):
         batch = self.preprocess(batch)
         output = self.model.deployment_forward(batch,is_dreaming)
+        output['vel'] = output['vel'] * self.speed_normalization
+        bev_labels,box_list,hdmap,route_map = self.postprocess(batch,output)
+        # temp = Image.fromarray(hdmap[0].permute(1,2,0).numpy())
+        # temp.save(f'all_pics/condition/hdmap.png')
+        # temp = Image.fromarray(route_map[0].permute(1,2,0).numpy())
+        # temp.save(f'all_pics/condition/route_map.png')
+        output['box_list'] = box_list
+        output['hdmap'] = hdmap
+        output['birdview_label'] = bev_labels
+        # colours = torch.tensor(BIRDVIEW_COLOURS,dtype=torch.uint8)
+        # target = colours[bev_labels]
+        # temp = Image.fromarray(target[0][0].numpy())
+        # temp.save(f'all_pics/condition/bev_labels.png')
+        output['route_map'] = route_map
+        
         return output
     
     def shared_step(self,batch):
@@ -189,64 +213,172 @@ class Trainer(pl.LightningModule):
         normalized_tensor = normalized_tensor.view(b,n,c,h,w)
         return normalized_tensor
 
-    def postprocess(self,image):
-        b,n,h,w = image.shape
-        image = image.view(b*n,h,w)
-        x,y = np.meshgrid(
-            np.arange(h).astype(np.int16),
-            np.arange(w).astype(np.int16)
-        )
-        instance_image = torch.zeros((b,n,h,w,3)).view(b*n,h,w,3)
-        colors = {0:torch.tensor((255,0,0)),1:torch.tensor((0,255,0))}
-        for i in range(image.shape[0]):
-            mask = (image[i] == 2)
-            instance_label,_ = scipy.ndimage.label(mask.cpu().numpy())
-            # instance_label = torch.from_numpy(instance_label).to(mask.device)
-            for j in range(1,_):
-                instance_mask = (instance_label == j)
-                if instance_mask.sum() == 0:
-                    continue
-                xc = x[instance_mask].mean().round()
-                yc = y[instance_mask].mean().round()
-                y_indices,x_indices = np.where(instance_mask)
-                if len(y_indices) > 0 and len(x_indices) > 0:
-                    x_min = x_indices.min()
-                    x_max = x_indices.max()
-                    y_min = y_indices.min()
-                    y_max = y_indices.max()
-                    instance_image[i,y_min:y_max,x_min:x_max] = colors[0]
-        instance_image = instance_image.view((b,n,h,w,3))
-        return instance_image
+    # def get_k_nearest_points(self,points,k=2):
+    #     # points (n,2)
+    #     kdtree = KDTree(points)
+    #     neighbors = []
+    #     distances,indices = kdtree.query(points,k=k+1)
+    #     for i in range(points.shape[0]):
+    #         neighbors.append(indices[i][1:k+1].tolist())
+    #     return neighbors
+
+    # def postprocess(self,image,translation,rotation,intrinsics,global2ego_rotation):
+    #     b,n,h,w = image.shape
+    #     image = image.view(b*n,h,w)
+    #     x,y = np.meshgrid(
+    #         np.arange(h).astype(np.int16),
+    #         np.arange(w).astype(np.int16)
+    #     )
+    #     instance_image = torch.zeros((b,n,h,w,3)).view(b*n,h,w,3)
+    #     camera_image = np.zeros((b*n,900,1600,3)).astype(np.uint8)
+    #     colors = {0:torch.tensor((255,0,0)),1:torch.tensor((0,255,0))}
+    #     translation = translation.view(b*n,4,1)
+    #     rotation = rotation.view(b*n,3,3)
+    #     intrinsics = intrinsics.view(b*n,3,3)
+    #     global2ego_rotation = global2ego_rotation.view(b*n,4)
+    #     camera_intrinsics = np.zeros_like(intrinsics.cpu().numpy())
+    #     intrinsics = intrinsics.cpu().numpy()
+    #     translation = translation[:,:3].cpu().numpy()
+    #     rotation = rotation.cpu().numpy()
+    #     global2ego_rotation = global2ego_rotation.cpu().numpy()
+    #     camera_intrinsics[:,0] = intrinsics[:,0] #* (1600 / 448)
+    #     camera_intrinsics[:,1] = intrinsics[:,1] #* (900 / 256)
+    #     camera_intrinsics[:,2] = intrinsics[:,2] * 1
+
+    #     imsize = (1600,900)
+
+    #     flag = False
+    #     for i in range(image.shape[0]):
+    #         mask = (image[i] == 1)
+    #         instance_label,_ = scipy.ndimage.label(mask.cpu().numpy())
+    #         # instance_label = torch.from_numpy(instance_label).to(mask.device)
+    #         for j in range(1,_+1):
+    #             instance_mask = (instance_label == j)
+    #             if instance_mask.sum() == 0:
+    #                 continue
+    #             xc = (x * instance_mask).mean().round()
+    #             yc = (y * instance_mask).mean().round()
+    #             y_indices,x_indices = np.where(instance_mask)
+    #             if len(y_indices) > 0 and len(x_indices) > 0:
+    #                 x_min = x_indices.min()
+    #                 x_max = x_indices.max()
+    #                 y_min = y_indices.min()
+    #                 y_max = y_indices.max()
+    #                 z_min = -0.15
+    #                 z_max = 3
+    #                 corners = []
+    #                 for z in [z_min,z_max]:
+    #                     for x,y in [(x_min,y_min),(x_min,y_max),(x_max,y_max),(x_max,y_min)]:
+    #                         corners.append([y,x,z])
+    #                 corners = np.array(corners).astype(np.float64).transpose(1,0)
+    #                 corners[0,:] = -(corners[0,:] - 192) * 0.4
+    #                 corners[1,:] = -(corners[1,:] - 96) * 0.4
+    #                 yaw = Quaternion(global2ego_rotation[i]).yaw_pitch_roll[0]
+    #                 corners = np.dot(Quaternion(scalar=np.cos(yaw/2),vector=[0,0,np.sin(yaw/2)]).rotation_matrix,corners)
+    #                 corners = np.dot(Quaternion(global2ego_rotation[i]).rotation_matrix.T,corners)
+    #                 corners = corners - translation[i]
+    #                 corners = np.dot(Quaternion._from_matrix(rotation[i]).rotation_matrix.T,corners)
+
+    #                 draw_box_in_camera_view(camera_image[i],corners,camera_intrinsics[i],imsize)
+    #                 instance_image[i,y_min:y_max,x_min:x_max] = colors[0]
+    #         test_image = Image.fromarray(camera_image[i])
+    #         test_image.save("test.png")
+    #     instance_image = instance_image.view((b,n,h,w,3))
+    #     return instance_image
     
-    def get_map_element(self,image):
-        pass
+    # def get_map_element(self,image,translation,rotation,intrinsics,global2ego_rotation):
+    #     b,n,h,w = image.shape
+    #     image = np.array(image.view(b*n,h,w).detach().cpu()).astype(np.uint8)
+    #     mask = image == 3
+    #     print(mask.sum())
+    #     image[mask] = 255
+    #     image[~mask] = 0
+    #     camera_image = np.zeros((b*n,900,1600,3)).astype(np.uint8)
+    #     translation = translation.view(b*n,4,1)
+    #     rotation = rotation.view(b*n,3,3)
+    #     intrinsics = intrinsics.view(b*n,3,3)
+    #     global2ego_rotation = global2ego_rotation.view(b*n,4)
+    #     camera_intrinsics = np.zeros_like(intrinsics.cpu().numpy())
+    #     intrinsics = intrinsics.cpu().numpy()
+    #     translation = translation[:,:3].cpu().numpy()
+    #     rotation = rotation.cpu().numpy()
+    #     global2ego_rotation = global2ego_rotation.cpu().numpy()
+    #     camera_intrinsics[:,0] = intrinsics[:,0] #* (1600 / 448)
+    #     camera_intrinsics[:,1] = intrinsics[:,1] #* (900 / 256)
+    #     camera_intrinsics[:,2] = intrinsics[:,2] * 1
+
+    #     imsize = (1600,900)
+    #     for i in range(image.shape[0]):
+    #         positions = np.where(image[i])
+    #         positions = np.stack((positions[0],positions[1]),axis=1)
+    #         z = np.zeros((positions.shape[0],1))
+    #         z[:,:] = -0.15
+    #         positions = np.concatenate((positions,z),axis=-1)
+    #         neighbors = self.get_k_nearest_points(positions)
+    #         positions = positions.transpose(1,0)
+    #         positions[0,:] = -(positions[0,:] - 192) * 0.4
+    #         positions[1,:] = -(positions[1,:] - 96) * 0.4
+    #         yaw = Quaternion(global2ego_rotation[i]).yaw_pitch_roll[0]
+    #         positions = np.dot(Quaternion(scalar=np.cos(yaw/2),vector=[0,0,np.sin(yaw/2)]).rotation_matrix,positions)
+    #         positions = np.dot(Quaternion(global2ego_rotation[i]).rotation_matrix.T,positions)
+    #         positions = positions - translation[i]
+    #         positions = np.dot(Quaternion._from_matrix(rotation[i]).rotation_matrix.T,positions)
+    #         draw_hdmap_in_camera_view(camera_image[i],positions,camera_intrinsics[i],imsize,neighbors)
+    #         test_image = Image.fromarray(camera_image[i])
+    #         test_image.save("test.png")
+    #     image = np.repeat(image,repeats=3,axis=-1)
+    #     image = torch.from_numpy(image).view(b,n,h,w,3)
+        
+    #     return image
+    
+        
 
             
 
     def infer(self,batch):
         output = self.forward(batch)
-        infer_out = {}
         pred = torch.argmax(output['bev_segmentation_1'].detach(),dim=-3)
+        infer_out = {}
         colours = torch.tensor(BIRDVIEW_COLOURS,dtype=torch.uint8,device=pred.device)
-        target = batch['birdview_label'][:,:,0] # b n c h w
-        # pred = colours[pred]
+        target = batch['birdview_label'][:,:,0]
         target = colours[target]
-
-        target = target
-        pred = pred
+        pred = colours[pred]
+        print(target.shape)
+        infer_out['birdview_label_pred'] = pred  
         infer_out['birdview_label'] = target
-        infer_out['birdview_label_pred'] = self.postprocess(pred)
-        infer_out['image'] = self.preprocess.post_process(batch['image']).permute(0,1,3,4,2)
-        infer_out['image_pred'] = self.preprocess.post_process(output['rgb_1'].detach()).permute(0,1,3,4,2)
-        infer_out['route_map'] = self.preprocess.post_process(batch['route_map']).permute(0,1,3,4,2)
-        infer_out['center_label_1'] = batch['center_label_1'].permute(0,1,3,4,2).repeat(1,1,1,1,3) * 255.
-        infer_out['offset_label_1'] = torch.abs(batch['offset_label_1']).permute(0,1,3,4,2)
-        infer_out['offset_label_pred'] = torch.abs(output['bev_instance_offset_1'].detach()).permute(0,1,3,4,2)
+        infer_out['route_map'] = batch['route_map'].permute(0,1,3,4,2)
+        print(batch['route_map'].shape)
+        # box_list,hdmap = self.postprocess(output)
+        # output['box_list'] = box_list
+        # output['hdmap'] = hdmap
+        # return output
+        # infer_out = {}
+        # pred = torch.argmax(output['bev_segmentation_1'].detach(),dim=-3)
+        # colours = torch.tensor(BIRDVIEW_COLOURS,dtype=torch.uint8,device=pred.device)
+        # target = batch['birdview_label'][:,:,0] # b n c h w
+        # # pred = colours[pred]
+        # # target = colours[target]
+        # target = target
+        # pred = pred
+        # infer_out['birdview_label'] = target
+        # translation = batch['ego2cam'][:,:,:,3:]
+        # rotation = batch['ego2cam'][:,:,:3,:3]
+        # intrinsics = batch['intrinsics']
+        # global2ego_rotation = batch['global2ego']
+        # infer_out['birdview_label_pred'] = self.postprocess(target,translation,rotation,intrinsics,global2ego_rotation)
+        # infer_out['route_map_pred'] = self.get_map_element(pred,translation,rotation,intrinsics,global2ego_rotation)
+        # infer_out['birdview_label_pred'] = self.postprocess(pred,translation,rotation,intrinsics)
+        # infer_out['image'] = self.preprocess.post_process(batch['image']).permute(0,1,3,4,2)
+        # infer_out['image_pred'] = self.preprocess.post_process(output['rgb_1'].detach()).permute(0,1,3,4,2)
+        # infer_out['route_map'] = self.preprocess.post_process(batch['route_map']).permute(0,1,3,4,2)
+        # infer_out['center_label_1'] = batch['center_label_1'].permute(0,1,3,4,2).repeat(1,1,1,1,3) * 255.
+        # infer_out['offset_label_1'] = torch.abs(batch['offset_label_1']).permute(0,1,3,4,2)
+        # infer_out['offset_label_pred'] = torch.abs(output['bev_instance_offset_1'].detach()).permute(0,1,3,4,2)
         # infer_out['center_label_pred'] = self.local_search(output['bev_instance_center_1'])
         # infer_out['center_label_pred'] = output['bev_instance_center_1'].detach().permute(0,1,3,4,2).repeat(1,1,1,1,3) * 255.
         # infer_out['center_label_pred'] = self.postprocess(output['bev_instance_center_1'].detach()).permute(0,1,3,4,2)
 
-        
+        # infer_out['route_map_pred'] = self.get_map_element(pred)
 
 
         return infer_out

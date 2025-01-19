@@ -1,5 +1,6 @@
 import io
 
+import scipy.ndimage
 import torch
 import cv2
 import numpy as np
@@ -47,6 +48,8 @@ except:
     pass
 import queue
 import copy
+import torch.nn.functional as F
+import scipy
 
 def distance(p1,p2):
     return np.sqrt(np.sum((p1-p2)**2))
@@ -252,7 +255,8 @@ def get_3dbox(sample_data_token:str,nusc:NuScenes,imsize:tuple,out_path=None):
     box_list = []
     for box in boxes:
         c = np.array([1.0,0.0,0.0])
-        # box.render(ax, view=camera_intrinsic, normalize=True, colors=(c, c, c))
+        # if box.name.split('.')[0] == 'vehicle':
+        #     box.render(ax, view=camera_intrinsic, normalize=True, colors=(c, c, c))
         box_category.append(box.name)
         box_xy = get_box_in_image(box,camera_intrinsic)
         box_xy[0] = box_xy[0] / imsize[0]
@@ -397,6 +401,87 @@ def get_hdmap_with_fig(fig,
     fig.clf()
     ax.cla()
     return hdmap
+
+
+# input corners: np.ndarray (3,n)
+# image h w 3
+# camera_intrinsics (4,4)
+def draw_box_in_camera_view(image,corners,camera_intrinsics,imsize):
+    def check_out_windows(point):
+        return point.x < 0 or point.x >= imsize[0] or point.y < 0 or point.y >= imsize[1]
+    def box_in_image(corners,intrinsic,imsize,vis_level: int = BoxVisibility.ANY) -> bool:
+        corners_img = view_points(corners,intrinsic,normalize=True)[:2,:]
+        visible = np.logical_and(corners_img[0, :] > 0, corners_img[0, :] < imsize[0])
+        visible = np.logical_and(visible, corners_img[1, :] < imsize[1])
+        visible = np.logical_and(visible, corners_img[1, :] > 0)
+        visible = np.logical_and(visible, corners[2, :] > 1)
+        in_front = corners[2, :] > 0.1
+        if vis_level == BoxVisibility.ALL:
+            return all(visible) and all(in_front)
+        elif vis_level == BoxVisibility.ANY:
+            return any(visible) and all(in_front)
+        elif vis_level == BoxVisibility.NONE:
+            return True
+        else:
+            raise ValueError("vis_level: {} not valid".format(vis_level))
+
+    if not box_in_image(corners,camera_intrinsics,imsize):
+        return
+    corners = view_points(corners,camera_intrinsics,normalize=True)
+    corners = corners[:2]
+    left_up_corner = Point(0,0)
+    left_down_corner = Point(0,imsize[1]-1)
+    right_up_corner = Point(imsize[0]-1,0)
+    right_down_corner = Point(imsize[0]-1,imsize[1]-1)
+    orders = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]]
+    for order in orders:
+        idx1,idx2 = order[0],order[1]
+        point_A,point_B = Point(corners[0,idx1],corners[1,idx1]),Point(corners[0,idx2],corners[1,idx2])
+        Bool_A,Bool_B = check_out_windows(point_A),check_out_windows(point_B)
+        if Bool_A and Bool_B:
+            PointA,PointB = Point(corners[0,idx1],corners[1,idx1]),Point(corners[0,idx2],corners[1,idx2])
+            pointC = get_intersection_with_squre(PointA,PointB,left_down_corner,right_up_corner,right_down_corner,left_down_corner)
+            if len(pointC) == 2:
+                PointA,PointB = pointC[0],pointC[1]
+                cv2.line(image,np.array([PointA.x,PointA.y],dtype=np.int16),np.array([PointB.x,PointB.y],dtype=np.int16),color=(255,0,0),thickness=1)
+            elif Bool_A or Bool_B:
+                PointA,PointB = Point(corners[0,idx1],corners[1,idx1]),Point(corners[0,idx2],corners[1,idx2])
+                PointC = get_intersection_with_squre(PointA,PointB,left_up_corner,right_up_corner,right_down_corner,left_down_corner)
+                if PointC == []:
+                    continue
+                if Bool_A:
+                    PointA = PointC[0]
+                else:
+                    PointB = PointC[0]
+                cv2.line(image,np.array([PointA.x,PointA.y],dtype=np.int16),np.array([PointB.x,PointB.y],dtype=np.int16),color=(255,0,0),thickness=1)
+        else:
+            cv2.line(image,np.array(corners[:,idx1]).astype(np.int16),np.array(corners[:,idx2]).astype(np.int16),color=(255,0,0),thickness=1)
+    
+def draw_hdmap_in_camera_view(image,points,camera_intrinsics,imsize,neighbors,render_behind_cam=True):
+    near_plane = 1e-8
+    depths = points[2,:]
+    behind = depths < near_plane
+    if np.all(behind):
+        return
+    # if render_behind_cam:
+    #     points = NuScenesMapExplorer._clip_points_behind_camera(points,near_plane)
+    if len(points) == 0 or points.shape[1]<2:
+        return
+    points = view_points(points,camera_intrinsics,normalize=True)
+    inside = np.ones(points.shape[1],dtype=bool)
+    inside = np.logical_and(inside,points[0,:]>1)
+    inside = np.logical_and(inside,points[0,:]<imsize[0]-1)
+    inside = np.logical_and(inside,points[1,:]>1)
+    inside = np.logical_and(inside,points[1,:]<imsize[1]-1)
+    points = points[:2].transpose(1,0).astype(np.int16)
+    for i in range(points.shape[0]):
+        if not inside[i]:
+            continue
+        for idx in neighbors[i]:
+            cv2.line(image,points[i],points[idx],color=(255,255,255),thickness=1)
+    return image
+
+
 
 def get_hdmap(sample_data_token:str,
               nusc:NuScenes,
@@ -625,7 +710,6 @@ def get_this_scene_info(dataset_dir,nusc:NuScenes,nusc_map:NuScenesMap,sample_to
         cam_front_img = mpimg.imread(cam_front_path)
         #mpimg.imsave(f'./temp/camera_front/{count:02d}.jpg',cam_front_img)
         imsize = (cam_front_img.shape[1],cam_front_img.shape[0])
-        print(imsize)
         cam_front_img = Image.fromarray(cam_front_img)
         cam_front_img = np.array(cam_front_img.resize(img_size))
 
@@ -995,6 +1079,7 @@ def get_bev_hdmap_front_view(sample_data_token:str,
     sd_record = nusc.get('sample_data',cam_front_token)
     pose_record = nusc.get('ego_pose',sd_record['ego_pose_token'])
     scale = width 
+    # get_hdmap(cam_front_token,nusc,nusc_map,outpath='test1.png')
     box_coords = (
         pose_record['translation'][0] - scale,
         pose_record['translation'][1] - scale,
@@ -1052,6 +1137,76 @@ def get_bev_hdmap_front_view(sample_data_token:str,
     # bev_hdmap[:,mask] = 0
     return bev_hdmap
 
+def get_bev_hdmap_bev_view(sample_data_token:str,
+                             nusc:NuScenes,
+                             nusc_map:NuScenesMap,
+                             width: int = 38.4,
+                             height: int = 38.4,
+                             img_size: tuple=(256,256),
+                             ):
+    sample_record = nusc.get('sample',sample_data_token)
+    cam_front_token = sample_record['data']['CAM_FRONT']
+    sd_record = nusc.get('sample_data',cam_front_token)
+    pose_record = nusc.get('ego_pose',sd_record['ego_pose_token'])
+    scale = width 
+    box_coords = (
+        pose_record['translation'][0] - scale,
+        pose_record['translation'][1] - scale,
+        pose_record['translation'][0] + scale,
+        pose_record['translation'][1] + scale,
+    )
+    layer_names = {'lane':0,'ped_crossing':1,'lane_divider':2}
+    records_in_patch = nusc_map.get_records_in_patch(box_coords,layer_names,mode='intersect')
+    dx,dy = img_size[0] / (2*width) , img_size[1] / (2*height)
+    bev_hdmap = np.zeros((3,img_size[0],img_size[1],3)).astype(np.uint8)
+    ypr_rad = Quaternion(pose_record['rotation']).yaw_pitch_roll
+    for layer_name in layer_names.keys():
+        for token in records_in_patch[layer_name]:
+            record = nusc_map.get(layer_name,token)
+            if layer_name == 'lane_divider':
+                line_token = record['line_token']
+                line = nusc_map.extract_line(line_token)
+                points = np.array(line.xy).copy()
+                # transform to ego pose coord
+                points_x = (points[0] - np.array(pose_record['translation'][0]))
+                points_y = (np.array(pose_record['translation'][1]) - points[1])
+                points = np.concatenate([points_x[:,np.newaxis],points_y[:,np.newaxis]],axis=1)
+                rotation_matrix = get_matrix_from_theta(ypr_rad[0])
+                points = np.dot(points,rotation_matrix.T)
+
+                # transform to cv coord
+                points_x = (-points[:,0]) * dx + img_size[0] // 2
+                points_y = (points[:,1]) * dy + img_size[1] // 2
+                points = np.concatenate([points_y[np.newaxis,:],points_x[np.newaxis,:]],axis=0)
+                points = points.astype(np.int16)
+                for i in range(len(points[0])-1):
+                    cv2.line(bev_hdmap[layer_names[layer_name]],points[:,i],points[:,i+1],color=(255,255,255),thickness=1)
+            else:
+                polygon_tokens = [record['polygon_token']]
+                for polygon_token in polygon_tokens:
+                    polygon = nusc_map.extract_polygon(polygon_token)
+                    points = np.array(polygon.exterior.xy).copy()
+                    # transform to ego pose coord
+                    points_x = (points[0] - np.array(pose_record['translation'][0]))
+                    points_y = (np.array(pose_record['translation'][1]) - points[1])
+                    points = np.concatenate([points_x[:,np.newaxis],points_y[:,np.newaxis]],axis=1)
+                    rotation_matrix = get_matrix_from_theta(ypr_rad[0])
+                    points = np.dot(points,rotation_matrix.T)
+
+                    # transform to cv coord
+                    points_x = (-points[:,0]) * dx + img_size[0] // 2
+                    points_y = (points[:,1]) * dy + img_size[1] // 2
+                    points = np.concatenate([points_y[np.newaxis,:],points_x[np.newaxis,:]],axis=0)
+                    points = points.astype(np.int32)
+                    points = points.T.reshape(-1,1,2)
+                    cv2.polylines(bev_hdmap[layer_names[layer_name]],[points],isClosed=True,color=(255,255,255),thickness=1)
+    # x_values,y_values = np.meshgrid(np.arange(img_size[0]),np.arange(img_size[1]))
+    # theta = np.arctan2((y_values - bev_hdmap.shape[1] // 2),(x_values + eps - bev_hdmap.shape[0] // 2))
+    # mask = ~np.logical_and((-90 - 35) / 180 * math.pi <= theta,theta<= (-90 + 35) / 180 * math.pi)
+    # bev_hdmap[:,mask] = 0
+    return bev_hdmap
+
+
 def get_bev_box_label(sample_data_token:str,
                            nusc:NuScenes,
                            nusc_map:NuScenesMap,
@@ -1080,18 +1235,29 @@ def get_bev_box_label(sample_data_token:str,
     yaw = Quaternion(pose_record['rotation']).yaw_pitch_roll[0]
     boxes = sorted(boxes,key=lambda x:calc_distance(x.center - np.array(pose_record['translation'])))
     count = 0
+    #get_3dbox(cam_front_token,nusc,(1600,900),out_path='test1.png')
     for box in boxes:
         name = box.name.split('.')[0]
         if not box.name.split('.')[0] in instance_label.keys():
             continue
         yaw = Quaternion(pose_record['rotation']).yaw_pitch_roll[0]
         box.translate(-np.array(pose_record['translation']))
+        corners = box.corners()
+        box_copy = copy.deepcopy(box)
         box.rotate(Quaternion(scalar=np.cos(yaw / 2), vector=[0, 0, np.sin(yaw / 2)]).inverse)
         corner = box.corners()
         x_min,x_max,y_min,y_max = corner[0].min(),corner[0].max(),corner[1].min(),corner[1].max()
         x_min,x_max = int(((-x_min) * dx + img_size[0] // 2)),int(((-x_max) * dx + img_size[0] // 2))
         y_min,y_max = int(((-y_min) * dy + img_size[1] // 2)),int(((-y_max) * dy + img_size[1] // 2))
         y_min,y_max,x_min,x_max = np.clip(y_min,0,img_size[0]-1),np.clip(y_max,0,img_size[0]-1),np.clip(x_min,0,img_size[0]-1),np.clip(x_max,0,img_size[0]-1)
+        # if x_max == 8:
+        #     print(corners)
+        #     box_copy.rotate(Quaternion(pose_record['rotation']).inverse)
+        #     box_copy.translate(-np.array(cs_record['translation']))
+        #     box_copy.rotate(Quaternion(cs_record['rotation']).inverse)
+        #     print("camera coordinate box corner:")
+        #     print(view_points(box_copy.corners(),np.array(cs_record['camera_intrinsic']),normalize=True))
+            # print(box_copy.corners())
         if count < 50:
             bev_instance_label[count,x_max:x_min,y_max:y_min] = instance_label[name]
         bev_box[instance_label[name],x_max:x_min,y_max:y_min] = 255
@@ -1637,6 +1803,92 @@ def get_global_pose(sample_token,nusc,inverse=False):
         ego_from_global = transform_matrix(sd_egopose['translation'],Quaternion(sd_egopose['rotation']),inverse=True)
         pose = sensor_from_ego.dot(ego_from_global)
     return pose
+
+def rotation_6d_to_quaternion(d6:torch.Tensor) -> torch.Tensor:
+    # b,s,d = d6.shape
+    # rotation_matrix = rotation_6d_to_matrix(d6)
+    # print(rotation_matrix.dtype)
+    # Q = torch.zeros((b,s,4))
+    # for i in range(b):
+    #     for j in range(s):
+    #         QQ = Quaternion._from_matrix(rotation_matrix[i][j])
+    #         Q[i][j] = torch.tensor([QQ.w,QQ.x,QQ.y,QQ.z])
+    # Q = Q.to(d6.device)
+    # return Q
+    rotation_matrix = rotation_6d_to_matrix(d6)
+    b,s,d = d6.shape
+    w = torch.sqrt(1 + rotation_matrix[...,0,0] + rotation_matrix[...,1,1] + rotation_matrix[...,2,2]) / 2
+    x = (rotation_matrix[...,2,1] - rotation_matrix[...,1,2]) / (4 * w)
+    y = (rotation_matrix[...,0,2] - rotation_matrix[...,2,0]) / (4 * w)
+    z = (rotation_matrix[...,1,0] - rotation_matrix[...,0,1]) / (4 * w)
+    Q = torch.stack([w,x,y,z],dim=-1)
+    return Q
+
+def get_instance_label_from_birdview_label(birdview_label:torch.Tensor) -> torch.Tensor:
+    bev_labels = birdview_label.detach().cpu().numpy()
+    instance_mask = (bev_labels == 1) | (bev_labels == 2).astype(np.bool_)
+    instance_label,_ = scipy.ndimage.label(instance_mask.astype(np.int64))
+    instance_label = torch.from_numpy(instance_label[:,0])
+    return instance_label
+
+
+def rotation_6d_to_matrix(d6:torch.Tensor) -> torch.Tensor:
+    """
+    Converts 6D rotation representation by Zhou et al. [1] to rotation matrix
+    using Gram--Schmidt orthogonalization per Section B of [1].
+    Args:
+        d6: 6D rotation representation, of size (*, 6)
+
+    Returns:
+        batch of rotation matrices of size (*, 3, 3)
+
+    [1] Zhou, Y., Barnes, C., Lu, J., Yang, J., & Li, H.
+    On the Continuity of Rotation Representations in Neural Networks.
+    IEEE Conference on Computer Vision and Pattern Recognition, 2019.
+    Retrieved from http://arxiv.org/abs/1812.07035
+    """
+
+    a1, a2 = d6[..., :3], d6[..., 3:]
+    b1 = F.normalize(a1, dim=-1)
+    b2 = a2 - (b1 * a2).sum(-1, keepdim=True) * b1
+    b2 = F.normalize(b2, dim=-1)
+    b3 = torch.cross(b1, b2, dim=-1)
+    return torch.stack((b1, b2, b3), dim=-2)
+
+# def rotation_6d_to_matrix(d6: torch.Tensor) -> np.ndarray:
+#     """
+#     Converts 6D rotation representation by Zhou et al. [1] to rotation matrix
+#     using Gram--Schmidt orthogonalization and ensures orthogonality via SVD.
+#     Args:
+#         d6: 6D rotation representation, of shape (*, 6)
+
+#     Returns:
+#         batch of rotation matrices of shape (*, 3, 3)
+#     """
+#     # Split the 6D vector into two 3D vectors
+#     d6 = d6.cpu().numpy()
+#     a1, a2 = d6[..., :3], d6[..., 3:]
+
+#     # Normalize the first vector
+#     b1 = a1 / np.linalg.norm(a1, axis=-1, keepdims=True)
+
+#     # Compute the second vector orthogonal to the first
+#     dot_product = np.sum(b1 * a2, axis=-1, keepdims=True)
+#     b2 = a2 - dot_product * b1
+#     b2 = b2 / np.linalg.norm(b2, axis=-1, keepdims=True)
+
+#     # Compute the third vector as the cross product of b1 and b2
+#     b3 = np.cross(b1, b2, axis=-1)
+
+#     # Stack the vectors to form the rotation matrix
+#     rotation_matrix = np.stack((b1, b2, b3), axis=-2)
+
+#     # Ensure orthogonality using SVD
+#     u, _, vh = np.linalg.svd(rotation_matrix)
+#     rotation_matrix = np.matmul(u, vh)
+
+#     return rotation_matrix
+
 
 def matrix_to_rotation_6d(matrix:torch.Tensor) -> torch.Tensor:
     """

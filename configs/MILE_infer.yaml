@@ -39,6 +39,7 @@ model:
             RESOLUTION: 0.2 #TODO: modify bev resolution
             OFFSET_FORWARD: 0 # offset of the center of gravity of the egocar relative to the center of bev in px
             FEATURE_DOWNSAMPLE: 4 # Downsample factor for bev features
+            N_CAMERAS: 1
             FRUSTUM_POOL:
               D_BOUND: [1.0,38.0,1.0]
               SPARSE: True
@@ -160,6 +161,7 @@ model:
         RESOLUTION: 0.2 #TODO: modify bev resolution
         OFFSET_FORWARD: 0 # offset of the center of gravity of the egocar relative to the center of bev in px
         FEATURE_DOWNSAMPLE: 4 # Downsample factor for bev features
+        N_CAMERAS: 1
         FRUSTUM_POOL:
           D_BOUND: [1.0,38.0,1.0]
           SPARSE: True

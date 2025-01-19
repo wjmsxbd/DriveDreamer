@@ -1,0 +1,473 @@
+import sys
+sys.path.append('.')
+sys.path.append('..')
+sys.path.append('...')
+import scipy.ndimage
+import torch
+import numpy as np
+from torch.utils import data
+import glob
+import pickle
+import os
+import torch.utils
+import torch.utils.data
+from omegaconf import DictConfig
+from nuscenes.utils.splits import create_splits_scenes
+from nuscenes.utils.data_classes import LidarPointCloud,Box
+from nuscenes.utils.geometry_utils import view_points,box_in_image
+from nuscenes.map_expansion.map_api import NuScenesMap,NuScenesMapExplorer
+from pyquaternion import Quaternion
+from nuscenes.nuscenes import NuScenes
+from torch.utils import data
+from utils.tools import get_this_scene_info,get_this_scene_info_with_lidar,get_global_pose,quaternion_to_matrix,matrix_to_rotation_6d,get_bev_box_label,get_bev_hdmap_front_view,get_this_scene_info_with_lidar_MV
+from ldm.util import instantiate_from_config
+import matplotlib.image as mpimg
+from nuscenes.eval.common.utils import quaternion_yaw
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from einops import repeat
+import omegaconf
+from PIL import Image
+from nuscenes.can_bus.can_bus_api import NuScenesCanBus
+import time
+import math
+import imageio
+try:
+    import moxing as mox
+
+    mox.file.shift('os', 'mox')
+except:
+    pass
+
+from einops import rearrange,repeat
+from tqdm import tqdm
+import copy
+import scipy
+
+def to_tensor(x:list):
+    return torch.tensor(x)
+class dataloader(data.Dataset):
+    def __init__(self,cfg,num_boxes,movie_len,sigma_sampler_config,split_name='train',return_pose_info=False,collect_condition=None):
+        self.split_name = split_name
+        self.cfg = cfg
+        self.nusc = NuScenes(version=cfg['version'],dataroot=cfg['dataroot'],verbose=True)
+        self.movie_len = movie_len
+        self.num_boxes = num_boxes
+        nusc_canbus_frequency = cfg['nusc_canbus_frequency']
+        camera_frequency = cfg['camera_frequency']
+        self.num_cameras = cfg['num_cameras']
+        if self.num_cameras == 1:
+            self.ORI_ORDER = [
+                "CAM_FRONT"
+            ]
+        else:
+            self.ORI_ORDER = [
+                "CAM_FRONT",
+                "CAM_FRONT_RIGHT",
+                "CAM_FRONT_LEFT",
+                "CAM_BACK",
+                "CAM_BACK_LEFT",
+                "CAM_BACK_RIGHT",
+            ]
+        ailgn_frequency = math.gcd(nusc_canbus_frequency,camera_frequency)
+        self.nusc_canbus_frequecy = nusc_canbus_frequency // ailgn_frequency
+        self.camera_frequency = camera_frequency // ailgn_frequency
+        self.sigma_sampler = instantiate_from_config(sigma_sampler_config)
+        self.nusc_maps = {
+            'boston-seaport': NuScenesMap(dataroot='.', map_name='boston-seaport'),
+            'singapore-hollandvillage': NuScenesMap(dataroot='.', map_name='singapore-hollandvillage'),
+            'singapore-onenorth': NuScenesMap(dataroot='.', map_name='singapore-onenorth'),
+            'singapore-queenstown': NuScenesMap(dataroot='.', map_name='singapore-queenstown'),
+        }
+        self.nusc_can = NuScenesCanBus(dataroot='/storage/group/4dvlab/datasets/nuScenes')
+        self.return_pose_info = return_pose_info
+        self.collect_condition = collect_condition
+        self.observe_category = ['background','human','vehicle']
+        self.instance_label = {}
+        instance_id = 0
+        self.sigmas = None
+        for category in self.observe_category:
+            self.instance_label[category] = instance_id
+            instance_id += 1
+        
+        self.load_data_infos()
+    
+    def check_idx_is_first_frame(self,idx):
+        return idx==0 or self.scenes[idx] != self.scenes[idx-1]
+
+    def load_data_infos(self):
+        data_info_path = os.path.join(self.cfg['dataroot'],f"nuScenes_advanced_infos_{self.split_name}.pkl")
+        with open(data_info_path,'rb') as f:
+            data_infos = pickle.load(f)
+        data_infos = data_infos['infos']
+        pic_infos = {}
+        video_infos = {}
+        for id in range(len(data_infos)):
+            sample_token = data_infos[id]['token']
+            scene_token = self.nusc.get("sample",sample_token)['scene_token']
+            scene = self.nusc.get("scene",scene_token)
+            if not scene['name'] in pic_infos.keys():
+                pic_infos[scene['name']] = [data_infos[id]]
+            else:
+                pic_infos[scene['name']].append(data_infos[id])
+        idx = 0
+        action_infos = {}
+        scenes_id = 0
+        scenes = []
+        first_frame_idx = []
+        first_idx = 0
+        for key,value in pic_infos.items():
+            scene_id = int(key[-4:])
+            if scene_id in self.nusc_can.can_blacklist:
+                continue
+            if self.camera_frequency == 1:
+                pose = self.nusc_can.get_messages(key,'pose')[::self.nusc_canbus_frequecy]
+                value = list(sorted(value,key=lambda e:e['timestamp']))
+                frames = torch.arange(len(value)).to(torch.long)[::self.camera_frequency]
+                pose_len = len(pose)
+                frame_len = len(frames)
+                common_len = min(pose_len,frame_len)
+                pose = pose[:common_len]
+                frames = frames[:common_len]
+                first_idx = idx
+                for frame in frames:
+                    video_infos[idx] = value[frame]
+                    action_infos[idx] = torch.cat([to_tensor(pose[frame]['vel']),to_tensor(pose[frame]['accel']),matrix_to_rotation_6d(quaternion_to_matrix(to_tensor(pose[frame]['orientation'])))],dim=-1)
+                    scenes.append(scenes_id)
+                    first_frame_idx.append(first_idx)
+                    idx += 1
+                scenes_id += 1
+            elif self.camera_frequency == 6:
+                camera_frequency,nusc_canbus_frequecy = self.camera_frequency * 2,self.nusc_canbus_frequecy * 2
+                pose = self.nusc_can.get_messages(key,'pose')
+                can_bus_frames = torch.arange(len(pose)).to(torch.float16)
+                can_bus_frames = can_bus_frames / nusc_canbus_frequecy
+                value = sorted(value,key=lambda e:e['timestamp'])
+                camera_frames = torch.arange(len(value)).to(torch.float16) / camera_frequency
+                select_can_bus_frames = []
+                pos = 0
+                for i in range(len(camera_frames)):
+                    while pos < len(can_bus_frames) and can_bus_frames[pos] <= camera_frames[i]:
+                        pos += 1
+                    select_can_bus_frames.append(pos-1)
+                frames = torch.arange(len(value))
+                first_idx = idx
+                for frame in frames:
+                    video_infos[idx] = value[frame]
+                    action_infos[idx] = torch.cat([to_tensor(pose[select_can_bus_frames[frame]]['vel']),to_tensor(pose[select_can_bus_frames[frame]]['accel']),matrix_to_rotation_6d(quaternion_to_matrix(to_tensor(pose[select_can_bus_frames[frame]]['orientation'])))],dim=-1)
+                    scenes.append(scenes_id)
+                    first_frame_idx.append(first_idx)
+                    idx += 1
+                scenes_id += 1
+            else:
+                raise NotImplementedError
+        self.video_infos = video_infos
+        self.action_infos = action_infos
+        self.scenes = np.array(scenes)
+        self.first_frame_idx = first_frame_idx
+        
+    def __len__(self):
+        return len(self.video_infos)
+
+    def __getitem__(self,idx):
+        if isinstance(idx,list):
+            data = []
+            if self.sigmas is None:
+                self.sigmas = self.sigma_sampler(len(idx))
+            else:
+                for i in range(len(idx)):
+                    if self.check_idx_is_first_frame(idx[i]):
+                        self.sigmas[i] = self.sigma_sampler(1)
+            for i in range(len(idx)):
+                data.append(self.get_data_info(idx[i],i))
+            return data
+        else:
+            if self.sigmas is None:
+                self.sigmas = self.sigma_sampler(1)
+            return self.get_data_info(idx,0)
+    
+    # def get_cam_image_from_sample_token(self,sample_token,img_size,):
+    #     sample_record = self.nusc.get('sample',sample_token)
+    #     cam_front_token = sample_record['data']['CAM_FRONT']
+    #     cam = self.nusc.get('sample_data',cam_front_token)
+    #     cs_record = self.nusc.get('calibrated_sensor',cam['calibrated_sensor_token'])
+    #     camera_intrinsic = np.array(cs_record['camera_intrinsic'])
+
+    #     imsize = (cam['width'],cam['height'])
+
+    #     cam_front_path = cam['filename']
+    #     cam_front_path = os.path.join(self.cfg['dataroot'],cam_front_path)
+    #     cam_front_img = mpimg.imread(cam_front_path)
+    #     cam_front_img = Image.fromarray(cam_front_img)
+    #     cam_front_img = cam_front_img.resize(img_size)
+    #     cam_front_img = np.array(cam_front_img)
+    #     cam_front_img = torch.from_numpy(cam_front_img).to(torch.float32)
+    #     cam_front_img = rearrange(cam_front_img,'h w c -> c h w').contiguous()
+    #     camera_intrinsic = torch.from_numpy(camera_intrinsic).to(torch.float32)
+    #     #TODO: cancel
+    #     # camera_intrinsic[0] = (img_size[0] / imsize[0]) * camera_intrinsic[0]
+    #     # camera_intrinsic[1] = (img_size[1] / imsize[1]) * camera_intrinsic[1]
+    #     return cam_front_img,camera_intrinsic
+
+
+    def get_cam2ego_matrix(self,sample_token):
+        MV_cam2ego = []
+        MV_global2ego = []
+        for view in self.ORI_ORDER:
+            sample_record = self.nusc.get('sample',sample_token)
+            cam_front_token = sample_record['data'][view]
+            cam = self.nusc.get('sample_data',cam_front_token)
+            pose_record = self.nusc.get('ego_pose',cam['ego_pose_token'])
+            global2ego = torch.zeros((4)).to(torch.float32)
+            global2ego = torch.tensor(pose_record['rotation'],dtype=torch.float32)
+            cs_record = self.nusc.get('calibrated_sensor',cam['calibrated_sensor_token'])
+            cam2ego = torch.zeros((4,4)).to(torch.float32)
+            cam2ego[:3,:3] = torch.from_numpy(Quaternion(np.array(cs_record['rotation'])).rotation_matrix.reshape(3,3))
+            cam2ego[:3,3:] = torch.from_numpy(np.array(cs_record['translation']).reshape(3,1))
+            MV_cam2ego.append(cam2ego)
+            MV_global2ego.append(global2ego)
+        MV_global2ego = torch.stack(MV_global2ego,dim=0)
+        MV_cam2ego = torch.stack(MV_cam2ego,dim=0)
+        return MV_cam2ego,MV_global2ego
+
+    def calculate_birdview_labels(self,bev_hdmap,bev_box):
+        birdview = torch.cat([bev_box,bev_hdmap],dim=0)
+        # birdview = bev_box
+        birdview_labels = torch.argmax(birdview,dim=0).to(torch.long)
+        birdview_labels = birdview_labels[None]
+        return birdview_labels
+    
+    def get_map_label(self,bev_hdmap):
+        background_mask = (bev_hdmap == 0)
+        background = torch.ones_like(background_mask) * background_mask * 127
+        bev_hdmap = torch.cat([background,bev_hdmap],dim=0)
+        map_label = torch.argmax(bev_hdmap,dim=0).to(torch.long)
+        map_label = map_label[None]
+        return map_label
+    
+    def crop_image(self,image,center_x,center_y,size):
+        x_min = int(center_x - size)
+        x_max = int(center_x + size)
+        y_min = int(center_y - size * 2)
+        y_max = int(center_y )
+        crop_image = image[:,y_min:y_max,x_min:x_max].copy()
+        return crop_image
+
+    def get_cam_image_from_sample_token(self,sample_token,img_size,):
+        cam_MVImage  = []
+        cam_MVIntrinsics = []
+        for view in self.ORI_ORDER:
+            sample_record = self.nusc.get('sample',sample_token)
+            cam_front_token = sample_record['data'][view]
+            cam = self.nusc.get('sample_data',cam_front_token)
+            cs_record = self.nusc.get('calibrated_sensor',cam['calibrated_sensor_token'])
+            camera_intrinsic = np.array(cs_record['camera_intrinsic'])
+            cam_front_path = cam['filename']
+            imsize = (cam['width'],cam['height'])
+            cam_front_path = os.path.join(self.cfg['dataroot'],cam_front_path)
+            cam_front_img = mpimg.imread(cam_front_path)
+            cam_front_img = Image.fromarray(cam_front_img)
+            cam_front_img = cam_front_img.resize(img_size)
+            cam_front_img = np.array(cam_front_img)
+            cam_front_img = torch.from_numpy(cam_front_img / 255. * 2 - 1.).to(torch.float32)
+            camera_intrinsic[0] = (img_size[0] / imsize[0]) * camera_intrinsic[0]
+            camera_intrinsic[1] = (img_size[1] / imsize[1]) * camera_intrinsic[1]
+            cam_MVIntrinsics.append(torch.from_numpy(camera_intrinsic))
+            cam_MVImage.append(cam_front_img)
+        cam_MVImage = torch.stack(cam_MVImage, dim=0)
+        cam_MVImage = rearrange(cam_MVImage,'n h w c -> n c h w').contiguous()
+        cam_MVIntrinsics = torch.stack(cam_MVIntrinsics,dim=0)
+        return cam_MVImage,cam_MVIntrinsics
+
+    def get_data_info(self,idx,list_idx):
+        video_info = self.video_infos[idx]
+        actions = self.action_infos[idx]
+        out = {}
+        out['idx'] = idx
+        out['sigmas'] = self.sigmas[list_idx]
+        out['first_frame'] = ([1] if idx == 0 or self.scenes[idx] != self.scenes[idx-1] else [0])
+        out['3Dbox'] = []
+        out['vel'] = torch.zeros((1,3))
+        out['accel'] = torch.zeros((1,3))
+        out['orientation'] = torch.zeros((1,6))
+        out['intrinsics'] = torch.zeros((1,self.num_cameras,3,3))
+        out['route_map'] = torch.zeros((1,3,self.cfg['hdmap_size'][1],self.cfg['hdmap_size'][0]))
+        out['instance_label'] = torch.zeros((1,self.cfg['hdmap_size'][1],self.cfg['hdmap_size'][0]))
+        out['birdview_label'] = torch.zeros((1,1,self.cfg['hdmap_size'][1],self.cfg['hdmap_size'][0])).to(torch.long)
+        out['global2ego'] = torch.zeros((1,self.num_cameras,4))
+        out['ego2cam'] = torch.zeros((1,self.num_cameras,4,4))
+        if self.num_cameras == 1:
+            out['HDmap'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+            out['image'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+            out['cond_frames'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+            out['clip_first_frame'] = torch.zeros((3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+        else:
+            out['HDmap'] = torch.zeros((self.num_cameras,3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+            out['image'] = torch.zeros((self.num_cameras,3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+            out['cond_frames'] = torch.zeros((self.num_cameras,3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+            out['clip_first_frame'] = torch.zeros((self.num_cameras,3,self.cfg['img_size'][1],self.cfg['img_size'][0]))
+        
+        for i in range(self.movie_len):
+            action = actions
+            out['vel'][i] = action[:3]
+            out['accel'][i] = action[3:6]
+            out['orientation'][i] = action[6:]
+            sample_token = video_info['token']
+            out['scene_token'] = sample_token
+            scene_token = self.nusc.get('sample',sample_token)['scene_token']
+            scene = self.nusc.get('scene',scene_token)
+            log_token = scene['log_token']
+            log = self.nusc.get('log',log_token)
+            nusc_map = self.nusc_maps[log['location']]
+
+            if self.num_cameras == 1:
+                collect_data = get_this_scene_info_with_lidar(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=False,collect_data=self.collect_condition)
+                img = collect_data['reference_image'][:,:,:3].copy()
+                img = torch.from_numpy(img / 255. * 2 - 1.).to(torch.float32)
+                out['image'] = rearrange(img,'h w c -> c h w').contiguous()
+                hdmap = collect_data['HDmap'][:,:,:3].copy()
+                hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
+                out['HDmap'] = rearrange(hdmap,'h w c -> c h w').contiguous()
+                boxes = collect_data['3Dbox']
+                category = collect_data['category']
+                boxes = np.array(boxes).astype(np.float32)
+                if boxes.shape[0] == 0:
+                    box_text = ["None" for i in range(self.num_boxes)]
+                elif boxes.shape[0] < self.num_boxes:
+                    zero_len = self.num_boxes - boxes.shape[0]
+                    box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])]
+                    for __ in range(zero_len):
+                        box_text.append('None')
+                else:
+                    boxes = boxes[:self.num_boxes]
+                    category = category[:self.num_boxes]
+                    box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])] 
+                out['3Dbox'] = box_text
+            else:
+                collect_data = get_this_scene_info_with_lidar_MV(self.cfg['dataroot'],self.nusc,nusc_map,sample_token,tuple(self.cfg['img_size']),return_camera_info=False,collect_data=self.collect_condition)
+                img = collect_data['reference_image'][:,:,:,:3].copy()
+                img = torch.from_numpy(img / 255. * 2 - 1.).to(torch.float32)
+                out['image'] = rearrange(img,'n h w c -> n c h w').contiguous()
+                hdmap = collect_data['HDmap'][:,:,:,:3].copy()
+                hdmap = torch.from_numpy(hdmap / 255. * 2 - 1.).to(torch.float32)
+                out['HDmap'] = rearrange(hdmap,'n h w c -> n c h w').contiguous()
+                boxes_list = collect_data['3Dbox']
+                category_list = collect_data['category']
+                for camera in range(self.num_cameras):
+                    boxes = boxes_list[camera]
+                    category = category_list[camera]
+                    if boxes.shape[0] == 0:
+                        box_text = ["None" for i in range(self.num_boxes)]
+                    elif boxes.shape[0] < self.num_boxes:
+                        zero_len = self.num_boxes - boxes.shape[0]
+                        box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])]
+                        for __ in range(zero_len):
+                            box_text.append('None')
+                    else:
+                        boxes = boxes[:self.num_boxes]
+                        category = category[:self.num_boxes]
+                        box_text = [f"There is a annotation about {category[i]},the center of callout box is ({np.mean(boxes[i][:8]):.2f},{np.mean(boxes[i][8:]):.2f})" for i in range(boxes.shape[0])] 
+                    out['3Dbox'].append(box_text)
+            
+            if out['first_frame'][0] == 1:
+                out['cond_frames'] = out['image']
+                out['clip_first_frame'] = out['image']
+            else:
+                sample_token = self.video_infos[idx-1]['token']
+                if self.num_cameras == 1:
+                    out['cond_frames'] = self.get_cam_image_from_sample_token(sample_token,tuple(self.cfg['img_size']))[0][0]
+                    sample_token = self.video_infos[self.first_frame_idx[idx]]['token']
+                    out['clip_first_frame'] = self.get_cam_image_from_sample_token(sample_token,tuple(self.cfg['img_size']))[0][0]
+                else :
+                    out['cond_frames'],_ = self.get_cam_image_from_sample_token(sample_token,tuple(self.cfg['img_size']))
+                    sample_token = self.video_infos[self.first_frame_idx[idx]]['token']
+                    out['clip_first_frame'],_ = self.get_cam_image_from_sample_token(sample_token,tuple(self.cfg['img_size']))
+
+            image,intrinsics = self.get_cam_image_from_sample_token(sample_token,tuple(self.cfg['img_size']))
+            out['intrinsics'][i] = intrinsics
+            out['ego2cam'][i],out['global2ego'][i] = self.get_cam2ego_matrix(sample_token)
+            bev_hdmap = get_bev_hdmap_front_view(sample_token,self.nusc,nusc_map,width=76.8,height=76.8,img_size=(self.cfg['hdmap_size'][0]*2,self.cfg['hdmap_size'][1]*2))
+            bev_hdmap = bev_hdmap[:,:,:,0].copy()
+            bev_hdmap = self.crop_image(bev_hdmap,self.cfg['hdmap_size'][1],self.cfg['hdmap_size'][0],self.cfg['hdmap_size'][0]//2)
+            bev_hdmap = torch.from_numpy(bev_hdmap).to(torch.float32)
+            __,bev_box = get_bev_box_label(sample_token,self.nusc,nusc_map,width=76.8,height=76.8,img_size=(self.cfg['hdmap_size'][0]*2,self.cfg['hdmap_size'][1]*2),instance_label=self.instance_label)
+            
+            
+            bev_box = self.crop_image(bev_box,self.cfg['hdmap_size'][1],self.cfg['hdmap_size'][0],self.cfg['hdmap_size'][0]//2)
+            
+            instance_mask = bev_box[1].copy().astype(np.bool) | bev_box[2].astype(np.bool)
+            instance_label,_ = scipy.ndimage.label(instance_mask.astype(np.int64))
+            instance_label = torch.from_numpy(instance_label)
+            bev_box = torch.from_numpy(bev_box).to(torch.float32)
+            bev_labels = self.calculate_birdview_labels(bev_hdmap,bev_box)
+            out['route_map'][i] = bev_hdmap
+            out['instance_label'][i] = instance_label
+            out['birdview_label'][i] = bev_labels
+        
+        return out
+
+def collate_fn(batch):
+    out = {}
+    for i in range(len(batch)):
+        for key,value in batch[i].items():
+            if isinstance(value,torch.Tensor):
+                if not key in out.keys():
+                    out[key] = value.unsqueeze(0)
+                else:
+                    out[key] = torch.concat([out[key],value.unsqueeze(0)],dim=0)
+            elif isinstance(value,list):
+                if not key in out.keys():
+                    out[key] = []
+                    out[key].append(value)
+                else:
+                    out[key].append(value)
+            elif isinstance(value,dict):
+                out[key] = {}
+                for k in value.keys():
+                    if isinstance(value[k],list):
+                        if not k in out[key].keys():
+                            out[key][k] = []
+                            out[key][k].append(value)
+                        else:
+                            out[key][k].append(value)
+                    else:
+                        raise NotImplementedError
+            else:
+                raise NotImplementedError
+    return out
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description='AutoDM-training')
+    parser.add_argument('--config',
+                        default='configs/MILE.yaml',
+                        type=str,
+                        help="config path")
+    parser.add_argument('--video',
+                        action='store_true',
+                        help="use video evaluation")
+    parser.add_argument('--train',
+                        action='store_true',
+                        help="train")
+    parser.add_argument('--device',
+                        default='cpu',
+                        type=str,
+                        help="device")
+    cmd_args = parser.parse_args()
+    cfg = omegaconf.OmegaConf.load(cmd_args.config)
+    video_eval = cmd_args.video
+    device = cmd_args.device
+    use_train = cmd_args.train
+    if use_train:
+        data_loader = dataloader(**cfg.data.params.train.params)
+    else:
+        data_loader = dataloader(**cfg.data.params.validation.params)
+    batch_size = 2
+    data_loader_ = torch.utils.data.DataLoader(
+        data_loader,
+        batch_size  =   batch_size,
+        num_workers =   0,
+        collate_fn=collate_fn
+    )            
+
+    for _,batch in tqdm(enumerate(data_loader_)):
+        pass

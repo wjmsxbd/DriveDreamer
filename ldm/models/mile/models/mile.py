@@ -26,7 +26,7 @@ class Mile(nn.Module):
             feature_info = self.encoder.feature_info.get_dicts(keys=['num_chs', 'reduction'])
 
         self.feat_decoder = Decoder(feature_info,cfg['MODEL']['ENCODER']['OUT_CHANNELS'])
-
+        self.num_cameras = cfg['BEV']['N_CAMERAS']
         if not cfg['EVAL']['NO_LIFTING']:
             # Frustum pooling
             bev_downsample = cfg['BEV']['FEATURE_DOWNSAMPLE']
@@ -35,7 +35,8 @@ class Mile(nn.Module):
                 scale=cfg['BEV']['RESOLUTION'] * bev_downsample,
                 offsetx=cfg['BEV']['OFFSET_FORWARD'] / bev_downsample,
                 dbound=cfg['BEV']['FRUSTUM_POOL']['D_BOUND'],
-                downsample=8
+                downsample=8,
+                num_cameras=self.num_cameras
             )
             # mono depth head
             self.depth_decoder = Decoder(feature_info,self.cfg['MODEL']['ENCODER']['OUT_CHANNELS'])
@@ -148,7 +149,7 @@ class Mile(nn.Module):
         if self.cfg['MODEL']['TRANSITION']['ENABLED']:
             # Recurrent state sequence module
             if deployment:
-                action = batch['action']
+                action = torch.cat([batch['vel'],batch['accel'],batch['orientation']],dim=-1)
             else:
                 action = torch.cat([batch['vel'],batch['accel'],batch['orientation']],dim=-1)
             state_dict = self.rssm(embedding,action,use_sample=not deployment,policy=self.policy)
@@ -191,9 +192,16 @@ class Mile(nn.Module):
         image = pack_sequence_dim(batch['image'])
         speed = pack_sequence_dim(batch['vel'])
         intrinsics = pack_sequence_dim(batch['intrinsics'])
-        extrinsics = pack_sequence_dim(batch['extrinsics'])
-
+        extrinsics = pack_sequence_dim(batch['ego2cam'])
         # Image encoder, multiscale
+        if len(image.shape) == 5:
+            bs,n_cameras,c,h,w = image.shape
+            assert n_cameras == self.num_cameras
+            image = image.view(bs*n_cameras,c,h,w)
+        # else:
+        #     bs,c,h,w = image.shape
+        #     n_cameras = self.num_cameras
+        #     bs = bs // self.num_cameras
         xs = self.encoder(image)
 
         # Lift features to bird's-eye view.
@@ -214,7 +222,7 @@ class Mile(nn.Module):
             x = (depth.unsqueeze(1) * x.unsqueeze(2)).type_as(x)  # outer product
 
             #  Add camera dimension
-            x = x.unsqueeze(1)
+            x = rearrange(x,'(b n) ... -> b n ...',b=bs,n=self.num_cameras)
             x = x.permute(0, 1, 3, 4, 5, 2)
 
             x = self.frustum_pooling(x, intrinsics.unsqueeze(1), extrinsics.unsqueeze(1), depth_mask)
@@ -342,6 +350,9 @@ class Mile(nn.Module):
 
         return output_imagine
     
+    def clear_cache(self):
+        self.last_h = None
+    
     def deployment_forward(self,batch,is_dreaming):
         """
         Keep latent states in memory for fast inference.
@@ -359,45 +370,35 @@ class Mile(nn.Module):
                     steering: (b, s, 1)
         """
         assert self.cfg['MODEL']['TRANSITION']['ENABLED']
-
-        b = batch['image'].shape[0]
-        if self.count == 0:
-            # Encode RGB images, route_map, speed using intrinsics and extrinsics
-            # to a 512 dimensional vector
-            s = batch['image'].shape[1]
-            action_t = batch['action'][:, -2]  # action from t-1 to t
-            batch = remove_past(batch, s)
-            embedding_t = self.encode(batch)[:, -1]  # dim (b, 1, 512)
-
-            # Recurrent state sequence module
+        b,s = batch['image'].shape[:2]
+        embedding_t = self.encode(batch)[:,0]
+        output = dict()
+        action_t = torch.cat([batch['vel'],batch['accel'],batch['orientation']],dim=-1)[:,0]
+        if not is_dreaming:
+            action_t = torch.zeros_like(action_t)
             if self.last_h is None:
                 h_t = action_t.new_zeros(b, self.cfg['MODEL']['TRANSITION']['HIDDEN_STATE_DIM'])
                 sample_t = action_t.new_zeros(b, self.cfg['MODEL']['TRANSITION']['STATE_DIM'])
             else:
                 h_t = self.last_h
                 sample_t = self.last_sample
-
-            if is_dreaming:
-                rssm_output = self.rssm.imagine_step(
-                    h_t, sample_t, action_t, use_sample=False, policy=self.policy,
-                )
-            else:
-                rssm_output = self.rssm.observe_step(
-                    h_t, sample_t, action_t, embedding_t, use_sample=False, policy=self.policy,
-                )['posterior']
-            sample_t = rssm_output['sample']
-            h_t = rssm_output['hidden_state']
-
-            self.last_h = h_t
-            self.last_sample = sample_t
-
-            game_frequency = CARLA_FPS
-            model_stride_sec = self.cfg.DATASET.STRIDE_SEC
-            n_image_per_stride = int(game_frequency * model_stride_sec)
-            self.count = n_image_per_stride - 1
+            rssm_output = self.rssm.observe_step(
+                h_t, sample_t, action_t, embedding_t, use_sample=True, policy=self.policy,
+            )
+            sample_t = rssm_output['posterior']['sample']
+            h_t = rssm_output['prior']['hidden_state']
         else:
-            self.count -= 1
-
+            h_t = self.last_h
+            sample_t = self.last_sample
+            rssm_output = self.rssm.observe_step(
+                h_t, sample_t, action_t,embedding_t, use_sample=True, policy=self.policy,
+            )
+            # sample_t = rssm_output['sample']
+            # h_t = rssm_output['hidden_state']
+            sample_t = rssm_output['posterior']['sample']
+            h_t = rssm_output['prior']['hidden_state']
+        self.last_h = h_t
+        self.last_sample = sample_t
         s = 1
         state = torch.cat([self.last_h, self.last_sample], dim=-1)
         output_policy = self.policy(state)
@@ -414,9 +415,57 @@ class Mile(nn.Module):
             bev_decoder_output = self.bev_decoder(state)
             bev_decoder_output = unpack_sequence_dim(bev_decoder_output, b, s)
             output = {**output, **bev_decoder_output}
-            # map_decoder_output = self.map_decoder(state)
-            # map_decoder_output = unpack_sequence_dim(map_decoder_output, b, s)
-            # output = {**output, **map_decoder_output}
+
+
+
+        # b = batch['image'].shape[0]
+        # # Encode RGB images, route_map, speed using intrinsics and extrinsics
+        # # to a 512 dimensional vector
+        # s = batch['image'].shape[1]
+
+        # action_t = torch.cat([batch['vel'],batch['accel'],batch['orientation']],dim=-1)[:,0]
+        # # action_t = batch['action'][:, -2]  # action from t-1 to t
+        # embedding_t = self.encode(batch)[:, 0]  # dim (b, 1, 512)
+
+        # # Recurrent state sequence module
+        # if self.last_h is None:
+        #     h_t = action_t.new_zeros(b, self.cfg['MODEL']['TRANSITION']['HIDDEN_STATE_DIM'])
+        #     sample_t = action_t.new_zeros(b, self.cfg['MODEL']['TRANSITION']['STATE_DIM'])
+        # else:
+        #     h_t = self.last_h
+        #     sample_t = self.last_sample
+
+        # if is_dreaming:
+        #     rssm_output = self.rssm.imagine_step(
+        #         h_t, sample_t, action_t, use_sample=False, policy=self.policy,
+        #     )
+        # else:
+        #     rssm_output = self.rssm.observe_step(
+        #         h_t, sample_t, action_t, embedding_t, use_sample=False, policy=self.policy,
+        #     )['posterior']
+        # sample_t = rssm_output['sample']
+        # h_t = rssm_output['hidden_state']
+
+        # self.last_h = h_t
+        # self.last_sample = sample_t
+
+
+        # s = 1
+        # state = torch.cat([self.last_h, self.last_sample], dim=-1)
+        # output_policy = self.policy(state)
+        # vel,accel,orientation = output_policy[...,:3],output_policy[...,3:6],output_policy[...,6:]
+        # output = dict()
+        # output['vel'] = unpack_sequence_dim(vel,b,s)
+        # output['accel'] = unpack_sequence_dim(accel,b,s)
+        # output['orientation'] = unpack_sequence_dim(orientation,b,s)
+
+        # output['hidden_state'] = self.last_h
+        # output['sample'] = self.last_sample
+
+        # if self.cfg['SEMANTIC_SEG']['ENABLED'] and DISPLAY_SEGMENTATION:
+        #     bev_decoder_output = self.bev_decoder(state)
+        #     bev_decoder_output = unpack_sequence_dim(bev_decoder_output, b, s)
+        #     output = {**output, **bev_decoder_output}
 
         return output
 

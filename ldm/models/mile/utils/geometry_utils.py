@@ -14,6 +14,13 @@ def bev_params_to_intrinsics(size,scale,offsetx):
     ],dtype=np.float32)
     return intrinsics_bev
 
+def bev_6views_params_to_intrinsics(size,scale,offsetx,offsety):
+    intrinsics_bev = np.array([
+        [1/scale,0,size[0]/2+offsetx],
+        [0,-1/scale,size[1]/2+offsety],
+        [0,0,1]
+    ],dtype=np.float32)
+    return intrinsics_bev
 
 def intrinsics_inverse(intrinsics):
     fx = intrinsics[...,0,0]

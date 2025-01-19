@@ -36,6 +36,7 @@ from typing import Iterable,List,Union,Optional,Dict,Tuple
 import re
 import copy
 from PIL import Image
+from utils.tools import rotation_6d_to_quaternion,get_instance_label_from_birdview_label
 
 def disabled_train(self,mode=True):
     """Overwrite model.train with this function to make sure train/eval mode
@@ -494,7 +495,7 @@ class StreamingSD(pl.LightningModule):
     
 from ldm.models.diffusion.slow_fast_learning import FeatureCache2D
 class StreamingSDInferPipeLine(pl.LightningModule):
-    def __init__(self,model_config,num_steps,use_feature_cache=False):
+    def __init__(self,model_config,num_steps,use_feature_cache=False,use_mile=False,mile_config=None,RGB_SIZE=None):
         super().__init__()
         self.model = instantiate_from_config(model_config)
         self.use_feature_cache= use_feature_cache
@@ -502,6 +503,12 @@ class StreamingSDInferPipeLine(pl.LightningModule):
             self.feature_cache = FeatureCache2D(num_steps)
         self.cond_frames = None
         self.noise_cache = None
+        self.use_mile = use_mile
+        if self.use_mile:
+            self.mile = instantiate_from_config(mile_config)
+            self.mile_img_size = tuple(RGB_SIZE)
+            self.num_frame = 0
+            self.num_cameras = self.model.num_cameras
         
     def save_tensor_as_image(self,tensor,file_path,index,frame):
         if tensor.is_cuda:
@@ -605,13 +612,20 @@ class StreamingSDInferPipeLine(pl.LightningModule):
         self.model.set_model_init_feature(init_feature)
 
     def continue_infer(self,collate_latent,T,batch,first_frame_idx):
+        if T == 0:
+            return collate_latent
         last_frame = torch.stack([collate_latent[idx][-1] for idx in first_frame_idx],dim=0)
         cond_frame = last_frame.to(self.device)
         now_frame = len(collate_latent[first_frame_idx[0]])
+        mile_batch,sd_batch = self.split_batch(batch)
         for i in range(T):
+            self.get_observe_step_img(self.pre_mile_batch,self.cond_frames)
+            self.pre_mile_batch = {k:v.to(batch['image'].device) for k,v in self.pre_mile_batch.items() if isinstance(v,torch.Tensor)}
+            mile_output = self.mile.deployment_forward(self.pre_mile_batch,True)
+            self.replace_SD_condition(mile_output,sd_batch)
             sigmas = self.model.prepare_sigmas()
             num_sigmas = len(sigmas)
-            c,uc = self.model.get_unconditional_conditioning(batch)
+            c,uc = self.model.get_unconditional_conditioning(sd_batch)
             z = torch.randn_like(cond_frame).to(self.device)
             uc['concat'][:,:4] = cond_frame
             c = uc
@@ -625,6 +639,7 @@ class StreamingSDInferPipeLine(pl.LightningModule):
                 else:
                     z = self.model.infer_step(z,sigmas,i,c,uc)
             cond_frame = z
+            self.pre_mile_batch = self.merge_mile_data(mile_batch,mile_output)
             batch_index = 0
             for idx in first_frame_idx:
                 if now_frame == len(collate_latent[idx]):
@@ -666,16 +681,137 @@ class StreamingSDInferPipeLine(pl.LightningModule):
             self.model.shared_step(copy_batch)
             self.feature_cache.init_cache(self.model)
             
+    def split_batch(self,batch):
+        mile_batch = {}
+        sd_batch = {}
+        mile_keys = ['vel','accel','orientation','intrinsics','route_map','instance_label','global2ego','ego2cam','birdview_label']
+        for key in batch.keys():
+            if key in mile_keys:
+                mile_batch[key] = batch[key]
+            else:
+                sd_batch[key] = batch[key]
+        mile_batch['image'] = torch.zeros((batch['image'].shape[0],1,self.num_cameras,3,self.mile_img_size[1],self.mile_img_size[0])).to(batch['image'].device)
+        for i in range(batch['image'].shape[0]):
+            if self.num_cameras == 1:
+                image = batch['image'][i].detach().cpu().numpy()
+                image = (image + 1.) / 2. * 255.
+                image = image.astype(np.uint8)
+                image = image.transpose(1,2,0)
+                image = Image.fromarray(image)
+                image = image.resize(self.mile_img_size)
+                mile_batch['image'][i][0][0] = torch.from_numpy(np.array(image).transpose(2,0,1)).to(batch['image'].device)
+            else:
+                image = batch['image'][i][j].detach().cpu().numpy()
+                image = (image + 1.) / 2. * 255.
+                image = image.astype(np.uint8)
+                image = image.transpose(1,2,0)
+                image = Image.fromarray(image)
+                image = image.resize(self.mile_img_size)
+                mile_batch['image'][i][0][j] = torch.from_numpy(np.array(image).transpose(2,0,1)).to(batch['image'].device)
+        return mile_batch,sd_batch
+        
+    def replace_SD_condition(self,mile_output,sd_batch):
+        device = sd_batch['image'].device
+        sd_batch['3Dbox'] = mile_output['box_list']
+        sd_batch['hdmap'] = mile_output['hdmap'].to(device)
+
+    def merge_mile_data(self,mile_batch,mile_output):
+        batch = {}
+        batch['vel'] = mile_output['vel']
+        batch['accel'] = mile_output['accel']
+        batch['orientation'] = mile_output['orientation']
+        batch['route_map'] = mile_output['route_map'].unsqueeze(1)
+        if len(mile_batch['image'].shape) == 5:
+            batch['image'] = mile_batch['image']
+        else:
+            batch['image'] = mile_batch['image'].unsqueeze(1)
+        batch['birdview_label'] = mile_output['birdview_label'].unsqueeze(1)
+        batch['instance_label'] = get_instance_label_from_birdview_label(mile_output['birdview_label']).unsqueeze(1)
+        batch['intrinsics'] = self.camera_intrinsics
+        batch['global2ego'] = rotation_6d_to_quaternion(mile_output['orientation']).unsqueeze(1)
+        batch['ego2cam'] = self.ego2cam
+        return batch
+
+    def init_setting(self,batch):
+        self.num_frame = 0
+        self.mile.clear_cache()
+        self.pre_mile_batch = None
+        self.camera_intrinsics = batch['intrinsics']
+        self.ego2cam = batch['ego2cam']
+        
+    def get_observe_step_img(self,batch,latent):
+        img = self.model.decode_first_stage(latent).detach().cpu()
+        img = img.clamp(-1.,1.)
+        img = (img + 1.0) / 2.0 * 255.
+        img = img.numpy().astype(np.uint8)
+        images = torch.zeros((img.shape[0],1,self.num_cameras,3,self.mile_img_size[1],self.mile_img_size[0]))
+        if self.num_cameras == 1:
+            for i in range(img.shape[0]):
+                image = Image.fromarray(img[i].transpose(1,2,0)).resize(self.mile_img_size)
+                images[i][0][0] = torch.from_numpy(np.array(image).transpose(2,0,1))
+        else:
+            for i in range(img.shape[0]):
+                for j in range(self.num_cameras):
+                    row = i // self.num_cameras
+                    col = j
+                    image = Image.fromarray(img[i].transpose(1,2,0)).resize(self.mile_img_size)
+                    images[row][0][col] = torch.from_numpy(np.array(image).transpose(2,0,1))
+        batch['image'] = images
+
+
+    def mile_forward(self,batch):
+        mile_batch,sd_batch = self.split_batch(batch)
+
+        if batch['first_frame'][0] == [1] or batch['first_frame'] == 1:
+            self.init_setting(mile_batch)
+            mile_output = self.mile.deployment_forward(mile_batch,False)
+            self.replace_SD_condition(mile_output,sd_batch)
+            self.noise_cache = None
+            output,z = self._forward(sd_batch,False,True)
+            self.cond_frames = z.detach()
+            self.pre_mile_batch = self.merge_mile_data(mile_batch,mile_output)
+            # self.pre_mile_batch = mile_batch
+        else:
+            self.get_observe_step_img(self.pre_mile_batch,self.cond_frames)
+            self.pre_mile_batch = {k:v.to(batch['image'].device) for k,v in self.pre_mile_batch.items() if isinstance(v,torch.Tensor)}
+            if self.num_frame % 4 == 0:
+                # observe step
+                # mile_output = self.mile.deployment_forward(self.pre_mile_batch,False)
+                # self.pre_mile_batch['image'] = mile_batch['image']
+                # mile_batch['vel'] = self.pre_mile_batch['vel']
+                # mile_batch['accel'] = self.pre_mile_batch['accel']
+                # mile_batch['orientation'] = self.pre_mile_batch['orientation']
+                mile_output = self.mile.deployment_forward(self.pre_mile_batch,False)
+            else:
+                # imagine step
+                # mile_output = self.mile.deployment_forward(self.pre_mile_batch,True)
+                # mile_batch['vel'] = self.pre_mile_batch['vel']
+                # mile_batch['accel'] = self.pre_mile_batch['accel']
+                # mile_batch['orientation'] = self.pre_mile_batch['orientation']
+                # self.pre_mile_batch['image'] = mile_batch['image']
+                mile_output = self.mile.deployment_forward(self.pre_mile_batch,True)
+            self.replace_SD_condition(mile_output,sd_batch)
+            output = self._forward(sd_batch,True)
+            self.cond_frames = output.detach()
+            self.pre_mile_batch = self.merge_mile_data(mile_batch,mile_output)
+            # self.pre_mile_batch = mile_batch
+        self.num_frame += 1
+        return output
+
+
     def forward(self,batch):
         if self.use_feature_cache:
             self.init_cache(batch)
-        if batch['first_frame'][0] == [1] or batch['first_frame'] == 1:
-            self.noise_cache = None
-            output,z = self._forward(batch,False,True)
-            self.cond_frames = z.detach()
+        if self.use_mile:
+            output = self.mile_forward(batch)
         else:
-            output = self._forward(batch,True)
-            self.cond_frames = output.detach()
+            if batch['first_frame'][0] == [1] or batch['first_frame'] == 1:
+                self.noise_cache = None
+                output,z = self._forward(batch,False,True)
+                self.cond_frames = z.detach()
+            else:
+                output = self._forward(batch,True)
+                self.cond_frames = output.detach()
         return output.detach().cpu()
 
 

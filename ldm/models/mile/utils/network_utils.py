@@ -64,7 +64,7 @@ def pack_sequence_dim(x):
     return output
 
 
-def unpack_sequence_dim(x, b, s):
+def unpack_sequence_dim(x, b, s,n_cam=None):
     """ Does not create a copy."""
     if isinstance(x, torch.Tensor):
         return x.view(b, s, *x.shape[1:])

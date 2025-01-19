@@ -98,7 +98,7 @@ class PreProcess(nn.Module):
             for downsample_factor in [2,4]:
                 size = h // downsample_factor,w // downsample_factor
                 previous_label_factor = downsample_factor // 2
-                batch[f'rgb_label_{downsample_factor}'] = functional_resize(
+                batch[f'rgb_label_{downsample_factor}'] = functional_rgb_resize(
                     batch[f'rgb_label_{previous_label_factor}'],
                     size,
                     mode=tvf.InterpolationMode.BILINEAR,
@@ -107,7 +107,8 @@ class PreProcess(nn.Module):
     
     def forward(self,batch:Dict[str,torch.Tensor]):
         # Normalise from [0, 255] to [0, 1]
-        batch['image'] = batch['image'].float() / 255
+        if 'image' in batch.keys():
+            batch['image'] = batch['image'].float() / 255
 
         if 'route_map' in batch:
             batch['route_map'] = batch['route_map'].float() / 255
@@ -123,7 +124,8 @@ class PreProcess(nn.Module):
             batch = self.augmentation(batch)
 
         # Use imagenet mean and std normalization, because we're loading pretrained backbones
-        batch['image'] = (batch['image'] - self.image_mean) / self.image_std
+        if 'image' in batch.keys():
+            batch['image'] = (batch['image'] - self.image_mean) / self.image_std
         if 'route_map' in batch:
             batch['route_map'] = (batch['route_map'] - self.image_mean) / self.image_std
 
@@ -179,6 +181,13 @@ def functional_resize(x,size,mode=tvf.InterpolationMode.NEAREST):
     x = x.view(b,s,c,*size)
     if flag:
         x = x[:,:,0]
+    return x
+
+def functional_rgb_resize(x,size,mode=tvf.InterpolationMode.NEAREST):
+    b,s,n,c,h,w = x.shape
+    x = x.view(b*s*n,c,h,w)
+    x = tvf.resize(x,size,interpolation=mode)
+    x = x.view(b,s,n,c,*size)
     return x
 
 

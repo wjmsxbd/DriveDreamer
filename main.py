@@ -503,6 +503,16 @@ class DataModuleFromConfig(pl.LightningDataModule):
                         out[key].append(value)
                     else:
                         out[key].append(value)
+                elif isinstance(value,int):
+                    if not key in out.keys():
+                        out[key] = []
+                    out[key].append(value)
+                elif isinstance(value,str):
+                    if not key in out.keys():
+                        out[key] = []
+                        out[key].append(value)
+                    else:
+                        out[key].append(value)
                 else:
                     raise NotImplementedError
         return out

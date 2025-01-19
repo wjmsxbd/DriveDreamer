@@ -3,8 +3,9 @@
 import numpy as np
 import torch
 import torch.nn as nn
+from einops import rearrange
 
-from ldm.models.mile.utils.geometry_utils import bev_params_to_intrinsics, intrinsics_inverse
+from ldm.models.mile.utils.geometry_utils import bev_params_to_intrinsics, intrinsics_inverse,bev_6views_params_to_intrinsics
 
 def gen_dx_bx(size, scale, offsetx):
     xbound = [-size[0] * scale / 2 - offsetx * scale, size[0] * scale / 2 - offsetx * scale, scale]
@@ -58,7 +59,7 @@ def quick_cumsum(x,geom_feats,ranks):
     return QuickCumsum.apply(x,geom_feats,ranks)
 
 class FrustumPooling(nn.Module):
-    def __init__(self,size,scale,offsetx,dbound,downsample,use_quickcumsum=True):
+    def __init__(self,size,scale,offsetx,dbound,downsample,use_quickcumsum=True,num_cameras=1):
         """ Pools camera frustums into Birds Eye View
 
         Args:
@@ -69,8 +70,11 @@ class FrustumPooling(nn.Module):
             downsample: fraction of the size of the feature maps (stride of backbone)
         """
         super().__init__()
-
-        self.register_buffer('bev_intrinsics',torch.tensor(bev_params_to_intrinsics(size,scale,offsetx)))
+        self.num_cameras = num_cameras
+        if self.num_cameras == 1:
+            self.register_buffer('bev_intrinsics',torch.tensor(bev_params_to_intrinsics(size,scale,offsetx)))
+        else:
+            self.register_buffer('bev_intrinsics',torch.tensor(bev_6views_params_to_intrinsics(size,scale,offsetx,offsetx)))
 
         dx,bx,nx = gen_dx_bx(size,scale,offsetx)
         self.nx_constant = nx.numpy().tolist()
@@ -106,15 +110,19 @@ class FrustumPooling(nn.Module):
         of the points in the point cloud.
         Returns B x N x D x H/downsample x W/downsample x 3
         """
-        B,N = trans.shape[:2]
-
-        points = self.frustum.unsqueeze(0).unsqueeze(0).unsqueeze(-1)
+        B,N,n_cameras = trans.shape[:3]
+        points = self.frustum.unsqueeze(0).unsqueeze(-1)
+        rots = rearrange(rots,'b n c ... -> (b n c) ...')
+        trans = rearrange(trans,'b n c ... -> (b n c) ...')
+        intrins = rearrange(intrins,'b n c ... -> (b n c) ...')
+        
+        points = self.frustum.unsqueeze(0).unsqueeze(-1)
 
         # cam_to_ego
-        points = torch.cat((points[:,:,:,:,:,:2] * points[:,:,:,:,:,2:3],points[:,:,:,:,:,2:3]),5)
+        points = torch.cat((points[:,:,:,:,:2] * points[:,:,:,:,2:3],points[:,:,:,:,2:3]),4)
         combine = rots.matmul(intrinsics_inverse(intrins))
-        points = combine.view(B,N,1,1,1,3,3,).matmul(points).squeeze(-1)
-        points += trans.view(B,N,1,1,1,3)
+        points = combine.view(B*N*n_cameras,1,1,1,3,3,).matmul(points).squeeze(-1)
+        points += trans.view(B*N*n_cameras,1,1,1,3)
 
         return points
     
@@ -189,7 +197,6 @@ class FrustumPooling(nn.Module):
         #  [0, 0, 1]]
         # with f' = kf in pixel units. k being the factor in pixel/m, f the focal lens in m.
         # (m_x, m_y) is the center point in pixel.
-
         self.initialize_frustum(x)
         rots = pose[...,:3,:3]
         trans = pose[...,:3,3:]

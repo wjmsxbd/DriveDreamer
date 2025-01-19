@@ -449,9 +449,10 @@ if __name__ == "__main__":
     path_type = cmd_args.type
     cuda_id = cmd_args.cuda_id.split(',')
     local_rank = cmd_args.local_rank
-
-    world_size = int(os.environ['WORLD_SIZE'])
-    rank = int(os.environ['RANK'])
+    world_size = int(os.getenv('WORLD_SIZE',1))
+    rank = int(os.getenv('RANK',0))
+    # world_size = int(os.environ['WORLD_SIZE'])
+    # rank = int(os.environ['RANK'])
     dist.init_process_group('nccl',world_size=world_size,rank=rank)
     if use_train:
         data_loader = instantiate_from_config(cfg.data.params.train)
@@ -483,7 +484,6 @@ if __name__ == "__main__":
     center_save_path = save_path + '/center/'
     route_map_save_path = save_path + '/route_map/'
     center_pred_save_path = save_path + '/center_pred/'
-    rank=0
     if rank == 0:
         if not os.path.exists(cam_real_save_path):
             os.makedirs(cam_real_save_path)
@@ -510,18 +510,17 @@ if __name__ == "__main__":
             if device == 'cuda':
                 batch = {k:v.to(f'cuda:{cuda_id[local_rank]}') if isinstance(v,torch.Tensor) else v for k,v in batch.items()}
             output = network.infer(batch)
-            save_tensor_as_image(output['image'],file_path=cam_real_save_path,index=idx)
-            save_tensor_as_image(output['image_pred'],file_path=cam_sample_save_path,index=idx)
+            # save_tensor_as_image(output['image'],file_path=cam_real_save_path,index=idx)
+            # save_tensor_as_image(output['image_pred'],file_path=cam_sample_save_path,index=idx)
             save_tensor_as_image(output['birdview_label'],file_path=bev_label_save_path,index=idx)
             save_tensor_as_image(output['birdview_label_pred'],file_path=bev_label_pred_save_path,index=idx)
             save_tensor_as_image(output['route_map'],file_path=route_map_save_path,index=idx)
-            save_tensor_as_image(output['center_label_1'],file_path=center_save_path,index=idx)
-            save_tensor_as_image(output['offset_label_1'],file_path=offset_save_path,index=idx)
-            # save_tensor_as_image(output['center_label_pred'],file_path=center_pred_save_path,index=idx)
+            # save_tensor_as_image(output['center_label_1'],file_path=center_save_path,index=idx)
+            # save_tensor_as_image(output['offset_label_1'],file_path=offset_save_path,index=idx)
+
+            # save_tensor_as_image(output['route_map_pred'],file_path=center_pred_save_path,index=idx)
             # save_tensor_as_image(output['offset_label_pred'],file_path=offset_pred_save_path,index=idx)
             idx += 1
-            # if idx == 1:
-            #     break
 
     # for _,batch in tqdm(enumerate(data_loader_)):
     #     if batch['first_frame'][0] == 1 or batch['first_frame'][0] == [1]:

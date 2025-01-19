@@ -119,11 +119,11 @@ class PostProcess(nn.Module):
                         corners = np.dot(Quaternion(scalar=np.cos(yaw/2),vector=[0,0,np.sin(yaw/2)]).rotation_matrix,corners)
                         corners = np.dot(Quaternion(global2ego_rotation[idx]).rotation_matrix.T,corners)
                         corners = corners - translation[i]
-                        corners = np.dot(Quaternion._from_matrix(rotation[i]).rotation_matrix.T,corners)
-                        draw_box_in_camera_view(camera_image[idx],corners,camera_intrinsics[i],imsize)
+                        corners = np.dot(rotation[i].T,corners)
+                        # draw_box_in_camera_view(camera_image[i],corners,camera_intrinsics[i],imsize)
                         corners = self.get_box_in_image(corners,camera_intrinsics[i],imsize)
                         if corners is not None:
-                            description = f"There is a annotation about {category_dict[category]},the center of callout box is ({np.mean(corners[0]):.2f},{np.mean(corners[i][1]):.2f})"
+                            description = f"There is a annotation about {category_dict[category]},the center of callout box is ({np.mean(corners[0]):.2f},{np.mean(corners[1]):.2f})"
                             boxes.append(description)
             if len(boxes) > self.num_boxes:
                 boxes = boxes[:self.num_boxes]
@@ -138,8 +138,10 @@ class PostProcess(nn.Module):
                 camera_box_list.append(boxes)
                 if i != 0 and i % n_cam == 0:
                     box_list.append(camera_box_list)
-            temp = Image.fromarray(camera_image[idx])
-            temp.save(f"all_pics/condition/box.png")
+            # temp = Image.fromarray(camera_image[i])
+            # temp.save(f"all_pics/condition/box_{i%n_cam}.png")
+        if n_cam == 6 and camera_box_list != []:
+            box_list.append(camera_box_list)
         return box_list
 
     def get_k_nearest_points(self,points,k=2):
@@ -186,7 +188,7 @@ class PostProcess(nn.Module):
                 positions = np.dot(Quaternion(scalar=np.cos(yaw/2),vector=[0,0,np.sin(yaw/2)]).rotation_matrix,positions)
                 positions = np.dot(Quaternion(global2ego_rotation[idx]).rotation_matrix.T,positions)
                 positions = positions - translation[i]
-                positions = np.dot(Quaternion._from_matrix(rotation[i]).rotation_matrix.T,positions)
+                positions = np.dot(rotation[i].T,positions)
                 self.get_hdmap_in_image(camera_image[i],positions,camera_intrinsics[i],imsize,neighbors,category_dict[category])
         return camera_image
 

@@ -21,7 +21,8 @@ class SegmentationLoss(nn.Module):
 
         prediction = prediction.view(b * s, c, h, w)
         target = target.view(b * s, h, w)
-
+        eplision = 1e-7
+        prediction += eplision
         if self.use_weights:
             weights = torch.tensor(self.weights, dtype=prediction.dtype, device=prediction.device)
         else:

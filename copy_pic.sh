@@ -1,0 +1,1 @@
+python copy_pics.py --pic_path all_pics/baseline/cam_samples --resave_path all_pics/copy_pics/ --json_path v1.0-mini_val_idx2scene.json

@@ -1,0 +1,48 @@
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 1
+    wrap: False
+    num_workers: 0
+    use_distributed_scene_sampler: true
+    train:
+      target: data.dataloader_stage4.dataloader
+      params:
+        cfg:
+          version: advanced_12Hz_trainval
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          img_size: [768,448]
+          nusc_canbus_frequency: 50
+          num_cameras: 1
+          camera_frequency: 12
+          hdmap_size: [192,192]
+        num_boxes: 70
+        movie_len: 1
+        split_name: train
+        collect_condition: ['reference_image','HDmap','3Dbox']
+        sigma_sampler_config:
+          target: ldm.modules.diffusionmodules.sigma_sampling.EDMSampling
+          params:
+            p_mean: 1.0
+            p_std: 1.6
+    
+    validation:
+      target: data.dataloader_stage4.dataloader
+      params:
+        cfg:
+          version: advanced_12Hz_trainval
+          dataroot: /storage/group/4dvlab/datasets/nuScenes/
+          img_size: [768,448]
+          nusc_canbus_frequency: 50
+          num_cameras: 1
+          camera_frequency: 12
+          hdmap_size: [192,192]
+        num_boxes: 70
+        movie_len: 1
+        split_name: val
+        collect_condition: ['reference_image','HDmap','3Dbox']
+        sigma_sampler_config:
+          target: ldm.modules.diffusionmodules.sigma_sampling.EDMSampling
+          params:
+            p_mean: 1.0
+            p_std: 1.6

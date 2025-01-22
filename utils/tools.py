@@ -406,7 +406,7 @@ def get_hdmap_with_fig(fig,
 # input corners: np.ndarray (3,n)
 # image h w 3
 # camera_intrinsics (4,4)
-def draw_box_in_camera_view(image,corners,camera_intrinsics,imsize):
+def draw_box_in_camera_view(image,corners,camera_intrinsics,imsize,c=(255,0,0)):
     def check_out_windows(point):
         return point.x < 0 or point.x >= imsize[0] or point.y < 0 or point.y >= imsize[1]
     def box_in_image(corners,intrinsic,imsize,vis_level: int = BoxVisibility.ANY) -> bool:
@@ -443,7 +443,7 @@ def draw_box_in_camera_view(image,corners,camera_intrinsics,imsize):
             pointC = get_intersection_with_squre(PointA,PointB,left_down_corner,right_up_corner,right_down_corner,left_down_corner)
             if len(pointC) == 2:
                 PointA,PointB = pointC[0],pointC[1]
-                cv2.line(image,np.array([PointA.x,PointA.y],dtype=np.int16),np.array([PointB.x,PointB.y],dtype=np.int16),color=(255,0,0),thickness=1)
+                cv2.line(image,np.array([PointA.x,PointA.y],dtype=np.int16),np.array([PointB.x,PointB.y],dtype=np.int16),color=c,thickness=1)
             elif Bool_A or Bool_B:
                 PointA,PointB = Point(corners[0,idx1],corners[1,idx1]),Point(corners[0,idx2],corners[1,idx2])
                 PointC = get_intersection_with_squre(PointA,PointB,left_up_corner,right_up_corner,right_down_corner,left_down_corner)
@@ -453,10 +453,37 @@ def draw_box_in_camera_view(image,corners,camera_intrinsics,imsize):
                     PointA = PointC[0]
                 else:
                     PointB = PointC[0]
-                cv2.line(image,np.array([PointA.x,PointA.y],dtype=np.int16),np.array([PointB.x,PointB.y],dtype=np.int16),color=(255,0,0),thickness=1)
+                cv2.line(image,np.array([PointA.x,PointA.y],dtype=np.int16),np.array([PointB.x,PointB.y],dtype=np.int16),color=c,thickness=1)
         else:
-            cv2.line(image,np.array(corners[:,idx1]).astype(np.int16),np.array(corners[:,idx2]).astype(np.int16),color=(255,0,0),thickness=1)
-    
+            cv2.line(image,np.array(corners[:,idx1]).astype(np.int16),np.array(corners[:,idx2]).astype(np.int16),color=c,thickness=1)
+
+def get_3dbox_in_image(sample_data_token,nusc:NuScenes,imsize:tuple,map_category2color:dict):
+    data_path,boxes,camera_intrinsic = nusc.get_sample_data(sample_data_token,box_vis_level=True)
+    image = np.zeros((imsize[1],imsize[0],3))
+    intrinsic = np.zeros_like(camera_intrinsic)
+    print(camera_intrinsic)
+    intrinsic[0] = camera_intrinsic[0] * (imsize[0] / 1600)
+    intrinsic[1] = camera_intrinsic[1] * (imsize[1] / 900)
+    intrinsic[2] = camera_intrinsic[2]
+    print(intrinsic)
+    # intrinsic = camera_intrinsic
+    for box in boxes:
+        if not box.name in map_category2color.keys():
+            continue
+        c = map_category2color[box.name]
+        corners = box.corners()
+        new_corners = np.zeros_like(corners)
+        new_corners[:,0] = corners[:,2]
+        new_corners[:,1] = corners[:,3]
+        new_corners[:,2] = corners[:,7]
+        new_corners[:,3] = corners[:,6]
+        new_corners[:,4] = corners[:,1]
+        new_corners[:,5] = corners[:,0]
+        new_corners[:,6] = corners[:,4]
+        new_corners[:,7] = corners[:,5]
+        draw_box_in_camera_view(image,new_corners,intrinsic,imsize,c)
+    return image
+
 def draw_hdmap_in_camera_view(image,points,camera_intrinsics,imsize,neighbors,render_behind_cam=True):
     near_plane = 1e-8
     depths = points[2,:]
@@ -1817,6 +1844,14 @@ def rotation_6d_to_quaternion(d6:torch.Tensor) -> torch.Tensor:
     # return Q
     rotation_matrix = rotation_6d_to_matrix(d6)
     b,s,d = d6.shape
+    w = torch.sqrt(1 + rotation_matrix[...,0,0] + rotation_matrix[...,1,1] + rotation_matrix[...,2,2]) / 2
+    x = (rotation_matrix[...,2,1] - rotation_matrix[...,1,2]) / (4 * w)
+    y = (rotation_matrix[...,0,2] - rotation_matrix[...,2,0]) / (4 * w)
+    z = (rotation_matrix[...,1,0] - rotation_matrix[...,0,1]) / (4 * w)
+    Q = torch.stack([w,x,y,z],dim=-1)
+    return Q
+
+def rotation_matrix_to_quaternion(rotation_matrix):
     w = torch.sqrt(1 + rotation_matrix[...,0,0] + rotation_matrix[...,1,1] + rotation_matrix[...,2,2]) / 2
     x = (rotation_matrix[...,2,1] - rotation_matrix[...,1,2]) / (4 * w)
     y = (rotation_matrix[...,0,2] - rotation_matrix[...,2,0]) / (4 * w)
